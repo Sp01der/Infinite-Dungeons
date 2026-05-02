@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>The Infinite Dungeon</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header class="top-bar">
+        <h1 class="game-title">The Infinite Dungeon</h1>
+        <p class="tagline">Dungeon deck on the right · End turn is bottom-right</p>
+      </header>
+
+      <div id="dungeon-card-toast" class="dungeon-card-toast" hidden aria-live="polite">
+        <button type="button" id="dungeon-card-toast-dismiss" class="dungeon-card-toast-dismiss">
+          ×
+        </button>
+        <div id="dungeon-card-toast-title" class="dungeon-card-toast-title"></div>
+        <div id="dungeon-card-toast-summary" class="dungeon-card-toast-summary"></div>
+      </div>
+
+      <div class="stage-area">
+        <div class="map-stage">
+          <div class="map-canvas-wrap">
+            <div class="map-canvas-header">
+              <span class="panel-title">Map</span>
+              <span id="hud-floor" class="map-floor-name"></span>
+            </div>
+            <div id="game-viewport"></div>
+          </div>
+
+          <aside class="map-rail" aria-label="Dungeon deck and history">
+            <div class="rail-dungeon-label">Dungeon</div>
+            <div class="rail-dungeon-piles">
+              <div class="dungeon-pile-column">
+                <span class="pile-mini-label">Deck</span>
+                <div id="dungeon-deck-visual" class="dungeon-deck-visual" title="Face-down dungeon cards"></div>
+              </div>
+              <div class="dungeon-pile-column">
+                <span class="pile-mini-label">Discard</span>
+                <div id="dungeon-discard-visual" class="dungeon-discard-visual" title="Last played dungeon card"></div>
+              </div>
+            </div>
+            <div class="rail-log-label" aria-hidden="true">History</div>
+            <div id="game-log" class="game-log game-log--rail" role="log"></div>
+            <p id="hint" class="hint hint--rail"></p>
+            <div class="rail-tools">
+              <button type="button" id="btn-cancel" class="rail-tool" style="display: none">Cancel</button>
+              <button type="button" id="btn-unequip" class="rail-tool">Unequip</button>
+            </div>
+          </aside>
+        </div>
+
+        <footer class="bottom-dock" aria-label="Deck and hand">
+          <div class="dock-zone dock-deck">
+            <div class="dock-label">Items</div>
+            <button
+              type="button"
+              class="deck-slot player-deck-slot pile-inspect"
+              id="inspect-deck"
+              title="View deck contents (counts only)"
+            >
+              <span class="slot-label">Your deck</span>
+              <span id="hud-draw" class="slot-count">0</span>
+            </button>
+            <div class="items-track">
+              <div class="item-pill item-pill--gold">
+                <span class="item-pill-label">Gold</span>
+                <span id="hud-gold" class="item-pill-val">0</span>
+              </div>
+              <button
+                type="button"
+                class="item-pill item-pill--bread"
+                id="item-bread"
+                title="Eat bread — heals 20% of max HP"
+              >
+                <span class="item-pill-label">Bread</span>
+                <span id="hud-bread" class="item-pill-val">0</span>
+              </button>
+            </div>
+            <div class="dock-sub">
+              <span class="mini-pile">Equipped <strong id="hud-equipped">—</strong></span>
+            </div>
+          </div>
+
+          <div class="dock-zone dock-hand">
+            <div class="dock-label dock-label--cards">Cards</div>
+            <div id="hand-cards" class="hand-cards hand-cards--dock"></div>
+          </div>
+
+          <div class="dock-zone dock-meta">
+            <div class="dock-meta-body">
+              <button
+                type="button"
+                class="discard-slot player-discard-slot pile-inspect"
+                id="inspect-discard"
+                title="View discard contents (counts only)"
+              >
+                <span class="slot-label">Discard</span>
+                <span id="hud-discard" class="slot-count">0</span>
+              </button>
+              <dl class="stats-dl">
+                <div class="stats-row">
+                  <dt>HP</dt>
+                  <dd id="hud-hp">10 / 10</dd>
+                </div>
+                <div class="stats-row">
+                  <dt>Lvl</dt>
+                  <dd id="hud-level">1</dd>
+                </div>
+                <div class="stats-row">
+                  <dt>EXP</dt>
+                  <dd id="hud-exp">0 / 10</dd>
+                </div>
+                <div class="stats-row">
+                  <dt>Skill pts</dt>
+                  <dd id="hud-skill-pts">0</dd>
+                </div>
+                <div class="stats-row stats-row--etc">
+                  <dt>Status</dt>
+                  <dd>
+                    <span id="hud-phase">—</span>
+                    <span class="stats-sep">·</span>
+                    <span class="stat-k">Danger</span> <span id="hud-danger">1</span>
+                    <span class="stats-sep">·</span>
+                    <span class="stat-k">Noise</span> <span id="hud-noise">0</span>
+                  </dd>
+                </div>
+              </dl>
+              <button type="button" class="btn-skill-tree" id="btn-skill-tree" title="Open skill tree">
+                Skills
+              </button>
+            </div>
+            <button
+              type="button"
+              id="btn-end-turn"
+              class="btn-end-corner"
+              disabled
+              aria-label="End turn"
+              title="End turn"
+            >
+              ▶ End turn
+            </button>
+          </div>
+        </footer>
+      </div>
+    </div>
+
+    <div id="skill-tree-modal" class="skill-tree-modal" aria-hidden="true" role="dialog" aria-labelledby="skill-tree-title">
+      <div class="skill-tree-backdrop" id="skill-tree-backdrop" tabindex="-1"></div>
+      <div class="skill-tree-panel">
+        <h2 id="skill-tree-title" class="skill-tree-heading">Skill tree</h2>
+        <p class="skill-tree-note">Spend skill points on branches (left to right). Scroll horizontally with the mouse wheel.</p>
+        <div id="skill-tree-scroll" class="skill-tree-scroll">
+          <div id="skill-tree-canvas" class="skill-tree-canvas"></div>
+        </div>
+        <div id="skill-tree-tooltip" class="skill-tree-tooltip" hidden></div>
+        <button type="button" class="skill-tree-close" id="skill-tree-close">Close</button>
+      </div>
+    </div>
+
+    <div id="pile-inspector" class="pile-inspector" aria-hidden="true" role="dialog" aria-labelledby="pile-inspector-title">
+      <div class="pile-inspector-backdrop" id="pile-inspector-backdrop" tabindex="-1"></div>
+      <div class="pile-inspector-panel">
+        <h2 id="pile-inspector-title" class="pile-inspector-heading">Pile</h2>
+        <p class="pile-inspector-note">Counts only — order is hidden.</p>
+        <div id="pile-inspector-body" class="pile-inspector-body"></div>
+        <button type="button" class="pile-inspector-close" id="pile-inspector-close">Close</button>
+      </div>
+    </div>
+
+    <div id="chest-offer" class="chest-offer" aria-hidden="true" role="dialog" aria-labelledby="chest-offer-title">
+      <div class="chest-offer-backdrop" id="chest-offer-backdrop" tabindex="-1"></div>
+      <div class="chest-offer-panel">
+        <h2 id="chest-offer-title" class="chest-offer-heading">Chest — choose a card</h2>
+        <p class="chest-offer-note">Take one card into your discard pile, or take none.</p>
+        <div id="chest-offer-cards" class="chest-offer-cards"></div>
+        <div class="chest-offer-actions">
+          <button type="button" class="chest-offer-skip" id="chest-offer-skip">Take none</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="pedestal-offer" class="chest-offer" aria-hidden="true" role="dialog" aria-labelledby="pedestal-offer-title">
+      <div class="chest-offer-backdrop" id="pedestal-offer-backdrop" tabindex="-1"></div>
+      <div class="chest-offer-panel">
+        <h2 id="pedestal-offer-title" class="chest-offer-heading">Card pedestal</h2>
+        <p class="chest-offer-note">Take one card into your discard pile (any rarity), or take none. Next you will destroy one card from your deck.</p>
+        <div id="pedestal-offer-cards" class="chest-offer-cards"></div>
+        <div class="chest-offer-actions">
+          <button type="button" class="chest-offer-skip" id="pedestal-offer-skip">Take none</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="deck-destroy-offer" class="chest-offer" aria-hidden="true" role="dialog" aria-labelledby="deck-destroy-title">
+      <div class="chest-offer-backdrop" id="deck-destroy-backdrop" tabindex="-1"></div>
+      <div class="chest-offer-panel">
+        <h2 id="deck-destroy-title" class="chest-offer-heading">Destroy a card</h2>
+        <p class="chest-offer-note">Remove one copy from your deck (draw, discard, or hand).</p>
+        <div id="deck-destroy-body" class="chest-offer-cards deck-destroy-body"></div>
+      </div>
+    </div>
+
+    <div id="card-pickup-offer" class="chest-offer card-pickup-offer" aria-hidden="true" role="dialog" aria-labelledby="card-pickup-title">
+      <div class="chest-offer-backdrop" id="card-pickup-backdrop" tabindex="-1"></div>
+      <div class="chest-offer-panel">
+        <h2 id="card-pickup-title" class="chest-offer-heading">You found a card</h2>
+        <p class="chest-offer-note">Add it to your deck (discard pile), or leave it.</p>
+        <div id="card-pickup-body" class="chest-offer-cards"></div>
+        <div class="chest-offer-actions card-pickup-actions">
+          <button type="button" class="primary" id="card-pickup-accept">Add to deck</button>
+          <button type="button" class="chest-offer-skip" id="card-pickup-decline">Leave it</button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

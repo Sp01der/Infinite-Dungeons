@@ -1,0 +1,100 @@
+[
+  {
+    "id": "move",
+    "name": "Move",
+    "rarity": "Basic",
+    "description": "Move up to 2 spaces (orthogonal).",
+    "effect": { "type": "move", "range": 2 }
+  },
+  {
+    "id": "copper_sword",
+    "name": "Copper Sword",
+    "rarity": "Basic",
+    "description": "Deal 3–5 damage to an adjacent enemy.",
+    "effect": { "type": "melee_attack", "minDamage": 3, "maxDamage": 5 }
+  },
+  {
+    "id": "focus",
+    "name": "Focus",
+    "rarity": "Rare",
+    "description": "Draw 2 cards.",
+    "effect": { "type": "draw", "amount": 2 }
+  },
+  {
+    "id": "spear",
+    "name": "Spear",
+    "rarity": "Common",
+    "description": "3–5 damage in a line (+): hit an enemy 1–2 spaces away; pierces one tile to a second foe.",
+    "effect": { "type": "spear_line", "minDamage": 3, "maxDamage": 5 }
+  },
+  {
+    "id": "knife",
+    "name": "Knife",
+    "rarity": "Common",
+    "description": "Deal 1–4 to an adjacent enemy, then draw a card.",
+    "effect": { "type": "knife", "minDamage": 1, "maxDamage": 4 }
+  },
+  {
+    "id": "axe",
+    "name": "Axe",
+    "rarity": "Common",
+    "description": "Deal 4–8 to an adjacent enemy. Your next move (card or bonus) does nothing.",
+    "effect": { "type": "axe", "minDamage": 4, "maxDamage": 8 }
+  },
+  {
+    "id": "quickstep",
+    "name": "Quickstep",
+    "rarity": "Common",
+    "description": "Draw a card, then move 1 space.",
+    "effect": { "type": "quickstep", "draw": 1, "move": 1 }
+  },
+  {
+    "id": "tactical_approach",
+    "name": "Tactical Approach",
+    "rarity": "Uncommon",
+    "description": "Draw a card and gain two Bonus Cards.",
+    "effect": { "type": "tactical_approach", "draw": 1, "bonusCount": 2 }
+  },
+  {
+    "id": "bonus_card",
+    "name": "Bonus Card",
+    "rarity": "Bonus",
+    "description": "Cannot be played. Discard for Move +1, Punch, or Scout — then this card is destroyed.",
+    "effect": { "type": "bonus_chit" }
+  },
+  {
+    "id": "parry",
+    "name": "Parry",
+    "rarity": "Common",
+    "description": "Defense is raised by 2 this turn.",
+    "effect": { "type": "parry", "defenseBonus": 2 }
+  },
+  {
+    "id": "flurry_of_blows",
+    "name": "Flurry of Blows",
+    "rarity": "Uncommon",
+    "description": "For the rest of this turn, each punch you throw hits twice.",
+    "effect": { "type": "flurry" }
+  },
+  {
+    "id": "magic_missile",
+    "name": "Magic Missile",
+    "rarity": "Rare",
+    "description": "Deal 1–6 damage to one enemy in a straight or diagonal line from you (queen move). Ignores defense.",
+    "effect": { "type": "magic_missile", "minDamage": 1, "maxDamage": 6 }
+  },
+  {
+    "id": "card_seeker",
+    "name": "Card Seeker",
+    "rarity": "Legendary",
+    "description": "Move 1 space. Drop 2 random cards as ground loot in rooms you can see.",
+    "effect": { "type": "card_seeker", "move": 1 }
+  },
+  {
+    "id": "threefold_gift",
+    "name": "Threefold Gift",
+    "rarity": "Legendary",
+    "description": "Draw 3 cards.",
+    "effect": { "type": "draw", "amount": 3 }
+  }
+]

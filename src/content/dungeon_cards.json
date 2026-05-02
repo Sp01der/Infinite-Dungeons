@@ -1,0 +1,56 @@
+[
+  {
+    "id": "dungeon_still",
+    "name": "The Dungeon is Still",
+    "description": "Nothing happens.",
+    "effect": { "type": "noop" }
+  },
+  {
+    "id": "noisy_adventurer",
+    "name": "Noisy Adventurer",
+    "description": "Gain 1 noise.",
+    "effect": { "type": "add_noise", "amount": 1 }
+  },
+  {
+    "id": "dungeon_knows_here",
+    "name": "The Dungeon Knows You're Here",
+    "description": "Gain 2 noise.",
+    "effect": { "type": "add_noise", "amount": 2 }
+  },
+  {
+    "id": "dungeon_trap",
+    "name": "Trap!",
+    "description": "Random damage.",
+    "effect": { "type": "trap" }
+  },
+  {
+    "id": "falling_rocks",
+    "name": "Falling Rocks",
+    "description": "Rocks may fall into rooms.",
+    "effect": { "type": "falling_rocks" }
+  },
+  {
+    "id": "monsters_from_deep",
+    "name": "Monsters from the Deep",
+    "description": "Something stirs elsewhere.",
+    "effect": { "type": "monsters_from_deep" }
+  },
+  {
+    "id": "dungeon_deadlier",
+    "name": "THE DUNGEON IS DEADLIER",
+    "description": "Danger increases; the dungeon deck is reshuffled.",
+    "effect": { "type": "danger_and_reshuffle" }
+  },
+  {
+    "id": "stability",
+    "name": "Stability",
+    "description": "The next dungeon card may not activate (except Deadlier).",
+    "effect": { "type": "stability" }
+  },
+  {
+    "id": "the_dust_settles",
+    "name": "The Dust Settles",
+    "description": "You cannot scout this turn.",
+    "effect": { "type": "dust_settles" }
+  }
+]

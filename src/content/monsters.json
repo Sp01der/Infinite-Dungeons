@@ -1,0 +1,62 @@
+[
+  {
+    "id": "slime",
+    "name": "Slime",
+    "spriteId": "enemy_slime",
+    "hp": 5,
+    "defense": 0,
+    "damage": 2,
+    "power": 2,
+    "description": "Oozes closer, then can leap along a line for a crushing slam."
+  },
+  {
+    "id": "dune_rat",
+    "name": "Dust Rat",
+    "spriteId": "enemy_rat",
+    "hp": 4,
+    "defense": 0,
+    "damage": 2,
+    "power": 2,
+    "description": "Scurries and bites in passing."
+  },
+  {
+    "id": "skeleton",
+    "name": "Skeleton",
+    "spriteId": "enemy_skeleton",
+    "hp": 6,
+    "defense": 0,
+    "damage": 3,
+    "power": 4,
+    "description": "Rattling bones armed with a random weapon."
+  },
+  {
+    "id": "cave_bat",
+    "name": "Cave Bat",
+    "spriteId": "enemy_bat",
+    "hp": 3,
+    "defense": 0,
+    "damage": 1,
+    "power": 2,
+    "description": "Darts in for a nip."
+  },
+  {
+    "id": "mystic_core",
+    "name": "Mystic Core",
+    "spriteId": "enemy_mystic_core",
+    "hp": 5,
+    "defense": 0,
+    "damage": 3,
+    "power": 4,
+    "description": "A floating crystal that strikes at range or slips away."
+  },
+  {
+    "id": "rockling",
+    "name": "Rockling",
+    "spriteId": "enemy_rockling",
+    "hp": 5,
+    "defense": 0,
+    "damage": 3,
+    "power": 5,
+    "description": "A stony brute with a tough hide."
+  }
+]

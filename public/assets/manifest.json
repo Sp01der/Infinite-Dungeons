@@ -1,0 +1,18 @@
+{
+  "sprites": {
+    "floor": { "fallbackColor": "#3d4354" },
+    "floor_alt": { "fallbackColor": "#343948" },
+    "wall": { "fallbackColor": "#0f1118" },
+    "player": { "fallbackColor": "#2ecc71" },
+    "enemy_slime": { "fallbackColor": "#9b59b6" },
+    "enemy_rat": { "fallbackColor": "#8b7355" },
+    "enemy_skeleton": { "fallbackColor": "#bdc3c7" },
+    "enemy_bat": { "fallbackColor": "#5c4d7a" },
+    "pot": { "fallbackColor": "#c87f4a" },
+    "chest": { "fallbackColor": "#c9a227" },
+    "gauntlet_corridor": { "fallbackColor": "#4a2b2f" },
+    "gauntlet_corridor_alt": { "fallbackColor": "#666a73" },
+    "fog": { "fallbackColor": "#050508", "alpha": 0.94 },
+    "highlight": { "fallbackColor": "#f1c40f", "alpha": 0.45 }
+  }
+}
