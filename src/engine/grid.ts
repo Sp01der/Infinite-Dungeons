@@ -108,6 +108,29 @@ export function magicMissilePathClearToPoint(
   return tileAt(tiles, { x: tx, y: ty }) === "floor";
 }
 
+/** Chebyshev distance (chessboard distance) between two points. */
+export function chebyshev(a: Point, b: Point): number {
+  return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+}
+
+/**
+ * General line-of-sight check for any angle (e.g. Bow).
+ * Steps along the ray using floating-point interpolation; walls block.
+ * Unlike magicMissilePathClear, other monsters do NOT block this ray.
+ */
+export function lineOfSightClear(tiles: TileKind[][], from: Point, to: Point): boolean {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const steps = Math.max(Math.abs(dx), Math.abs(dy));
+  if (steps === 0) return false;
+  for (let i = 1; i < steps; i++) {
+    const x = Math.round(from.x + (dx * i) / steps);
+    const y = Math.round(from.y + (dy * i) / steps);
+    if (tileAt(tiles, { x, y }) !== "floor") return false;
+  }
+  return tileAt(tiles, to) === "floor";
+}
+
 /** Magic missile from a monster toward the player: straight/diagonal ray; walls and other living monsters block; player tile is the endpoint. */
 export function magicMissilePathClearToPlayer(
   tiles: TileKind[][],

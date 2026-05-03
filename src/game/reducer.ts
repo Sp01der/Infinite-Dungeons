@@ -1,7 +1,7 @@
 import { applyDefense, rollInt } from "../engine/combat";
 import { addRoomsToDiscovered, collectRoomIdsAdjacentToPlayer } from "../engine/discovery";
-import { keyOf, magicMissilePathClear, magicMissilePathClearToPoint, tileAt } from "../engine/grid";
-import { manhattan, reachableOrthogonal } from "../engine/movement";
+import { chebyshev, keyOf, lineOfSightClear, magicMissilePathClear, magicMissilePathClearToPoint, tileAt } from "../engine/grid";
+import { extendReachableWithBlockedDestinations, manhattan, reachableOrthogonal } from "../engine/movement";
 import { generateFloor } from "../engine/floorGen";
 import { buildFreshDungeonDeck, DUNGEON_DEADLIER_ID } from "./dungeonDeck";
 import {
@@ -11,6 +11,7 @@ import {
   pickWeightedDefId,
 } from "./initialState";
 import { runMonsterPhaseWithHooks } from "./monsterAi";
+import { cullMonstersWithDouvlonPairs, setMonsterHpWithDouvlonSync } from "./douvlon";
 import { createMonsterInstance, monsterDefenseForIncoming } from "./monsterSpawn";
 import { attachStairRoom } from "./stairRoom";
 import {
@@ -49,6 +50,7 @@ import type {
   Point,
   RockInstance,
   RoomKind,
+  TileKind,
 } from "./types";
 
 function log(state: GameState, line: string): GameState {
@@ -202,6 +204,20 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
     );
   }
 
+  if (cmd.type === "DEV_GOTO_FLOOR") {
+    const targetDepth = Math.max(1, Math.trunc(cmd.depth));
+    const gen = generateFloor({ depth: targetDepth });
+    let next = createNextFloorState(state, gen);
+    next = reshufflePlayerDeck(next);
+    next = ensureEquippedOnDeckTop(next);
+    next = drawFromPlayerDeck(next, 3);
+    next = revealAtPlayer(next);
+    next = collectAdjacentLoot(next);
+    next = log(next, `Command: jumped to floor ${next.depth} (danger ${next.danger}). Deck reshuffled, new hand drawn.`);
+    next = log(next, `— Turn ${next.turn} — You draw 3 cards.`);
+    return noHits({ ...next, phase: "player", pending: null });
+  }
+
   return noHits(state);
 }
 
@@ -228,6 +244,27 @@ function tryKnockMonsterFromPlayer(s: GameState, mon: MonsterInstance): GameStat
   if (s.rocks.some((r) => r.x === nx && r.y === ny)) return log(s, "Rubble blocks the knockback.");
   const monsters = s.monsters.map((m) => (m.id === mon.id ? { ...m, x: nx, y: ny } : m));
   return log({ ...s, monsters }, "Knockback sends them reeling!");
+}
+
+/** Apply knockback N times in the direction away from the player. */
+function tryKnockMonsterFromPlayerN(s: GameState, monId: string, times: number): GameState {
+  for (let i = 0; i < times; i++) {
+    const cur = s.monsters.find((m) => m.id === monId && m.hp > 0);
+    if (!cur) break;
+    s = tryKnockMonsterFromPlayer(s, cur);
+  }
+  return s;
+}
+
+/** Apply Fire levels to a monster instance, returning updated monsters array. */
+function applyFireToMonster(
+  monsters: MonsterInstance[],
+  monId: string,
+  levels: number,
+): MonsterInstance[] {
+  return monsters.map((m) =>
+    m.id === monId ? { ...m, fireLevels: (m.fireLevels ?? 0) + levels } : m,
+  );
 }
 
 function weaponAttackRollRaw(s: GameState, cardId: string | undefined, minD: number, maxD: number): number {
@@ -325,7 +362,176 @@ function occupiedByMonsters(state: GameState): Set<string> {
 }
 
 function occupiedForPlayerMove(state: GameState): Set<string> {
-  return occupiedByMonsters(state);
+  const occ = occupiedByMonsters(state);
+  for (const m of state.monsters) {
+    if (m.defId === "mimic" && m.mimicAsleep && m.hp > 0) occ.delete(keyOf(m));
+  }
+  return occ;
+}
+
+function cloneTileGrid(tiles: TileKind[][]): TileKind[][] {
+  return tiles.map((row) => [...row]);
+}
+
+function findNearestFloorEscape(state: GameState, from: Point): Point | null {
+  const occ = occupiedByMonsters(state);
+  let best: Point | null = null;
+  let bestD = Infinity;
+  for (let y = 0; y < state.height; y++) {
+    for (let x = 0; x < state.width; x++) {
+      if (tileAt(state.tiles, { x, y }) !== "floor") continue;
+      if (state.rocks.some((r) => r.x === x && r.y === y)) continue;
+      if (occ.has(keyOf({ x, y }))) continue;
+      if (state.pots.some((p) => p.x === x && p.y === y)) continue;
+      if (state.chests.some((c) => c.x === x && c.y === y)) continue;
+      const d = manhattan({ x, y }, from);
+      if (d < bestD) {
+        bestD = d;
+        best = { x, y };
+      }
+    }
+  }
+  return best;
+}
+
+const COLLAPSE_CRUSH_DAMAGE = 20;
+
+function applyPendingCollapse(state: GameState): { state: GameState; hits: HitVisual[] } {
+  const hits: HitVisual[] = [];
+  const keys = new Set<string>();
+  if (state.pendingCollapse?.tiles) {
+    for (const t of state.pendingCollapse.tiles) keys.add(keyOf(t));
+  }
+  if (state.pendingTargetedCollapse) {
+    for (const t of state.pendingTargetedCollapse) keys.add(keyOf(t));
+  }
+  if (keys.size === 0) return { state: state, hits };
+
+  let next: GameState = {
+    ...state,
+    pendingCollapse: null,
+    pendingTargetedCollapse: null,
+    dungeonCardReveal: {
+      title: "Collapse!",
+      summary: "The ceiling gives way — stone seals parts of the floor.",
+    },
+  };
+  const tiles = cloneTileGrid(state.tiles);
+  for (const k of keys) {
+    const [x, y] = k.split(",").map(Number) as [number, number];
+    if (tiles[y]?.[x] === "floor") tiles[y][x] = "blocked";
+  }
+  next = { ...next, tiles };
+
+  const crushedMonsterIds = new Set<string>();
+  for (const m of state.monsters) {
+    if (m.hp <= 0) continue;
+    if (!keys.has(keyOf(m))) continue;
+    crushedMonsterIds.add(m.id);
+    const nh = Math.max(0, m.hp - COLLAPSE_CRUSH_DAMAGE);
+    next = {
+      ...next,
+      monsters: setMonsterHpWithDouvlonSync(next.monsters, m.id, nh),
+    };
+    hits.push({ gridX: m.x, gridY: m.y, damage: COLLAPSE_CRUSH_DAMAGE });
+  }
+  next = { ...next, monsters: cullMonstersWithDouvlonPairs(next.monsters) };
+
+  const rewardedPairs = new Set<string>();
+  for (const id of crushedMonsterIds) {
+    const survived = next.monsters.some((m) => m.id === id && m.hp > 0);
+    if (survived) continue;
+    const om = state.monsters.find((x) => x.id === id);
+    if (!om) continue;
+    if (om.defId === "douvlon" && om.douvlonPairId) {
+      if (rewardedPairs.has(om.douvlonPairId)) continue;
+      rewardedPairs.add(om.douvlonPairId);
+    }
+    next = log(
+      next,
+      `${state.monsterDefs.get(om.defId)?.name ?? "Monster"} is crushed by falling stone.`,
+    );
+    next = applyMonsterKillRewards(next, om.defId);
+  }
+
+  const playerHere = keyOf({ x: next.player.x, y: next.player.y });
+  if (keys.has(playerHere)) {
+    const dmg = incomingDamageToPlayer(next, COLLAPSE_CRUSH_DAMAGE);
+    hits.push({ gridX: next.player.x, gridY: next.player.y, damage: dmg });
+    const hp = Math.max(0, next.player.hp - dmg);
+    next = { ...next, player: { ...next.player, hp } };
+    if (hp <= 0) {
+      return {
+        state: log({ ...next, phase: "defeat", player: { ...next.player, hp: 0 } }, "You are buried in the collapse."),
+        hits,
+      };
+    }
+    const escapeTo = findNearestFloorEscape(next, { x: next.player.x, y: next.player.y });
+    if (escapeTo) {
+      next = {
+        ...next,
+        player: { ...next.player, x: escapeTo.x, y: escapeTo.y },
+      };
+      next = revealAtPlayer(next);
+      next = resolvePlayerEnterTile(next, escapeTo.x, escapeTo.y);
+      next = log(next, "You scramble out from under the falling rock!");
+    }
+  }
+
+  return { state: log(next, "The collapse settles."), hits };
+}
+
+function removeHandIndices(hand: string[], indices: number[]): { nextHand: string[]; removed: string[] } {
+  const sorted = [...new Set(indices)].sort((a, b) => b - a);
+  const nextHand = [...hand];
+  const removed: string[] = [];
+  for (const ix of sorted) {
+    if (ix < 0 || ix >= nextHand.length) continue;
+    const [c] = nextHand.splice(ix, 1);
+    if (c !== undefined) removed.push(c);
+  }
+  return { nextHand, removed };
+}
+
+function awakenMimicOnTile(s: GameState, x: number, y: number): GameState {
+  return {
+    ...s,
+    monsters: s.monsters.map((m) =>
+      m.defId === "mimic" && m.x === x && m.y === y && m.mimicAsleep
+        ? { ...m, mimicAsleep: false }
+        : m,
+    ),
+  };
+}
+
+function extendMoveReachForPending(
+  state: GameState,
+  base: Set<string>,
+  from: Point,
+  pending:
+    | { kind: "play_move" }
+    | { kind: "discard_move1" }
+    | { kind: "play_card_seeker" }
+    | { kind: "move_token_step" },
+): Set<string> {
+  const need =
+    pending.kind === "play_move" || pending.kind === "play_card_seeker" ? 2 : 1;
+  const can = state.player.hand.length >= need;
+  return extendReachableWithBlockedDestinations(
+    base,
+    from,
+    state.tiles,
+    state.width,
+    state.height,
+    can,
+    occupiedForPlayerMove(state),
+  );
+}
+
+function patchMonsterHp(monsters: MonsterInstance[], monId: string, hp: number): MonsterInstance[] {
+  let ms = setMonsterHpWithDouvlonSync(monsters, monId, hp);
+  ms = cullMonstersWithDouvlonPairs(ms);
+  return ms;
 }
 
 function rockKeySet(state: GameState): Set<string> {
@@ -398,7 +604,7 @@ function spawnMonstersFromDeep(s: GameState): { state: GameState; lines: string[
     if (cells.length === 0) continue;
     shuffleInPlace(cells);
     const p = cells[0]!;
-    const defId = pickMonsterId(kind, next.monsterDefs);
+    const defId = pickMonsterId(kind, next.monsterDefs, next.depth);;
     next = {
       ...next,
       monsters: [
@@ -892,6 +1098,7 @@ function reshufflePlayerDeck(s: GameState): GameState {
       moveTokens: 0,
       knockbackTokens: 0,
       knockbackPrimed: false,
+      hasteThisTurn: false,
     },
   };
 }
@@ -1184,9 +1391,93 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
       );
       return { state: st, hits: [] };
     }
+    case "collapse": {
+      const roomTiles = pickCollapseRoomFloorTiles(working);
+      if (!roomTiles || roomTiles.length === 0) {
+        summary = "Nothing caves in — no suitable chamber.";
+        const st = log(
+          { ...working, dungeonCardReveal: { title, summary } },
+          `Dungeon: ${title} — ${summary}`,
+        );
+        return { state: st, hits: [] };
+      }
+      summary = "A chamber is marked — it will collapse at the end of your next turn.";
+      const st = log(
+        {
+          ...working,
+          pendingCollapse: { tiles: roomTiles },
+          dungeonCardReveal: { title, summary },
+        },
+        `Dungeon: ${title} — ${summary}`,
+      );
+      return { state: st, hits: [] };
+    }
+    case "lights_out": {
+      const n = Math.max(1, working.depth - 2);
+      /** +1 so duration matches intent: beginNextPlayerTurn decrements once right after this card resolves. */
+      const stored = n + 1;
+      summary = `Darkness lingers for ${n} of your turns (map obscured).`;
+      const st = log(
+        {
+          ...working,
+          lightsOutTurns: Math.max(working.lightsOutTurns, stored),
+          dungeonCardReveal: { title, summary },
+        },
+        `Dungeon: ${title} — ${summary}`,
+      );
+      return { state: st, hits: [] };
+    }
+    case "targeted_collapse": {
+      const p = working.player;
+      const cells: Point[] = [];
+      const tryAdd = (x: number, y: number) => {
+        if (x < 0 || y < 0 || x >= working.width || y >= working.height) return;
+        if (tileAt(working.tiles, { x, y }) === "floor") cells.push({ x, y });
+      };
+      tryAdd(p.x, p.y);
+      tryAdd(p.x + 1, p.y);
+      tryAdd(p.x - 1, p.y);
+      tryAdd(p.x, p.y + 1);
+      tryAdd(p.x, p.y - 1);
+      summary = "Rubble is about to fall around you — it drops at the end of your next turn.";
+      const st = log(
+        {
+          ...working,
+          pendingTargetedCollapse: cells,
+          dungeonCardReveal: { title, summary },
+        },
+        `Dungeon: ${title} — ${summary}`,
+      );
+      return { state: st, hits: [] };
+    }
     default:
       return { state: log(working, "Unknown dungeon card effect."), hits: [] };
   }
+}
+
+function pickCollapseRoomFloorTiles(s: GameState): Point[] | null {
+  const eligibleRids = new Set<number>();
+  for (let y = 0; y < s.height; y++) {
+    for (let x = 0; x < s.width; x++) {
+      if (s.tiles[y][x] !== "floor") continue;
+      const rid = s.roomIds[y][x];
+      if (rid < 0) continue;
+      const k = s.roomKinds[rid];
+      if (k === "gauntlet" || k === "gauntlet_corridor") continue;
+      eligibleRids.add(rid);
+    }
+  }
+  const pool = [...eligibleRids];
+  if (pool.length === 0) return null;
+  const rid = pool[rollInt(0, pool.length - 1)]!;
+  const tiles: Point[] = [];
+  for (let y = 0; y < s.height; y++) {
+    for (let x = 0; x < s.width; x++) {
+      if (s.roomIds[y][x] !== rid) continue;
+      if (s.tiles[y][x] === "floor") tiles.push({ x, y });
+    }
+  }
+  return tiles.length > 0 ? tiles : null;
 }
 
 function runMonsterPhase(state: GameState): { state: GameState; hits: HitVisual[] } {
@@ -1199,6 +1490,9 @@ function runMonsterPhase(state: GameState): { state: GameState; hits: HitVisual[
 function beginNextPlayerTurn(s: GameState): GameState {
   if (s.phase === "defeat") return s;
   let next = { ...s, turn: s.turn + 1 };
+  if (next.lightsOutTurns > 0) {
+    next = { ...next, lightsOutTurns: next.lightsOutTurns - 1 };
+  }
   next = ensureEquippedOnDeckTop(next);
   const drawN = playerDrawCountPerTurn(next);
   next = drawFromPlayerDeck(next, drawN);
@@ -1213,6 +1507,7 @@ function beginNextPlayerTurn(s: GameState): GameState {
       knockbackPrimed: false,
       movementCardsPlayedThisTurn: 0,
       scoutUsesThisTurn: 0,
+      hasteThisTurn: false,
     },
   };
   next = revealAtPlayer(next);
@@ -1233,7 +1528,8 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
   if (
     cmd.type === "DEV_SET_VARIABLE" ||
     cmd.type === "DEV_CARD" ||
-    cmd.type === "DEV_DUNGEON_TOP"
+    cmd.type === "DEV_DUNGEON_TOP" ||
+    cmd.type === "DEV_GOTO_FLOOR"
   ) {
     return handleDevCommand(state, cmd);
   }
@@ -1394,6 +1690,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           knockbackPrimed: false,
           movementCardsPlayedThisTurn: 0,
           scoutUsesThisTurn: 0,
+          hasteThisTurn: false,
         },
       };
       s = revealAtPlayer(s);
@@ -1403,6 +1700,21 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
 
     case "CANCEL_PENDING": {
       if (!state.pending) return noHits(state);
+      // If a lightning bolt chain has already dealt damage, discard the card on cancel.
+      if (state.pending.kind === "play_lightning_bolt" && state.pending.hitIds.length > 0) {
+        const p = state.pending;
+        const hand = [...state.player.hand];
+        const cardId = hand[p.cardHandIndex];
+        if (cardId) {
+          hand.splice(p.cardHandIndex, 1);
+          return noHits(
+            log(
+              { ...state, player: { ...state.player, hand, discardPile: [...state.player.discardPile, cardId] }, pending: null },
+              "Lightning chain cancelled — card discarded.",
+            ),
+          );
+        }
+      }
       return noHits({ ...state, pending: null });
     }
 
@@ -1452,6 +1764,15 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         return noHits(log(state, "Bonus Cards can't be played — discard one for a bonus action."));
       }
 
+      if (state.player.hasteThisTurn) {
+        const blockedTypes: string[] = ["Attack", "Protection", "Aid", "Deck"];
+        if (def.types.some((t) => blockedTypes.includes(t))) {
+          return noHits(
+            log(state, `Haste is active — Attack, Protection, Aid, and Deck cards cannot be played this turn.`),
+          );
+        }
+      }
+
       if (def.effect.type === "tactical_approach") {
         let s = state;
         const hand = [...s.player.hand];
@@ -1482,7 +1803,8 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       }
 
       if (def.effect.type === "move") {
-        const range = def.effect.range + sprinterExtraMoveRange(state, def);
+        const baseRange = def.effect.range + sprinterExtraMoveRange(state, def);
+        const range = state.player.hasteThisTurn ? baseRange * 2 : baseRange;
         return noHits({
           ...state,
           pending: { kind: "play_move", cardHandIndex: idx, range },
@@ -1598,6 +1920,94 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         });
       }
 
+      if (def.effect.type === "haste") {
+        if (state.player.hasteThisTurn) {
+          return noHits(log(state, "Haste is already active."));
+        }
+        const hand = [...state.player.hand];
+        hand.splice(idx, 1);
+        const discardPile = [...state.player.discardPile, cardId];
+        const s = log(
+          { ...state, player: { ...state.player, hand, discardPile, hasteThisTurn: true } },
+          "Haste! Movement doubled this turn. Attack, Protection, Aid and Deck cards are locked.",
+        );
+        return noHits(s);
+      }
+
+      if (def.effect.type === "stealthy_advance") {
+        const hand = [...state.player.hand];
+        hand.splice(idx, 1);
+        const discardPile = [...state.player.discardPile, cardId];
+        const noise = Math.max(0, state.noise - def.effect.noiseReduction);
+        const defenseBonusThisTurn =
+          state.player.defenseBonusThisTurn + def.effect.defenseBonus;
+        let s: GameState = {
+          ...state,
+          noise,
+          player: { ...state.player, hand, discardPile, defenseBonusThisTurn },
+          pending: { kind: "discard_move1", maxRange: def.effect.move, fromQuickstep: false },
+        };
+        s = log(
+          s,
+          `Stealthy Advance — ${def.effect.noiseReduction > 0 ? `-${def.effect.noiseReduction} noise, ` : ""}+${def.effect.defenseBonus} defense, move ${def.effect.move} space.`,
+        );
+        return noHits(s);
+      }
+
+      if (def.effect.type === "knockback_punch") {
+        return noHits({
+          ...state,
+          pending: {
+            kind: "play_knockback_punch",
+            cardHandIndex: idx,
+            minDamage: def.effect.minDamage,
+            maxDamage: def.effect.maxDamage,
+            knockback: def.effect.knockback,
+          },
+        });
+      }
+
+      if (def.effect.type === "bow_attack") {
+        return noHits({
+          ...state,
+          pending: {
+            kind: "play_bow_attack",
+            cardHandIndex: idx,
+            minDamage: def.effect.minDamage,
+            maxDamage: def.effect.maxDamage,
+            range: def.effect.range,
+          },
+        });
+      }
+
+      if (def.effect.type === "lightning_bolt") {
+        return noHits({
+          ...state,
+          pending: {
+            kind: "play_lightning_bolt",
+            cardHandIndex: idx,
+            nextDamage: def.effect.startDamage,
+            chainRange: def.effect.chainRange,
+            hitIds: [],
+          },
+        });
+      }
+
+      if (def.effect.type === "fireball") {
+        return noHits({
+          ...state,
+          pending: {
+            kind: "play_fireball",
+            cardHandIndex: idx,
+            minDamage: def.effect.minDamage,
+            maxDamage: def.effect.maxDamage,
+            range: def.effect.range,
+            minFire: def.effect.minFire,
+            maxFire: def.effect.maxFire,
+          },
+        });
+      }
+
       return noHits(state);
     }
 
@@ -1612,13 +2022,16 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       let s: GameState = { ...state, player: { ...state.player, hand, discardPile } };
       const name = state.cardDefs.get(cardId)?.name ?? cardId;
       if (cmd.bonus === "move1") {
+        const bonusMoveRange = state.player.hasteThisTurn ? 2 : 1;
         s = log(
           s,
-          isBonus ? `Bonus Card destroyed — bonus move (1 space).` : `Discarded ${name} for a bonus move (1 space).`,
+          isBonus
+            ? `Bonus Card destroyed — bonus move (${bonusMoveRange} space${bonusMoveRange > 1 ? "s" : ""}).`
+            : `Discarded ${name} for a bonus move (${bonusMoveRange} space${bonusMoveRange > 1 ? "s" : ""}).`,
         );
         return noHits({
           ...s,
-          pending: { kind: "discard_move1", maxRange: 1, fromQuickstep: false },
+          pending: { kind: "discard_move1", maxRange: bonusMoveRange, fromQuickstep: false },
         });
       }
       if (cmd.bonus === "punch") {
@@ -1662,7 +2075,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           return noHits(log(s, "The axe's weight cancels your move — card spent, you stay put."));
         }
         const occ = occupiedForPlayerMove(state);
-        const reach = reachableOrthogonal(
+        let reach = reachableOrthogonal(
           state.tiles,
           state.width,
           state.height,
@@ -1671,7 +2084,68 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           occ,
           rockKeySet(state),
         );
+        reach = extendMoveReachForPending(state, reach, from, p);
         if (!reach.has(keyOf(dest))) return noHits(state);
+
+        const mimicHere = state.monsters.find(
+          (m) => m.defId === "mimic" && m.mimicAsleep && m.x === dest.x && m.y === dest.y,
+        );
+        if (mimicHere) {
+          const hand = [...state.player.hand];
+          const cardId = hand[p.cardHandIndex];
+          if (!cardId) return noHits(state);
+          hand.splice(p.cardHandIndex, 1);
+          const discardPile = [...state.player.discardPile, cardId];
+          const raw = rollInt(3, 4);
+          const dmg = incomingDamageToPlayer(state, raw);
+          const hp = Math.max(0, state.player.hp - dmg);
+          const px = state.player.x;
+          const py = state.player.y;
+          if (hp <= 0) {
+            return {
+              state: log(
+                {
+                  ...state,
+                  player: { ...state.player, hand, discardPile, hp: 0 },
+                  phase: "defeat",
+                  pending: null,
+                },
+                "The mimic's bite is fatal.",
+              ),
+              hits: [{ gridX: px, gridY: py, damage: dmg }],
+            };
+          }
+          let s: GameState = {
+            ...state,
+            player: { ...state.player, hand, discardPile, hp },
+            pending: null,
+          };
+          s = awakenMimicOnTile(s, dest.x, dest.y);
+          s = log(s, "The chest strikes — the Mimic wakes!");
+          return {
+            state: s,
+            hits: [{ gridX: px, gridY: py, damage: dmg }],
+          };
+        }
+
+        if (tileAt(state.tiles, dest) === "blocked") {
+          if (state.player.hand.length < 2) {
+            return noHits(log(state, "You need two cards in hand to enter the rubble."));
+          }
+          return noHits({
+            ...state,
+            pending: {
+              kind: "enter_blocked_tile",
+              dest,
+              resume: {
+                kind: "play_move",
+                cardHandIndex: p.cardHandIndex,
+                range: p.range,
+              },
+            },
+          });
+        }
+
         const hand = [...state.player.hand];
         const cardId = hand[p.cardHandIndex];
         if (!cardId) return noHits(state);
@@ -1719,7 +2193,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           );
         }
         const occ = occupiedForPlayerMove(state);
-        const reach = reachableOrthogonal(
+        let reach = reachableOrthogonal(
           state.tiles,
           state.width,
           state.height,
@@ -1728,7 +2202,64 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           occ,
           rockKeySet(state),
         );
+        reach = extendMoveReachForPending(state, reach, from, p);
         if (!reach.has(keyOf(dest))) return noHits(state);
+
+        const mimicHere = state.monsters.find(
+          (m) => m.defId === "mimic" && m.mimicAsleep && m.x === dest.x && m.y === dest.y,
+        );
+        if (mimicHere) {
+          const hand = [...state.player.hand];
+          const cardId = hand[p.cardHandIndex];
+          if (!cardId) return noHits(state);
+          hand.splice(p.cardHandIndex, 1);
+          const discardPile = [...state.player.discardPile, cardId];
+          const raw = rollInt(3, 4);
+          const dmg = incomingDamageToPlayer(state, raw);
+          const hp = Math.max(0, state.player.hp - dmg);
+          const px = state.player.x;
+          const py = state.player.y;
+          if (hp <= 0) {
+            return {
+              state: log(
+                {
+                  ...state,
+                  player: { ...state.player, hand, discardPile, hp: 0 },
+                  phase: "defeat",
+                  pending: null,
+                },
+                "The mimic's bite is fatal.",
+              ),
+              hits: [{ gridX: px, gridY: py, damage: dmg }],
+            };
+          }
+          let s: GameState = {
+            ...state,
+            player: { ...state.player, hand, discardPile, hp },
+            pending: null,
+          };
+          s = awakenMimicOnTile(s, dest.x, dest.y);
+          s = log(s, "The chest strikes — the Mimic wakes!");
+          return {
+            state: s,
+            hits: [{ gridX: px, gridY: py, damage: dmg }],
+          };
+        }
+
+        if (tileAt(state.tiles, dest) === "blocked") {
+          if (state.player.hand.length < 2) {
+            return noHits(log(state, "You need two cards in hand to enter the rubble."));
+          }
+          return noHits({
+            ...state,
+            pending: {
+              kind: "enter_blocked_tile",
+              dest,
+              resume: { kind: "play_card_seeker", cardHandIndex: p.cardHandIndex },
+            },
+          });
+        }
+
         const hand = [...state.player.hand];
         const cardId = hand[p.cardHandIndex];
         if (!cardId) return noHits(state);
@@ -1762,7 +2293,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           );
         }
         const occ = occupiedForPlayerMove(state);
-        const reach = reachableOrthogonal(
+        let reach = reachableOrthogonal(
           state.tiles,
           state.width,
           state.height,
@@ -1771,7 +2302,59 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           occ,
           rockKeySet(state),
         );
+        reach = extendMoveReachForPending(state, reach, from, dm);
         if (!reach.has(keyOf(dest))) return noHits(state);
+
+        const mimicHere = state.monsters.find(
+          (m) => m.defId === "mimic" && m.mimicAsleep && m.x === dest.x && m.y === dest.y,
+        );
+        if (mimicHere) {
+          let s: GameState = {
+            ...state,
+            player: { ...state.player, suppressNextMove: false },
+            pending: null,
+          };
+          const raw = rollInt(3, 4);
+          const dmg = incomingDamageToPlayer(s, raw);
+          const hp = Math.max(0, s.player.hp - dmg);
+          const px = s.player.x;
+          const py = s.player.y;
+          if (hp <= 0) {
+            return {
+              state: log(
+                { ...s, player: { ...s.player, hp: 0 }, phase: "defeat" },
+                "The mimic's bite is fatal.",
+              ),
+              hits: [{ gridX: px, gridY: py, damage: dmg }],
+            };
+          }
+          s = { ...s, player: { ...s.player, hp } };
+          s = awakenMimicOnTile(s, dest.x, dest.y);
+          s = log(s, "The chest strikes — the Mimic wakes!");
+          return {
+            state: s,
+            hits: [{ gridX: px, gridY: py, damage: dmg }],
+          };
+        }
+
+        if (tileAt(state.tiles, dest) === "blocked") {
+          if (state.player.hand.length < 1) {
+            return noHits(log(state, "You need a card to discard to enter the rubble."));
+          }
+          return noHits({
+            ...state,
+            pending: {
+              kind: "enter_blocked_tile",
+              dest,
+              resume: {
+                kind: "discard_move1",
+                maxRange: dm.maxRange,
+                fromQuickstep: dm.fromQuickstep,
+              },
+            },
+          });
+        }
+
         let playerPatch = { ...state.player, x: dest.x, y: dest.y };
         if (dm.fromQuickstep) {
           playerPatch = {
@@ -1810,7 +2393,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         }
         if (state.player.moveTokens <= 0) return noHits(state);
         const occ = occupiedForPlayerMove(state);
-        const reach = reachableOrthogonal(
+        let reach = reachableOrthogonal(
           state.tiles,
           state.width,
           state.height,
@@ -1819,7 +2402,59 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           occ,
           rockKeySet(state),
         );
+        reach = extendMoveReachForPending(state, reach, from, state.pending);
         if (!reach.has(keyOf(dest))) return noHits(state);
+
+        const mimicHere = state.monsters.find(
+          (m) => m.defId === "mimic" && m.mimicAsleep && m.x === dest.x && m.y === dest.y,
+        );
+        if (mimicHere) {
+          const raw = rollInt(3, 4);
+          const dmg = incomingDamageToPlayer(state, raw);
+          const hp = Math.max(0, state.player.hp - dmg);
+          const px = state.player.x;
+          const py = state.player.y;
+          if (hp <= 0) {
+            return {
+              state: log(
+                {
+                  ...state,
+                  player: { ...state.player, hp: 0 },
+                  phase: "defeat",
+                  pending: null,
+                },
+                "The mimic's bite is fatal.",
+              ),
+              hits: [{ gridX: px, gridY: py, damage: dmg }],
+            };
+          }
+          let s: GameState = {
+            ...state,
+            player: { ...state.player, hp, moveTokens: state.player.moveTokens - 1 },
+            pending: null,
+          };
+          s = awakenMimicOnTile(s, dest.x, dest.y);
+          s = log(s, "The chest strikes — the Mimic wakes!");
+          return {
+            state: s,
+            hits: [{ gridX: px, gridY: py, damage: dmg }],
+          };
+        }
+
+        if (tileAt(state.tiles, dest) === "blocked") {
+          if (state.player.hand.length < 1) {
+            return noHits(log(state, "You need a card to discard to enter the rubble."));
+          }
+          return noHits({
+            ...state,
+            pending: {
+              kind: "enter_blocked_tile",
+              dest,
+              resume: { kind: "move_token_step" },
+            },
+          });
+        }
+
         let s: GameState = {
           ...state,
           player: {
@@ -1832,6 +2467,159 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         };
         s = revealAtPlayer(s);
         s = log(s, "Move token — stepped 1 space.");
+        s = resolvePlayerEnterTile(s, dest.x, dest.y);
+        return noHits(s);
+      }
+
+      if (state.pending.kind === "play_fireball") {
+        const p = state.pending;
+        const P = { x: state.player.x, y: state.player.y };
+        if (chebyshev(P, dest) > p.range) return noHits(log(state, "Target is out of fireball range."));
+        if (!lineOfSightClear(state.tiles, P, dest))
+          return noHits(log(state, "No line of sight to target tile."));
+        if (tileAt(state.tiles, dest) !== "floor")
+          return noHits(log(state, "Cannot target a wall."));
+
+        const hand = [...state.player.hand];
+        const cardId = hand[p.cardHandIndex];
+        if (!cardId) return noHits(state);
+        hand.splice(p.cardHandIndex, 1);
+        const discardPile = [...state.player.discardPile, cardId];
+
+        const hits: HitVisual[] = [];
+        let s: GameState = { ...state, player: { ...state.player, hand, discardPile }, pending: null };
+        const dmg = magicAttackRollRaw(s, cardId, p.minDamage, p.maxDamage);
+        const fireLvls = rollInt(p.minFire, p.maxFire);
+
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            const tx = dest.x + dx;
+            const ty = dest.y + dy;
+            if (tileAt(s.tiles, { x: tx, y: ty }) !== "floor") continue;
+            // Break any pot in this blast cell
+            if (s.pots.some((pot) => pot.x === tx && pot.y === ty)) {
+              s = breakPotFromAttack(s, tx, ty);
+            }
+            const monstersHere = s.monsters.filter((m) => m.hp > 0 && m.x === tx && m.y === ty);
+            for (const target of monstersHere) {
+              const defM = s.monsterDefs.get(target.defId);
+              const finalDmg = applyDefense(dmg, monsterDefenseForIncoming(target, defM));
+              const hp = Math.max(0, target.hp - finalDmg);
+              s = { ...s, monsters: patchMonsterHp(s.monsters, target.id, hp) };
+              s = { ...s, monsters: applyFireToMonster(s.monsters, target.id, fireLvls) };
+              hits.push({ gridX: tx, gridY: ty, damage: finalDmg });
+              if (hp <= 0) {
+                s = log(s, `${defM?.name ?? "Enemy"} consumed by fire!`);
+                s = applyMonsterKillRewards(s, target.defId);
+              }
+            }
+          }
+        }
+        s = log(s, `Fireball! ${dmg} damage in a 3×3 blast, ${fireLvls} Fire level(s) inflicted.`);
+        return withHits(s, hits);
+      }
+
+      return noHits(state);
+    }
+
+    case "CONFIRM_ENTER_BLOCKED": {
+      if (state.phase !== "player") return noHits(state);
+      const pb = state.pending;
+      if (!pb || pb.kind !== "enter_blocked_tile") return noHits(state);
+      const extraIdx = cmd.handIndex;
+      const dest = pb.dest;
+      const resume = pb.resume;
+      if (!state.player.hand[extraIdx]) return noHits(state);
+
+      if (resume.kind === "play_move" || resume.kind === "play_card_seeker") {
+        if (extraIdx === resume.cardHandIndex) {
+          return noHits(log(state, "Pick a different card for the extra cost."));
+        }
+        const { nextHand, removed } = removeHandIndices(state.player.hand, [
+          resume.cardHandIndex,
+          extraIdx,
+        ]);
+        if (removed.length !== 2) return noHits(state);
+        const discardPile = [...state.player.discardPile, ...removed];
+        if (resume.kind === "play_move") {
+          let s: GameState = {
+            ...state,
+            player: {
+              ...state.player,
+              hand: nextHand,
+              discardPile,
+              x: dest.x,
+              y: dest.y,
+              movementCardsPlayedThisTurn: state.player.movementCardsPlayedThisTurn + 1,
+            },
+            pending: null,
+          };
+          s = revealAtPlayer(s);
+          s = log(s, "You force a path through the rubble.");
+          s = resolvePlayerEnterTile(s, dest.x, dest.y);
+          return noHits(s);
+        }
+        let s: GameState = {
+          ...state,
+          player: {
+            ...state.player,
+            hand: nextHand,
+            discardPile,
+            x: dest.x,
+            y: dest.y,
+          },
+          pending: null,
+        };
+        s = revealAtPlayer(s);
+        s = log(s, "You squeeze through the rubble.");
+        s = resolvePlayerEnterTile(s, dest.x, dest.y);
+        s = spawnGroundCardLootInDiscovered(s, 2);
+        return noHits(s);
+      }
+
+      if (resume.kind === "discard_move1") {
+        const { nextHand, removed } = removeHandIndices(state.player.hand, [extraIdx]);
+        if (removed.length !== 1) return noHits(state);
+        const discardPile = [...state.player.discardPile, ...removed];
+        let playerPatch = {
+          ...state.player,
+          hand: nextHand,
+          discardPile,
+          x: dest.x,
+          y: dest.y,
+        };
+        if (resume.fromQuickstep) {
+          playerPatch = {
+            ...playerPatch,
+            movementCardsPlayedThisTurn: state.player.movementCardsPlayedThisTurn + 1,
+          };
+        }
+        let s: GameState = { ...state, player: playerPatch, pending: null };
+        s = revealAtPlayer(s);
+        s = log(s, "You climb through the rubble.");
+        s = resolvePlayerEnterTile(s, dest.x, dest.y);
+        return noHits(s);
+      }
+
+      if (resume.kind === "move_token_step") {
+        if (state.player.moveTokens <= 0) return noHits(state);
+        const { nextHand, removed } = removeHandIndices(state.player.hand, [extraIdx]);
+        if (removed.length !== 1) return noHits(state);
+        const discardPile = [...state.player.discardPile, ...removed];
+        let s: GameState = {
+          ...state,
+          player: {
+            ...state.player,
+            hand: nextHand,
+            discardPile,
+            x: dest.x,
+            y: dest.y,
+            moveTokens: state.player.moveTokens - 1,
+          },
+          pending: null,
+        };
+        s = revealAtPlayer(s);
+        s = log(s, "You burn a move token and a card to cross the rubble.");
         s = resolvePlayerEnterTile(s, dest.x, dest.y);
         return noHits(s);
       }
@@ -1859,7 +2647,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         const defVal = monsterDefenseForIncoming(mon, def);
         const dmg = applyDefense(raw, defVal);
         const hp = Math.max(0, mon.hp - dmg);
-        const monsters = state.monsters.map((m) => (m.id === mon.id ? { ...m, hp } : m));
+        const monsters = patchMonsterHp(state.monsters, mon.id, hp);
         let s = log(
           { ...state, player: { ...state.player, hand, discardPile }, monsters, pending: null },
           `You strike for ${dmg} damage.`,
@@ -1905,7 +2693,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const mdef = s.monsterDefs.get(target.defId);
           const dmg = applyDefense(raw, monsterDefenseForIncoming(target, mdef));
           const hp = Math.max(0, target.hp - dmg);
-          s = { ...s, monsters: s.monsters.map((m) => (m.id === target.id ? { ...m, hp } : m)) };
+          s = { ...s, monsters: patchMonsterHp(s.monsters, target.id, hp) };
           hits.push({ gridX: target.x, gridY: target.y, damage: dmg });
           if (hp <= 0) {
             s = log(s, `${mdef?.name ?? "Enemy"} defeated.`);
@@ -1943,7 +2731,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         const defM = state.monsterDefs.get(mon.defId);
         const dmg = applyDefense(raw, monsterDefenseForIncoming(mon, defM));
         const hp = Math.max(0, mon.hp - dmg);
-        const monsters = state.monsters.map((m) => (m.id === mon.id ? { ...m, hp } : m));
+        const monsters = patchMonsterHp(state.monsters, mon.id, hp);
         let s = log(
           { ...state, player: { ...state.player, hand, discardPile }, monsters, pending: null },
           `Knife for ${dmg} damage.`,
@@ -1975,7 +2763,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         const defM = state.monsterDefs.get(mon.defId);
         const dmg = applyDefense(raw, monsterDefenseForIncoming(mon, defM));
         const hp = Math.max(0, mon.hp - dmg);
-        const monsters = state.monsters.map((m) => (m.id === mon.id ? { ...m, hp } : m));
+        const monsters = patchMonsterHp(state.monsters, mon.id, hp);
         let s = log(
           {
             ...state,
@@ -2015,7 +2803,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         const dmg = magicAttackRollRaw(state, cardId, p.minDamage, p.maxDamage);
         const defM = state.monsterDefs.get(mon.defId);
         const hp = Math.max(0, mon.hp - dmg);
-        const monsters = state.monsters.map((m) => (m.id === mon.id ? { ...m, hp } : m));
+        const monsters = patchMonsterHp(state.monsters, mon.id, hp);
         let s = log(
           {
             ...state,
@@ -2046,7 +2834,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const raw = rollInt(1, 2) + attackStrengthBonus(s) + heavyPunchBonus(s);
           const dmg = applyDefense(raw, defVal);
           const hp = Math.max(0, cur.hp - dmg);
-          s = { ...s, monsters: s.monsters.map((m) => (m.id === mon.id ? { ...m, hp } : m)) };
+          s = { ...s, monsters: patchMonsterHp(s.monsters, mon.id, hp) };
           hits.push({ gridX: cur.x, gridY: cur.y, damage: dmg });
           dmgParts.push(dmg);
           if (hp <= 0) {
@@ -2071,6 +2859,126 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           if (live) s = tryKnockMonsterFromPlayer(s, live);
         }
         return withHits(s, hits);
+      }
+
+      if (state.pending.kind === "play_knockback_punch") {
+        const p = state.pending;
+        const P = { x: state.player.x, y: state.player.y };
+        if (manhattan(P, mon) !== 1) return noHits(state);
+        const hand = [...state.player.hand];
+        const cardId = hand[p.cardHandIndex];
+        if (!cardId) return noHits(state);
+        hand.splice(p.cardHandIndex, 1);
+        const discardPile = [...state.player.discardPile, cardId];
+        const raw = weaponAttackRollRaw(state, cardId, p.minDamage, p.maxDamage);
+        const defM = state.monsterDefs.get(mon.defId);
+        const dmg = applyDefense(raw, monsterDefenseForIncoming(mon, defM));
+        const hp = Math.max(0, mon.hp - dmg);
+        let s: GameState = {
+          ...state,
+          player: { ...state.player, hand, discardPile },
+          monsters: patchMonsterHp(state.monsters, mon.id, hp),
+          pending: null,
+        };
+        s = log(s, `Knockback Punch — ${dmg} damage.`);
+        if (hp <= 0) {
+          s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
+          s = applyMonsterKillRewards(s, mon.defId);
+        } else {
+          s = tryKnockMonsterFromPlayerN(s, mon.id, p.knockback);
+        }
+        return withHits(s, [{ gridX: mon.x, gridY: mon.y, damage: dmg }]);
+      }
+
+      if (state.pending.kind === "play_bow_attack") {
+        const p = state.pending;
+        const P = { x: state.player.x, y: state.player.y };
+        if (manhattan(P, mon) <= 1) return noHits(log(state, "The bow cannot hit targets right next to you."));
+        if (chebyshev(P, { x: mon.x, y: mon.y }) > p.range)
+          return noHits(log(state, "Target is out of bow range."));
+        if (!lineOfSightClear(state.tiles, P, { x: mon.x, y: mon.y }))
+          return noHits(log(state, "No line of sight to target."));
+        const hand = [...state.player.hand];
+        const cardId = hand[p.cardHandIndex];
+        if (!cardId) return noHits(state);
+        hand.splice(p.cardHandIndex, 1);
+        const discardPile = [...state.player.discardPile, cardId];
+        const raw = weaponAttackRollRaw(state, cardId, p.minDamage, p.maxDamage);
+        const defM = state.monsterDefs.get(mon.defId);
+        const dmg = applyDefense(raw, monsterDefenseForIncoming(mon, defM));
+        const hp = Math.max(0, mon.hp - dmg);
+        let s: GameState = {
+          ...state,
+          player: { ...state.player, hand, discardPile },
+          monsters: patchMonsterHp(state.monsters, mon.id, hp),
+          pending: null,
+        };
+        s = log(s, `Bow shot — ${dmg} damage.`);
+        if (hp <= 0) {
+          s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
+          s = applyMonsterKillRewards(s, mon.defId);
+        }
+        return withHits(s, [{ gridX: mon.x, gridY: mon.y, damage: dmg }]);
+      }
+
+      if (state.pending.kind === "play_lightning_bolt") {
+        const p = state.pending;
+        const P = { x: state.player.x, y: state.player.y };
+        // range for the current hop always equals nextDamage (5→4→3→2→1)
+        const rangeForThisHop = p.nextDamage;
+        const lastHit =
+          p.hitIds.length === 0
+            ? P
+            : (() => {
+                const prev = state.monsters.find((m) => m.id === p.hitIds[p.hitIds.length - 1]);
+                return prev ? { x: prev.x, y: prev.y } : P;
+              })();
+        if (p.hitIds.includes(mon.id)) return noHits(log(state, "Lightning cannot hit the same target twice."));
+        if (chebyshev(lastHit, { x: mon.x, y: mon.y }) > rangeForThisHop)
+          return noHits(log(state, "Target is out of chain range."));
+        const defM = state.monsterDefs.get(mon.defId);
+        const dmg = Math.max(0, applyDefense(p.nextDamage, 0)); // lightning ignores defense
+        const hp = Math.max(0, mon.hp - dmg);
+        const newHitIds = [...p.hitIds, mon.id];
+        let s: GameState = {
+          ...state,
+          monsters: patchMonsterHp(state.monsters, mon.id, hp),
+        };
+        s = log(s, `Lightning Bolt — ${dmg} damage to ${defM?.name ?? "enemy"}!`);
+        if (hp <= 0) {
+          s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
+          s = applyMonsterKillRewards(s, mon.defId);
+        }
+        const nextDamage = p.nextDamage - 1;
+        if (nextDamage <= 0) {
+          const hand = [...s.player.hand];
+          const cardId = hand[p.cardHandIndex];
+          if (cardId) {
+            hand.splice(p.cardHandIndex, 1);
+            s = { ...s, player: { ...s.player, hand, discardPile: [...s.player.discardPile, cardId] }, pending: null };
+          }
+          s = log(s, "Lightning chain ends.");
+        } else {
+          const curMon = s.monsters.find((m) => m.id === mon.id && m.hp > 0);
+          const chainOrigin = curMon ? { x: curMon.x, y: curMon.y } : { x: mon.x, y: mon.y };
+          // next hop range equals next hop damage
+          const hasNextTarget = s.monsters.some(
+            (m) => m.hp > 0 && !newHitIds.includes(m.id) && chebyshev(chainOrigin, { x: m.x, y: m.y }) <= nextDamage,
+          );
+          if (!hasNextTarget) {
+            const hand = [...s.player.hand];
+            const cardId = hand[p.cardHandIndex];
+            if (cardId) {
+              hand.splice(p.cardHandIndex, 1);
+              s = { ...s, player: { ...s.player, hand, discardPile: [...s.player.discardPile, cardId] }, pending: null };
+            }
+            s = log(s, "No targets in range — lightning chain ends.");
+          } else {
+            s = { ...s, pending: { kind: "play_lightning_bolt", cardHandIndex: p.cardHandIndex, nextDamage, chainRange: p.chainRange, hitIds: newHitIds } };
+            s = log(s, `Lightning chains — choose next target within ${nextDamage} for ${nextDamage} damage.`);
+          }
+        }
+        return withHits(s, [{ gridX: mon.x, gridY: mon.y, damage: dmg }]);
       }
 
       return noHits(state);
@@ -2270,10 +3178,14 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       let s = discardHand(state);
       s = ensureEquippedOnDeckTop(s);
       let dungeonHits: HitVisual[] = [];
+      const collapsed = applyPendingCollapse(s);
+      s = collapsed.state;
+      dungeonHits = [...dungeonHits, ...collapsed.hits];
+      if (s.phase === "defeat") return { state: s, hits: dungeonHits };
       if (!s.gauntletCommenced) {
         const drawn = drawDungeonTop(s);
         s = drawn.state;
-        dungeonHits = drawn.hits;
+        dungeonHits = [...dungeonHits, ...drawn.hits];
       }
       if (s.phase === "defeat") return { state: s, hits: dungeonHits };
       const { state: afterMon, hits: monHits } = runMonsterPhase(s);

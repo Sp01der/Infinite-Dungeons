@@ -110,5 +110,69 @@
     "description": "Draw 3 cards.",
     "types": ["Deck"],
     "effect": { "type": "draw", "amount": 3 }
+  },
+  {
+    "id": "dash",
+    "name": "Dash",
+    "rarity": "Rare",
+    "description": "Move up to 4 spaces (orthogonal).",
+    "types": ["Move"],
+    "effect": { "type": "move", "range": 4 }
+  },
+  {
+    "id": "knockback_punch",
+    "name": "Knockback Punch",
+    "rarity": "Uncommon",
+    "description": "Deal 3–4 damage to an adjacent enemy (counts as a punch). Knock the target back 2 spaces.",
+    "types": ["Attack"],
+    "effect": { "type": "knockback_punch", "minDamage": 3, "maxDamage": 4, "knockback": 2 }
+  },
+  {
+    "id": "bow",
+    "name": "Bow",
+    "rarity": "Common",
+    "description": "Deal 3–4 damage to a target within 8 spaces. Requires line of sight. Cannot hit adjacent targets.",
+    "types": ["Attack"],
+    "effect": { "type": "bow_attack", "minDamage": 3, "maxDamage": 4, "range": 8 }
+  },
+  {
+    "id": "lightning_bolt",
+    "name": "Lightning Bolt",
+    "rarity": "Legendary",
+    "description": "Hit a target within 5 spaces for 5 damage, then chain to new targets within 4 spaces for 4, 3, 2, 1 damage. Cannot hit the same target twice.",
+    "types": ["Magic", "Attack"],
+    "effect": { "type": "lightning_bolt", "startDamage": 5, "startRange": 5, "chainRange": 4 }
+  },
+  {
+    "id": "haste",
+    "name": "Haste",
+    "rarity": "Rare",
+    "description": "For this turn, all movement is doubled (2→4, 1→2). You cannot play Attack, Protection, Aid, or Deck cards for the rest of this turn.",
+    "types": ["Skill"],
+    "effect": { "type": "haste" }
+  },
+  {
+    "id": "stealthy_advance",
+    "name": "Stealthy Advance",
+    "rarity": "Uncommon",
+    "description": "Move 1 space. -1 Noise. +1 defense this turn.",
+    "types": ["Aid"],
+    "effect": { "type": "stealthy_advance", "move": 1, "noiseReduction": 1, "defenseBonus": 1 }
+  },
+  {
+    "id": "fireball",
+    "name": "Fireball",
+    "rarity": "Uncommon",
+    "description": "Choose a square within 8 spaces (line of sight). Deal 4–6 damage in a 3×3 blast and inflict 1–2 Fire levels on everything hit.",
+    "types": ["Magic", "Attack"],
+    "effect": { "type": "fireball", "minDamage": 4, "maxDamage": 6, "range": 8, "minFire": 1, "maxFire": 2 }
+  },
+  {
+    "id": "shield",
+    "name": "Shield",
+    "rarity": "Common",
+    "description": "Gain +5 defense for this turn.",
+    "types": ["Protection"],
+    "effect": { "type": "parry", "defenseBonus": 5 }
   }
 ]

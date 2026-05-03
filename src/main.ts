@@ -383,13 +383,17 @@ function cellClick(x: number, y: number): void {
     return;
   }
   if (s.phase !== "player" || !s.pending) return;
+  if (s.pending.kind === "enter_blocked_tile") return;
   const monsterTargeting =
     s.pending.kind === "play_melee" ||
     s.pending.kind === "discard_punch" ||
     s.pending.kind === "play_spear" ||
     s.pending.kind === "play_knife" ||
     s.pending.kind === "play_axe" ||
-    s.pending.kind === "play_magic_missile";
+    s.pending.kind === "play_magic_missile" ||
+    s.pending.kind === "play_knockback_punch" ||
+    s.pending.kind === "play_bow_attack" ||
+    s.pending.kind === "play_lightning_bolt";
   if (monsterTargeting) {
     const mon = s.monsters.find((m) => m.hp > 0 && m.x === x && m.y === y);
     if (mon) {
@@ -517,7 +521,16 @@ function runCommandLine(raw: string): string {
     return `Placed ${state.dungeonCardDefs.get(cardId)?.name ?? cardId} on top.`;
   }
 
-  return "Unknown command. Try Set, Card, or Dungeon.";
+  if (verb === "floor") {
+    if (args.length < 1) return "Usage: Floor [floor number]";
+    const depth = parseCommandNumber(args[0]!);
+    if (depth === null) return "Floor command needs a whole number.";
+    if (depth < 1) return "Floor number must be at least 1.";
+    apply({ type: "DEV_GOTO_FLOOR", depth });
+    return `Jumped to floor ${depth}.`;
+  }
+
+  return "Unknown command. Try Set, Card, Dungeon, or Floor.";
 }
 
 function openPileInspector(which: "deck" | "discard"): void {
@@ -846,7 +859,8 @@ function renderAll(): void {
     ? state.cardDefs.get(state.player.equipped)?.name ?? state.player.equipped
     : "—";
 
-  btnEnd.disabled = state.phase !== "player" || choiceModalBlocksPlay(state);
+  btnEnd.disabled =
+    state.phase !== "player" || choiceModalBlocksPlay(state) || !!state.pending;
   cancelBtn.style.display = state.pending ? "inline-block" : "none";
   unequipBtn.disabled = !state.player.equipped || choiceModalBlocksPlay(state);
   inspectDeckBtn.disabled = choiceModalBlocksPlay(state);
@@ -908,8 +922,21 @@ function renderAll(): void {
   } else if (state.pending?.kind === "play_magic_missile") {
     hintEl.textContent =
       "Click an enemy in a straight or diagonal line from you (queen move). Magic Missile ignores defense.";
+  } else if (state.pending?.kind === "play_knockback_punch") {
+    hintEl.textContent = "Click an adjacent enemy to punch — knocks them back 2 spaces.";
+  } else if (state.pending?.kind === "play_bow_attack") {
+    hintEl.textContent = `Click a highlighted enemy within ${state.pending.range} spaces (line of sight; cannot target adjacent).`;
+  } else if (state.pending?.kind === "play_lightning_bolt") {
+    const p = state.pending;
+    const hop = p.hitIds.length + 1;
+    hintEl.textContent = `Lightning chain (hit ${hop}) — click a highlighted enemy within ${p.nextDamage} spaces for ${p.nextDamage} damage.`;
+  } else if (state.pending?.kind === "play_fireball") {
+    hintEl.textContent = `Click a highlighted tile within ${state.pending.range} spaces (line of sight) as the blast center.`;
   } else if (state.pending?.kind === "play_card_seeker") {
     hintEl.textContent = "Click a highlighted tile to move 1 space — 2 random cards drop as ground loot.";
+  } else if (state.pending?.kind === "enter_blocked_tile") {
+    hintEl.textContent =
+      "Choose a hand card to discard as extra cost to enter the rubble (cannot be the same card as your move, when applicable).";
   } else {
     hintEl.textContent =
       state.phase === "defeat"
@@ -959,7 +986,17 @@ function renderAll(): void {
     const actions = document.createElement("div");
     actions.className = "card-actions";
 
-    const disabled = state.phase !== "player" || !!state.pending || choiceModalBlocksPlay(state);
+    const enterBlocked = state.pending?.kind === "enter_blocked_tile";
+    const resume =
+      state.pending?.kind === "enter_blocked_tile" ? state.pending.resume : null;
+    const forbidIdx =
+      resume?.kind === "play_move" || resume?.kind === "play_card_seeker"
+        ? resume.cardHandIndex
+        : -1;
+    const disabled =
+      state.phase !== "player" ||
+      (!!state.pending && !enterBlocked) ||
+      choiceModalBlocksPlay(state);
     const isBonus = def?.effect.type === "bonus_chit";
 
     const mkBtn = (label: string, cls: string, onClick: () => void, extraDisabled?: boolean) => {
@@ -973,26 +1010,36 @@ function renderAll(): void {
     };
 
     actions.appendChild(
-      mkBtn("Play", "primary", () => apply({ type: "REQUEST_PLAY_CARD", handIndex: idx }), isBonus),
+      mkBtn(
+        enterBlocked ? "Pay rubble cost" : "Play",
+        "primary",
+        () =>
+          enterBlocked
+            ? apply({ type: "CONFIRM_ENTER_BLOCKED", handIndex: idx })
+            : apply({ type: "REQUEST_PLAY_CARD", handIndex: idx }),
+        isBonus || (enterBlocked && idx === forbidIdx),
+      ),
     );
 
     const discardRow = document.createElement("div");
     discardRow.className = "discard-row";
-    discardRow.appendChild(
-      mkBtn("Move +1", "", () =>
-        apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "move1" }),
-      ),
-    );
-    discardRow.appendChild(
-      mkBtn("Punch", "", () =>
-        apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "punch" }),
-      ),
-    );
-    discardRow.appendChild(
-      mkBtn("Scout", "", () =>
-        apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "investigate" }),
-      ),
-    );
+    if (!enterBlocked) {
+      discardRow.appendChild(
+        mkBtn("Move +1", "", () =>
+          apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "move1" }),
+        ),
+      );
+      discardRow.appendChild(
+        mkBtn("Punch", "", () =>
+          apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "punch" }),
+        ),
+      );
+      discardRow.appendChild(
+        mkBtn("Scout", "", () =>
+          apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "investigate" }),
+        ),
+      );
+    }
 
     actions.appendChild(discardRow);
     actions.appendChild(
@@ -1000,7 +1047,7 @@ function renderAll(): void {
         "Equip",
         "",
         () => apply({ type: "REQUEST_EQUIP", handIndex: idx }),
-        !!state.player.equipped || isBonus,
+        !!state.player.equipped || isBonus || enterBlocked,
       ),
     );
 

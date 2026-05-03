@@ -19,6 +19,13 @@ import { buildFreshDungeonDeck } from "./dungeonDeck";
 import { loadCardDefs, loadDungeonCardDefs, loadMonsterDefs } from "./loadContent";
 import { createMonsterInstance } from "./monsterSpawn";
 
+const ORTHO_NEIGHBORS: Point[] = [
+  { x: 1, y: 0 },
+  { x: -1, y: 0 },
+  { x: 0, y: 1 },
+  { x: 0, y: -1 },
+];
+
 function shuffleInPlace<T>(xs: T[]): void {
   for (let i = xs.length - 1; i > 0; i--) {
     const j = Math.floor(Math.random() * (i + 1));
@@ -140,24 +147,37 @@ export function pickWeightedDefId(
   return candidates[candidates.length - 1]!;
 }
 
-export function pickMonsterId(kind: RoomKind, monsterDefs: Map<string, MonsterDef>): string {
+export function pickMonsterId(
+  kind: RoomKind,
+  monsterDefs: Map<string, MonsterDef>,
+  floorDepth: number,
+): string {
+  if (floorDepth >= 4 && (kind === "normal" || kind === "treasure") && Math.random() < 0.035) {
+    return "mimic";
+  }
   switch (kind) {
     case "entrance":
       return "slime";
-    case "corridor":
-      return pickWeightedDefId(["slime", "dune_rat"], monsterDefs);
-    case "normal":
-      return pickWeightedDefId(
-        ["slime", "dune_rat", "skeleton", "mystic_core", "rockling"],
-        monsterDefs,
-      );
-    case "treasure":
-      return pickWeightedDefId(
-        ["skeleton", "mystic_core", "rockling", "slime", "dune_rat"],
-        monsterDefs,
-      );
-    case "gauntlet":
-      return pickWeightedDefId(["skeleton", "mystic_core", "slime", "dune_rat", "rockling"], monsterDefs);
+    case "corridor": {
+      const pool =
+        floorDepth >= 2 ? (["slime", "dune_rat", "skeleton_archer"] as const) : (["slime", "dune_rat"] as const);
+      return pickWeightedDefId([...pool], monsterDefs);
+    }
+    case "normal": {
+      const pool = ["slime", "dune_rat", "skeleton", "mystic_core", "rockling"];
+      if (floorDepth >= 2) pool.push("skeleton_archer");
+      return pickWeightedDefId(pool, monsterDefs);
+    }
+    case "treasure": {
+      const pool = ["skeleton", "mystic_core", "rockling", "slime", "dune_rat"];
+      if (floorDepth >= 2) pool.push("skeleton_archer");
+      return pickWeightedDefId(pool, monsterDefs);
+    }
+    case "gauntlet": {
+      const pool = ["skeleton", "mystic_core", "slime", "dune_rat", "rockling"];
+      if (floorDepth >= 2) pool.push("skeleton_archer");
+      return pickWeightedDefId(pool, monsterDefs);
+    }
     default:
       return "slime";
   }
@@ -172,6 +192,7 @@ function placePropsByRoom(
   playerStart: Point,
   monsterDefs: Map<string, MonsterDef>,
   dangerLevel: number,
+  floorDepth: number,
 ): { monsters: MonsterInstance[]; pots: PotInstance[]; chests: ChestInstance[] } {
   const cellsByRoom = new Map<number, Point[]>();
   for (let y = 0; y < height; y++) {
@@ -208,6 +229,7 @@ function placePropsByRoom(
         createMonsterInstance(`monster_${mi++}`, defId, p.x, p.y, monsterDefs, dangerLevel),
       );
     };
+    const pickId = (k: RoomKind) => pickMonsterId(k, monsterDefs, floorDepth);
 
     switch (kind) {
       case "entrance": {
@@ -220,7 +242,7 @@ function placePropsByRoom(
         for (const p of take(nPot)) pots.push({ id: `pot_${pi++}`, x: p.x, y: p.y });
         if (cells.length - idx > 0 && Math.random() < 0.38) {
           const [p] = take(1);
-          if (p) pushMonster(p, pickMonsterId("corridor", monsterDefs));
+          if (p) pushMonster(p, pickId("corridor"));
         }
         break;
       }
@@ -233,7 +255,7 @@ function placePropsByRoom(
         const nMon = Math.random() < 0.68 ? 1 : 2;
         for (let k = 0; k < nMon; k++) {
           const [p] = take(1);
-          if (p) pushMonster(p, pickMonsterId("normal", monsterDefs));
+          if (p) pushMonster(p, pickId("normal"));
         }
         break;
       }
@@ -243,7 +265,7 @@ function placePropsByRoom(
         const nMon = Math.random() < 0.65 ? 1 : 2;
         for (let k = 0; k < nMon; k++) {
           const [p] = take(1);
-          if (p) pushMonster(p, pickMonsterId("treasure", monsterDefs));
+          if (p) pushMonster(p, pickId("treasure"));
         }
         break;
       }
@@ -282,6 +304,43 @@ function placePropsByRoom(
         const p = free[0]!;
         chests.push({ id: `chest_${ci++}`, x: p.x, y: p.y, tier: 1 });
         occ.add(keyOf(p));
+      }
+    }
+  }
+
+  if (floorDepth >= 4 && Math.random() < 0.04) {
+    const pairId = `douvlon_${mi}_${Math.floor(Math.random() * 1e9)}`;
+    outer: for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (tiles[y][x] !== "floor") continue;
+        const rid = roomIds[y][x];
+        if (rid < 0) continue;
+        const rk = roomKinds[rid];
+        if (rk === "gauntlet" || rk === "gauntlet_corridor") continue;
+        for (const o of ORTHO_NEIGHBORS) {
+          const x2 = x + o.x;
+          const y2 = y + o.y;
+          if (x2 < 0 || y2 < 0 || x2 >= width || y2 >= height) continue;
+          if (tiles[y2][x2] !== "floor") continue;
+          const k1 = keyOf({ x, y });
+          const k2 = keyOf({ x: x2, y: y2 });
+          if (occ.has(k1) || occ.has(k2)) continue;
+          monsters.push(
+            createMonsterInstance(`monster_${mi++}`, "douvlon", x, y, monsterDefs, dangerLevel, {
+              douvlonColor: "red",
+              douvlonPairId: pairId,
+            }),
+          );
+          monsters.push(
+            createMonsterInstance(`monster_${mi++}`, "douvlon", x2, y2, monsterDefs, dangerLevel, {
+              douvlonColor: "blue",
+              douvlonPairId: pairId,
+            }),
+          );
+          occ.add(k1);
+          occ.add(k2);
+          break outer;
+        }
       }
     }
   }
@@ -408,6 +467,7 @@ export function createInitialState(floorDef: FloorDef): GameState {
     playerStart,
     monsterDefs,
     1,
+    1,
   );
   const cardDefs = loadCardDefs();
   const groundLoot = spawnGroundLoot(
@@ -455,6 +515,8 @@ export function createInitialState(floorDef: FloorDef): GameState {
       knockbackPrimed: false,
       movementCardsPlayedThisTurn: 0,
       scoutUsesThisTurn: 0,
+      hasteThisTurn: false,
+      fireLevels: 0,
     },
     depth: 1,
     danger: 1,
@@ -483,6 +545,9 @@ export function createInitialState(floorDef: FloorDef): GameState {
     stabilityBuffActive: false,
     scoutBlockedThisTurn: false,
     dungeonCardReveal: null,
+    pendingCollapse: null,
+    pendingTargetedCollapse: null,
+    lightsOutTurns: 0,
     log: [
       "Welcome to the dungeon.",
       `${monsters.length} monster(s), ${pots.length} pot(s), ${chests.length} chest(s), ${groundLoot.length} ground loot spot(s).`,
@@ -506,6 +571,7 @@ export function createInitialStateGenerated(gen: GeneratedFloor): GameState {
     playerStart,
     monsterDefs,
     gen.spawnDanger,
+    1,
   );
   const cardDefs = loadCardDefs();
   const groundLoot = spawnGroundLoot(
@@ -553,6 +619,8 @@ export function createInitialStateGenerated(gen: GeneratedFloor): GameState {
       knockbackPrimed: false,
       movementCardsPlayedThisTurn: 0,
       scoutUsesThisTurn: 0,
+      hasteThisTurn: false,
+      fireLevels: 0,
     },
     depth: 1,
     danger: 1,
@@ -581,6 +649,9 @@ export function createInitialStateGenerated(gen: GeneratedFloor): GameState {
     stabilityBuffActive: false,
     scoutBlockedThisTurn: false,
     dungeonCardReveal: null,
+    pendingCollapse: null,
+    pendingTargetedCollapse: null,
+    lightsOutTurns: 0,
     log: [
       "Welcome to the dungeon.",
       `${monsters.length} monster(s), ${pots.length} pot(s), ${chests.length} chest(s), ${groundLoot.length} ground loot spot(s).`,
@@ -606,6 +677,7 @@ export function createNextFloorState(prev: GameState, gen: GeneratedFloor): Game
     playerStart,
     monsterDefs,
     danger,
+    depth,
   );
   const cardDefs = prev.cardDefs;
   let groundLoot = spawnGroundLoot(
@@ -660,6 +732,8 @@ export function createNextFloorState(prev: GameState, gen: GeneratedFloor): Game
       knockbackPrimed: false,
       movementCardsPlayedThisTurn: 0,
       scoutUsesThisTurn: 0,
+      hasteThisTurn: false,
+      fireLevels: 0,
     },
     depth,
     danger,
@@ -688,6 +762,9 @@ export function createNextFloorState(prev: GameState, gen: GeneratedFloor): Game
     stabilityBuffActive: false,
     scoutBlockedThisTurn: false,
     dungeonCardReveal: null,
+    pendingCollapse: null,
+    pendingTargetedCollapse: null,
+    lightsOutTurns: 0,
     log: prev.log.slice(-50),
     turn: prev.turn + 1,
   };

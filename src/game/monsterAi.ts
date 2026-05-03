@@ -1,6 +1,8 @@
 import { applyDefense, monsterDamageBonus, rollInt } from "../engine/combat";
 import { keyOf, magicMissilePathClearToPlayer, tileAt } from "../engine/grid";
 import { manhattan } from "../engine/movement";
+import { cullMonstersWithDouvlonPairs, setMonsterHpWithDouvlonSync } from "./douvlon";
+import { addExp } from "./progression";
 import { incomingDamageToPlayer } from "./skillsRuntime";
 import type { GameState, HitVisual, MonsterInstance, Point, SkeletonWeapon } from "./types";
 
@@ -123,6 +125,41 @@ function best8Away(s: GameState, m: MonsterInstance, occ: Set<string>): Point | 
   return best;
 }
 
+function queenRange(a: Point, b: Point): number {
+  return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
+}
+
+function playerOnOpenSegmentBetween(red: Point, blue: Point, p: Point): boolean {
+  if (red.x === blue.x && red.x === p.x) {
+    const lo = Math.min(red.y, blue.y);
+    const hi = Math.max(red.y, blue.y);
+    return p.y > lo && p.y < hi;
+  }
+  if (red.y === blue.y && red.y === p.y) {
+    const lo = Math.min(red.x, blue.x);
+    const hi = Math.max(red.x, blue.x);
+    return p.x > lo && p.x < hi;
+  }
+  const drx = blue.x - red.x;
+  const dry = blue.y - red.y;
+  if (drx === 0 || dry === 0) return false;
+  if (Math.abs(drx) !== Math.abs(dry)) return false;
+  const dpx = p.x - red.x;
+  const dpy = p.y - red.y;
+  if (dpx === 0 && dpy === 0) return false;
+  if (Math.sign(drx) !== Math.sign(dpx) || Math.sign(dry) !== Math.sign(dpy)) return false;
+  if (Math.abs(dpx) !== Math.abs(dpy)) return false;
+  const tr = Math.abs(drx);
+  const tp = Math.abs(dpx);
+  return tp > 0 && tp < tr;
+}
+
+function monsterKillRewards(state: GameState, defId: string): GameState {
+  const power = state.monsterDefs.get(defId)?.power ?? 3;
+  const withGold = { ...state, player: { ...state.player, gold: state.player.gold + 2 } };
+  return addExp(withGold, power);
+}
+
 function best8Align(s: GameState, m: MonsterInstance, occ: Set<string>): Point | null {
   const px = s.player.x;
   const py = s.player.y;
@@ -242,11 +279,18 @@ function applySlimeLeap(
     const dmg = applyDefense(dmgRaw, defVal);
     const nh = Math.max(0, victimMon.hp - dmg);
     hits.push({ gridX: target.x, gridY: target.y, damage: dmg });
-    let monsters = next.monsters.map((x) => (x.id === victimMon.id ? { ...x, hp: nh } : x));
+    let monsters = setMonsterHpWithDouvlonSync(next.monsters, victimMon.id, nh);
     if (nh <= 0) {
-      monsters = monsters.filter((x) => x.id !== victimMon.id);
-      next = appendLog({ ...next, monsters }, `${defV?.name ?? "Monster"} defeated.`);
+      if (victimMon.defId === "douvlon" && victimMon.douvlonPairId) {
+        monsters = cullMonstersWithDouvlonPairs(monsters);
+        next = appendLog({ ...next, monsters }, `${defV?.name ?? "Douvlon"} pair defeated.`);
+        next = monsterKillRewards(next, victimMon.defId);
+      } else {
+        monsters = monsters.filter((x) => x.hp > 0);
+        next = appendLog({ ...next, monsters }, `${defV?.name ?? "Monster"} defeated.`);
+      }
     } else {
+      monsters = cullMonstersWithDouvlonPairs(monsters);
       next = { ...next, monsters };
       const kx = target.x + dx;
       const ky = target.y + dy;
@@ -461,6 +505,178 @@ function takeDustRatTurn(
   return { state: next, dead: false };
 }
 
+function takeSkeletonArcherTurn(
+  s: GameState,
+  m: MonsterInstance,
+  hooks: MonsterPhaseHooks,
+  hits: HitVisual[],
+): { state: GameState; dead: boolean } {
+  const bonus = monsterDamageBonus(m.level);
+  const name = s.monsterDefs.get(m.defId)?.name ?? "Skeleton Archer";
+  const P: Point = { x: s.player.x, y: s.player.y };
+  let next = s;
+  let cur = m;
+
+  if (manhattan({ x: cur.x, y: cur.y }, P) === 1) {
+    const occ = movementOcc(next, cur.id);
+    const away = bestOrthoAway(next, cur, occ);
+    if (away) {
+      next = moveMonsterTo(next, cur, away, hooks);
+      cur = next.monsters.find((x) => x.id === m.id)!;
+    }
+    return { state: next, dead: false };
+  }
+
+  const mp: Point = { x: cur.x, y: cur.y };
+  if (
+    manhattan(mp, P) <= 6 &&
+    magicMissilePathClearToPlayer(next.tiles, next.monsters, mp, P, cur.id)
+  ) {
+    if (cur.bowLoaded) {
+      const raw = rollInt(2, 4) + bonus;
+      const d = damagePlayer(next, raw, name, hits);
+      if (d.dead) return d;
+      next = d.state;
+      next = {
+        ...next,
+        monsters: next.monsters.map((x) =>
+          x.id === m.id ? { ...x, bowLoaded: false } : x,
+        ),
+      };
+    } else {
+      next = {
+        ...next,
+        monsters: next.monsters.map((x) =>
+          x.id === m.id ? { ...x, bowLoaded: true } : x,
+        ),
+      };
+      next = appendLog(next, `${name} loads the bow.`);
+    }
+    return { state: next, dead: false };
+  }
+
+  let moveBudget = 2;
+  while (moveBudget > 0) {
+    cur = next.monsters.find((x) => x.id === m.id)!;
+    const occ = movementOcc(next, cur.id);
+    const toward = bestOrthoToward(next, cur, occ);
+    if (!toward) break;
+    next = moveMonsterTo(next, cur, toward, hooks);
+    moveBudget -= 1;
+  }
+  return { state: next, dead: false };
+}
+
+function takeMimicTurn(
+  s: GameState,
+  m: MonsterInstance,
+  hooks: MonsterPhaseHooks,
+  hits: HitVisual[],
+): { state: GameState; dead: boolean } {
+  if (m.mimicAsleep) return { state: s, dead: false };
+  const name = s.monsterDefs.get(m.defId)?.name ?? "Mimic";
+  const P = { x: s.player.x, y: s.player.y };
+  let next = s;
+  let cur: MonsterInstance | undefined = m;
+  const order = Math.random() < 0.5 ? (["move", "attack"] as const) : (["attack", "move"] as const);
+  for (const phase of order) {
+    cur = next.monsters.find((x) => x.id === m.id && x.hp > 0);
+    if (!cur) return { state: next, dead: false };
+    if (phase === "attack") {
+      if (chebyshev({ x: cur.x, y: cur.y }, P) <= 1) {
+        const raw = rollInt(3, 4) + monsterDamageBonus(cur.level);
+        const d = damagePlayer(next, raw, name, hits);
+        if (d.dead) return d;
+        next = d.state;
+      }
+    } else {
+      for (let i = 0; i < 2; i++) {
+        cur = next.monsters.find((x) => x.id === m.id && x.hp > 0);
+        if (!cur) return { state: next, dead: false };
+        const occ = movementOcc(next, cur.id);
+        const step = bestOrthoToward(next, cur, occ);
+        if (!step) break;
+        next = moveMonsterTo(next, cur, step, hooks);
+      }
+    }
+  }
+  return { state: next, dead: false };
+}
+
+function takeDouvlonPairTurn(
+  s: GameState,
+  pairId: string,
+  hooks: MonsterPhaseHooks,
+  hits: HitVisual[],
+): { state: GameState; dead: boolean } {
+  let red = s.monsters.find(
+    (m) => m.douvlonPairId === pairId && m.douvlonColor === "red" && m.hp > 0,
+  );
+  let blue = s.monsters.find(
+    (m) => m.douvlonPairId === pairId && m.douvlonColor === "blue" && m.hp > 0,
+  );
+  if (!red || !blue) return { state: s, dead: false };
+  let next = s;
+
+  {
+    const occ = movementOcc(next, red.id);
+    const step = best8Toward(next, red, occ);
+    if (step) next = moveMonsterTo(next, red, step, hooks);
+    red = next.monsters.find((m) => m.id === red!.id && m.hp > 0);
+    if (red) {
+      const P = { x: next.player.x, y: next.player.y };
+      if (chebyshev({ x: red.x, y: red.y }, P) <= 1) {
+        const raw = rollInt(2, 5) + monsterDamageBonus(red.level);
+        const nm = next.monsterDefs.get(red.defId)?.name ?? "Douvlon";
+        const d = damagePlayer(next, raw, nm, hits);
+        if (d.dead) return d;
+        next = d.state;
+      }
+    }
+  }
+
+  blue = next.monsters.find(
+    (m) => m.douvlonPairId === pairId && m.douvlonColor === "blue" && m.hp > 0,
+  );
+  red = next.monsters.find(
+    (m) => m.douvlonPairId === pairId && m.douvlonColor === "red" && m.hp > 0,
+  );
+  if (!blue || !red) return { state: next, dead: false };
+
+  const P = { x: next.player.x, y: next.player.y };
+  if (chebyshev({ x: blue.x, y: blue.y }, P) <= 1) {
+    const occ = movementOcc(next, blue.id);
+    const away = best8Away(next, blue, occ);
+    if (away) next = moveMonsterTo(next, blue, away, hooks);
+  } else {
+    for (let i = 0; i < 2; i++) {
+      blue = next.monsters.find((m) => m.id === blue!.id && m.hp > 0);
+      if (!blue) return { state: next, dead: false };
+      const occ = movementOcc(next, blue.id);
+      const step = best8Align(next, blue, occ) ?? best8Toward(next, blue, occ);
+      if (!step) break;
+      next = moveMonsterTo(next, blue, step, hooks);
+    }
+  }
+
+  red = next.monsters.find(
+    (m) => m.douvlonPairId === pairId && m.douvlonColor === "red" && m.hp > 0,
+  );
+  blue = next.monsters.find(
+    (m) => m.douvlonPairId === pairId && m.douvlonColor === "blue" && m.hp > 0,
+  );
+  if (red && blue) {
+    const rp = { x: red.x, y: red.y };
+    const bp = { x: blue.x, y: blue.y };
+    if (playerOnOpenSegmentBetween(rp, bp, P)) {
+      const d = damagePlayer(next, 5, next.monsterDefs.get(blue.defId)?.name ?? "Douvlon", hits);
+      if (d.dead) return d;
+      next = appendLog(d.state, "The Douvlons' line sears you!");
+    }
+  }
+  return { state: next, dead: false };
+}
+
 export function runMonsterPhaseWithHooks(
   state: GameState,
   hooks: MonsterPhaseHooks,
@@ -468,11 +684,22 @@ export function runMonsterPhaseWithHooks(
   let s = state;
   const hits: HitVisual[] = [];
   const playerPos: Point = { x: s.player.x, y: s.player.y };
+  const processedDouvlonPairs = new Set<string>();
 
   for (const m of s.monsters) {
     if (m.hp <= 0 || !m.active) continue;
     let curMon = s.monsters.find((x) => x.id === m.id && x.hp > 0);
     if (!curMon) continue;
+
+    if (curMon.defId === "douvlon" && curMon.douvlonPairId) {
+      const pid = curMon.douvlonPairId;
+      if (processedDouvlonPairs.has(pid)) continue;
+      processedDouvlonPairs.add(pid);
+      const r = takeDouvlonPairTurn(s, pid, hooks, hits);
+      s = r.state;
+      if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      continue;
+    }
 
     if (curMon.defId === "slime") {
       const lt = curMon.leapTarget;
@@ -506,6 +733,20 @@ export function runMonsterPhaseWithHooks(
       continue;
     }
 
+    if (curMon.defId === "skeleton_archer") {
+      const r = takeSkeletonArcherTurn(s, curMon, hooks, hits);
+      s = r.state;
+      if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      continue;
+    }
+
+    if (curMon.defId === "mimic") {
+      const r = takeMimicTurn(s, curMon, hooks, hits);
+      s = r.state;
+      if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      continue;
+    }
+
     if (curMon.defId === "mystic_core") {
       const r = takeMysticTurn(s, curMon, hits);
       s = r.state;
@@ -524,24 +765,6 @@ export function runMonsterPhaseWithHooks(
       if (manhattan({ x: curMon.x, y: curMon.y }, playerPos) === 1) {
         const raw = rollInt(3, 4) + monsterDamageBonus(curMon.level);
         const nm = s.monsterDefs.get(curMon.defId)?.name ?? "Rockling";
-        const d = damagePlayer(s, raw, nm, hits);
-        if (d.dead) return { state: { ...d.state, phase: "defeat" }, hits };
-        s = d.state;
-      } else {
-        const occ = movementOcc(s, curMon.id);
-        const step = bestOrthoToward(s, curMon, occ);
-        if (step) s = moveMonsterTo(s, curMon, step, hooks);
-      }
-      continue;
-    }
-
-    if (curMon.defId === "cave_bat") {
-      const def = s.monsterDefs.get(curMon.defId);
-      const bonus = monsterDamageBonus(curMon.level);
-      const baseD = def?.damage ?? 1;
-      if (manhattan({ x: curMon.x, y: curMon.y }, playerPos) === 1) {
-        const raw = rollInt(baseD, baseD) + bonus;
-        const nm = def?.name ?? "Cave Bat";
         const d = damagePlayer(s, raw, nm, hits);
         if (d.dead) return { state: { ...d.state, phase: "defeat" }, hits };
         s = d.state;

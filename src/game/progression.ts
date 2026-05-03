@@ -1,6 +1,8 @@
 import type { GameState } from "./types";
 
+/** XP needed to advance from `level` to `level + 1`. From level 5 onward, requirements scale faster. */
 export function expToNextLevel(level: number): number {
+  if (level >= 5) return level * 10 + 5;
   return level * 5 + 5;
 }
 

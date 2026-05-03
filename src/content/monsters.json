@@ -30,14 +30,34 @@
     "description": "Rattling bones armed with a random weapon."
   },
   {
-    "id": "cave_bat",
-    "name": "Cave Bat",
-    "spriteId": "enemy_bat",
-    "hp": 3,
+    "id": "skeleton_archer",
+    "name": "Skeleton Archer",
+    "spriteId": "enemy_skeleton_archer",
+    "hp": 6,
     "defense": 0,
-    "damage": 1,
-    "power": 2,
-    "description": "Darts in for a nip."
+    "damage": 3,
+    "power": 5,
+    "description": "Keeps distance with a bow — loads, then fires in straight lines."
+  },
+  {
+    "id": "mimic",
+    "name": "Mimic",
+    "spriteId": "enemy_mimic",
+    "hp": 4,
+    "defense": 0,
+    "damage": 4,
+    "power": 3,
+    "description": "Disguised as a chest until disturbed."
+  },
+  {
+    "id": "douvlon",
+    "name": "Douvlon",
+    "spriteId": "enemy_douvlon",
+    "hp": 7,
+    "defense": 0,
+    "damage": 3,
+    "power": 7,
+    "description": "A paired threat — red and blue share one life; the line between them cuts deep."
   },
   {
     "id": "mystic_core",

@@ -8,8 +8,12 @@ import {
   Texture,
   Ticker,
 } from "pixi.js";
-import { keyOf, magicMissilePathClear, magicMissilePathClearToPoint } from "../engine/grid";
-import { reachableOrthogonal } from "../engine/movement";
+import { chebyshev, keyOf, lineOfSightClear, magicMissilePathClear, magicMissilePathClearToPoint } from "../engine/grid";
+import {
+  extendReachableWithBlockedDestinations,
+  manhattan,
+  reachableOrthogonal,
+} from "../engine/movement";
 import type { GameState, HitVisual, PendingIntent, SkeletonWeapon } from "../game/types";
 import type { SpriteStyle } from "./assets";
 
@@ -40,6 +44,9 @@ export class GridView extends Container {
   private fogLayer = new Container();
   private entityLayer = new Container();
   private highlightLayer = new Container();
+  private collapseMarkerLayer = new Container();
+  private douvlonLineLayer = new Graphics();
+  private darknessLayer = new Container();
   private fxLayer = new Container();
   private styles: Map<string, SpriteStyle>;
   private onCellClick: (x: number, y: number) => void;
@@ -69,8 +76,11 @@ export class GridView extends Container {
     this.lootLayer.zIndex = 5;
     this.fogLayer.zIndex = 6;
     this.entityLayer.zIndex = 7;
-    this.highlightLayer.zIndex = 8;
-    this.fxLayer.zIndex = 9;
+    this.collapseMarkerLayer.zIndex = 6;
+    this.douvlonLineLayer.zIndex = 7;
+    this.darknessLayer.zIndex = 8;
+    this.highlightLayer.zIndex = 9;
+    this.fxLayer.zIndex = 10;
     this.addChild(this.floorLayer);
     this.addChild(this.wallRimLayer);
     this.addChild(this.gridLines);
@@ -79,7 +89,10 @@ export class GridView extends Container {
     this.addChild(this.lootLayer);
     this.addChild(this.fogLayer);
     this.addChild(this.entityLayer);
+    this.addChild(this.collapseMarkerLayer);
+    this.addChild(this.douvlonLineLayer);
     this.addChild(this.highlightLayer);
+    this.addChild(this.darknessLayer);
     this.addChild(this.fxLayer);
     this.eventMode = "static";
     this.cursor = "grab";
@@ -242,6 +255,9 @@ export class GridView extends Container {
     this.lootLayer.removeChildren();
     this.fogLayer.removeChildren();
     this.entityLayer.removeChildren();
+    this.collapseMarkerLayer.removeChildren();
+    this.douvlonLineLayer.clear();
+    this.darknessLayer.removeChildren();
     this.highlightLayer.removeChildren();
     this.gridLines.clear();
 
@@ -257,6 +273,15 @@ export class GridView extends Container {
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const kind = state.tiles[y][x];
+        if (kind === "blocked") {
+          const g = new Graphics();
+          g.rect(x * TILE, y * TILE, TILE, TILE).fill({ color: 0x3a3040, alpha: 1 });
+          this.floorLayer.addChild(g);
+          this.gridLines
+            .rect(x * TILE, y * TILE, TILE, TILE)
+            .stroke({ width: 1, color: 0x000000, alpha: 0.28 });
+          continue;
+        }
         const rid = state.roomIds[y]?.[x] ?? -1;
         const rkind = rid >= 0 ? state.roomKinds[rid] : undefined;
         const id =
@@ -341,6 +366,24 @@ export class GridView extends Container {
       }
     }
 
+    const markCollapseTile = (cx: number, cy: number) => {
+      const pad = TILE * 0.18;
+      const x0 = cx * TILE + pad;
+      const y0 = cy * TILE + pad;
+      const x1 = (cx + 1) * TILE - pad;
+      const y1 = (cy + 1) * TILE - pad;
+      const g = new Graphics();
+      g.moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 3, color: 0xff6600, alpha: 0.92 });
+      g.moveTo(x1, y0).lineTo(x0, y1).stroke({ width: 3, color: 0xff6600, alpha: 0.92 });
+      this.collapseMarkerLayer.addChild(g);
+    };
+    if (state.pendingCollapse?.tiles) {
+      for (const t of state.pendingCollapse.tiles) markCollapseTile(t.x, t.y);
+    }
+    if (state.pendingTargetedCollapse) {
+      for (const t of state.pendingTargetedCollapse) markCollapseTile(t.x, t.y);
+    }
+
     const inset = Math.round(4 * (TILE / 40));
 
     for (const pot of state.pots) {
@@ -411,15 +454,23 @@ export class GridView extends Container {
       this.makeEntityLabel("You", state.player.x * TILE, state.player.y * TILE, 0xffffff),
     );
 
+    const douvlonPairs = new Map<string, { red?: { x: number; y: number }; blue?: { x: number; y: number } }>();
     for (const m of state.monsters) {
       if (m.hp <= 0) continue;
       if (state.fogOfWar && !state.discovered.has(keyOf(m))) continue;
       const def = state.monsterDefs.get(m.defId);
-      const spr = this.makeSprite(def?.spriteId ?? "enemy_slime");
+      const mimicChest = m.defId === "mimic" && m.mimicAsleep;
+      const spr = this.makeSprite(
+        mimicChest ? "chest" : def?.spriteId ?? "enemy_slime",
+      );
       spr.x = m.x * TILE + inset / 2;
       spr.y = m.y * TILE + inset / 2;
       spr.width = TILE - inset;
       spr.height = TILE - inset;
+      if (m.defId === "douvlon") {
+        const tint = m.douvlonColor === "blue" ? 0x5dade2 : 0xe74c3c;
+        spr.tint = tint;
+      }
       this.entityLayer.addChild(spr);
       if (m.defId === "slime" && m.leapTarget != null) {
         const r = Math.max(3, Math.round(TILE * 0.11));
@@ -429,7 +480,7 @@ export class GridView extends Container {
         dot.circle(cx, cy, r).fill({ color: 0xe74c3c, alpha: 0.95 });
         this.entityLayer.addChild(dot);
       }
-      if (m.defId === "skeleton" && m.skeletonWeapon) {
+      if ((m.defId === "skeleton" || m.defId === "skeleton_archer") && m.skeletonWeapon) {
         const badge = this.makeSkeletonWeaponIcon(m.skeletonWeapon);
         const badgeScale = Math.max(0.78, TILE / 48);
         badge.scale.set(badgeScale);
@@ -437,10 +488,62 @@ export class GridView extends Container {
         badge.y = m.y * TILE + 1;
         this.entityLayer.addChild(badge);
       }
-      const label = def?.name ?? "?";
-      this.entityLayer.addChild(
-        this.makeEntityLabel(`${label} ${m.hp}hp`, m.x * TILE, m.y * TILE, 0xf5e6ff),
-      );
+      if (!mimicChest) {
+        const label = def?.name ?? "?";
+        this.entityLayer.addChild(
+          this.makeEntityLabel(`${label} ${m.hp}hp`, m.x * TILE, m.y * TILE, 0xf5e6ff),
+        );
+      }
+      if (m.defId === "douvlon" && m.douvlonPairId) {
+        const slot = douvlonPairs.get(m.douvlonPairId) ?? {};
+        if (m.douvlonColor === "red") slot.red = { x: m.x, y: m.y };
+        if (m.douvlonColor === "blue") slot.blue = { x: m.x, y: m.y };
+        douvlonPairs.set(m.douvlonPairId, slot);
+      }
+    }
+
+    for (const [, pair] of douvlonPairs) {
+      if (!pair.red || !pair.blue) continue;
+      const x0 = (pair.red.x + 0.5) * TILE;
+      const y0 = (pair.red.y + 0.5) * TILE;
+      const x1 = (pair.blue.x + 0.5) * TILE;
+      const y1 = (pair.blue.y + 0.5) * TILE;
+      this.douvlonLineLayer.moveTo(x0, y0).lineTo(x1, y1).stroke({
+        width: 3.5,
+        color: 0x9b59b6,
+        alpha: 0.92,
+        cap: "round",
+      });
+    }
+
+    this.darknessLayer.eventMode = "none";
+    if (state.lightsOutTurns > 0) {
+      const px = state.player.x;
+      const py = state.player.y;
+      const entityHintAt = (gx: number, gy: number): boolean => {
+        if (state.monsters.some((m) => m.hp > 0 && m.x === gx && m.y === gy)) return true;
+        if (state.pots.some((p) => p.x === gx && p.y === gy)) return true;
+        if (state.chests.some((c) => c.x === gx && c.y === gy)) return true;
+        if (state.groundLoot.some((l) => l.x === gx && l.y === gy)) return true;
+        return false;
+      };
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          const ch = Math.max(Math.abs(x - px), Math.abs(y - py));
+          if (ch <= 1) continue;
+          const dim = new Graphics();
+          dim.rect(x * TILE, y * TILE, TILE, TILE).fill({ color: 0x000000, alpha: 1 });
+          this.darknessLayer.addChild(dim);
+          if (manhattan({ x, y }, { x: px, y: py }) === 2 && entityHintAt(x, y)) {
+            const dot = new Graphics();
+            const cx = x * TILE + TILE * 0.22;
+            const cy = y * TILE + TILE * 0.22;
+            const r = Math.max(2, Math.round(TILE * 0.09));
+            dot.circle(cx, cy, r).fill({ color: 0x3498db, alpha: 0.95 });
+            this.darknessLayer.addChild(dot);
+          }
+        }
+      }
     }
 
     if (state.stairFeatures) {
@@ -607,7 +710,7 @@ export class GridView extends Container {
     }
     const rockKeys = new Set(state.rocks.map((r) => keyOf(r)));
     if (pending.kind === "play_move") {
-      return reachableOrthogonal(
+      const base = reachableOrthogonal(
         state.tiles,
         state.width,
         state.height,
@@ -616,9 +719,19 @@ export class GridView extends Container {
         occ,
         rockKeys,
       );
+      const needExtra = state.player.hand.length >= 2;
+      return extendReachableWithBlockedDestinations(
+        base,
+        from,
+        state.tiles,
+        state.width,
+        state.height,
+        needExtra,
+        occ,
+      );
     }
     if (pending.kind === "discard_move1") {
-      return reachableOrthogonal(
+      const base = reachableOrthogonal(
         state.tiles,
         state.width,
         state.height,
@@ -627,9 +740,32 @@ export class GridView extends Container {
         occ,
         rockKeys,
       );
+      const needExtra = state.player.hand.length >= 1;
+      return extendReachableWithBlockedDestinations(
+        base,
+        from,
+        state.tiles,
+        state.width,
+        state.height,
+        needExtra,
+        occ,
+      );
     }
     if (pending.kind === "play_card_seeker" || pending.kind === "move_token_step") {
-      return reachableOrthogonal(state.tiles, state.width, state.height, from, 1, occ, rockKeys);
+      const base = reachableOrthogonal(state.tiles, state.width, state.height, from, 1, occ, rockKeys);
+      const needExtra =
+        pending.kind === "play_card_seeker"
+          ? state.player.hand.length >= 2
+          : state.player.hand.length >= 1;
+      return extendReachableWithBlockedDestinations(
+        base,
+        from,
+        state.tiles,
+        state.width,
+        state.height,
+        needExtra,
+        occ,
+      );
     }
     if (
       pending.kind === "play_melee" ||
@@ -693,6 +829,61 @@ export class GridView extends Container {
       }
       return cells;
     }
+
+    if (pending.kind === "play_knockback_punch") {
+      const adj = new Set<string>();
+      for (const o of [{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }]) {
+        const t = { x: from.x + o.x, y: from.y + o.y };
+        if (t.x >= 0 && t.y >= 0 && t.x < state.width && t.y < state.height) adj.add(keyOf(t));
+      }
+      return adj;
+    }
+
+    if (pending.kind === "play_bow_attack") {
+      const cells = new Set<string>();
+      for (const m of state.monsters) {
+        if (m.hp <= 0) continue;
+        if (state.fogOfWar && !state.discovered.has(keyOf(m))) continue;
+        if (manhattan(from, m) <= 1) continue;
+        if (chebyshev(from, m) > pending.range) continue;
+        if (lineOfSightClear(state.tiles, from, { x: m.x, y: m.y })) cells.add(keyOf(m));
+      }
+      return cells;
+    }
+
+    if (pending.kind === "play_lightning_bolt") {
+      const cells = new Set<string>();
+      // range for current hop always equals nextDamage (5→4→3→2→1)
+      const origin =
+        pending.hitIds.length === 0
+          ? from
+          : (() => {
+              const lastMon = state.monsters.find((m) => m.id === pending.hitIds[pending.hitIds.length - 1]);
+              return lastMon ? { x: lastMon.x, y: lastMon.y } : from;
+            })();
+      for (const m of state.monsters) {
+        if (m.hp <= 0) continue;
+        if (state.fogOfWar && !state.discovered.has(keyOf(m))) continue;
+        if (pending.hitIds.includes(m.id)) continue;
+        if (chebyshev(origin, { x: m.x, y: m.y }) <= pending.nextDamage) cells.add(keyOf(m));
+      }
+      return cells;
+    }
+
+    if (pending.kind === "play_fireball") {
+      const cells = new Set<string>();
+      for (let y = 0; y < state.height; y++) {
+        for (let x = 0; x < state.width; x++) {
+          const t = { x, y };
+          if (chebyshev(from, t) > pending.range) continue;
+          if (!lineOfSightClear(state.tiles, from, t)) continue;
+          if (state.fogOfWar && !state.discovered.has(keyOf(t))) continue;
+          cells.add(keyOf(t));
+        }
+      }
+      return cells;
+    }
+
     return new Set();
   }
 

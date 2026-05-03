@@ -101,3 +101,29 @@ export function reachableOrthogonal(
   }
   return reachable;
 }
+
+/** Adds ortho-adjacent `blocked` tiles when the player can pay an extra discard to enter. */
+export function extendReachableWithBlockedDestinations(
+  baseReach: Set<string>,
+  from: Point,
+  tiles: TileKind[][],
+  width: number,
+  height: number,
+  canEnterBlocked: boolean,
+  occupied: Set<string>,
+): Set<string> {
+  if (!canEnterBlocked) return baseReach;
+  const out = new Set(baseReach);
+  const tryAdd = (np: Point): void => {
+    if (!inBounds(np, width, height)) return;
+    if (tileAt(tiles, np) !== "blocked") return;
+    if (occupied.has(keyOf(np))) return;
+    out.add(keyOf(np));
+  };
+  for (const k of baseReach) {
+    const [sx, sy] = k.split(",").map(Number) as [number, number];
+    for (const o of ORTHO) tryAdd({ x: sx + o.x, y: sy + o.y });
+  }
+  for (const o of ORTHO) tryAdd({ x: from.x + o.x, y: from.y + o.y });
+  return out;
+}

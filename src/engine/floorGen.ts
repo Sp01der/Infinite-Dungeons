@@ -515,13 +515,15 @@ export function countCorridorRegions(f: GeneratedFloor): number {
 function normalChamberCountTarget(depth: number, rng: () => number): number {
   if (depth <= 1) return rollInt(rng, 6, 7);
   if (depth === 2) return 7;
-  return rollInt(rng, 7, 8);
+  if (depth === 3) return rollInt(rng, 7, 8);
+  return rollInt(rng, 8, 9);
 }
 
 function corridorCountTarget(depth: number): { lo: number; hi: number } {
   if (depth <= 1) return { lo: 6, hi: 7 };
   if (depth === 2) return { lo: 7, hi: 7 };
-  return { lo: 7, hi: 8 };
+  if (depth === 3) return { lo: 7, hi: 8 };
+  return { lo: 8, hi: 9 };
 }
 
 export function generateFloor(opts?: { seed?: number; depth?: number }): GeneratedFloor {
@@ -644,7 +646,7 @@ export function generateFloor(opts?: { seed?: number; depth?: number }): Generat
       playerStart: { x: px, y: py },
       roomIds: roomIdsOut,
       roomKinds,
-      spawnDanger: 1,
+      spawnDanger: depth,
     };
 
     const err = verifyGeneratedFloor(floor);

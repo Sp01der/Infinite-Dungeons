@@ -20,25 +20,19 @@ function themeCardsFor(theme: string): string[] {
 /** Card id multiset for the dungeon deck at a given depth and floor theme. */
 export function expandRecipe(depth: number, theme: string): string[] {
   const d: string[] = [];
-  const stillN = 6 + Math.max(0, depth - 1) * 2;
-  for (let i = 0; i < stillN; i++) d.push("dungeon_still");
-  const noisyN = 2 + Math.max(0, depth - 1);
-  for (let i = 0; i < noisyN; i++) d.push("noisy_adventurer");
-  d.push("dungeon_knows_here");
-  const trapN = 1 + Math.max(0, depth - 1);
-  for (let i = 0; i < trapN; i++) d.push("dungeon_trap");
-  const rocksN = 2 + Math.max(0, depth - 1);
-  for (let i = 0; i < rocksN; i++) d.push("falling_rocks");
-  d.push("monsters_from_deep");
-  if (depth >= 2) {
-    d.push("monsters_from_deep", "dungeon_knows_here", "dungeon_trap", "falling_rocks");
-  }
-  if (depth >= 3) {
-    d.push("monsters_from_deep", "noisy_adventurer", "stability");
-  }
-  d.push("stability");
+  for (let i = 0; i < 6; i++) d.push("dungeon_still");
+  for (let i = 0; i < 2; i++) d.push("noisy_adventurer");
+  d.push("dungeon_knows_here", "dungeon_trap");
+  for (let i = 0; i < 2; i++) d.push("falling_rocks");
+  d.push("monsters_from_deep", "stability");
   d.push(...themeCardsFor(theme));
-  if (depth >= 2) d.push(...themeCardsFor(theme));
+  if (depth >= 3) {
+    d.push("dungeon_still", "falling_rocks", "collapse", "lights_out");
+  }
+  if (depth >= 4) {
+    d.push("stability", "monsters_from_deep", "targeted_collapse");
+    d.push(...themeCardsFor(theme));
+  }
   d.push(DUNGEON_DEADLIER_ID);
   return d;
 }

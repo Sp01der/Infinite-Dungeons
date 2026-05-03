@@ -52,5 +52,23 @@
     "name": "The Dust Settles",
     "description": "You cannot scout this turn.",
     "effect": { "type": "dust_settles" }
+  },
+  {
+    "id": "collapse",
+    "name": "Collapse",
+    "description": "A random room is marked — it collapses at the end of your next turn.",
+    "effect": { "type": "collapse" }
+  },
+  {
+    "id": "lights_out",
+    "name": "Lights Out",
+    "description": "Darkness falls for several turns.",
+    "effect": { "type": "lights_out" }
+  },
+  {
+    "id": "targeted_collapse",
+    "name": "Targeted Collapse",
+    "description": "The squares around you are marked — they collapse at the end of your next turn.",
+    "effect": { "type": "targeted_collapse" }
   }
 ]

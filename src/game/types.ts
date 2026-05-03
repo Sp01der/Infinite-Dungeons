@@ -1,6 +1,6 @@
 export type Phase = "player" | "dungeon_resolve" | "monsters" | "defeat" | "peace";
 
-export type TileKind = "floor" | "wall";
+export type TileKind = "floor" | "wall" | "blocked";
 
 export interface Point {
   x: number;
@@ -26,7 +26,13 @@ export interface CardDef {
     | { type: "parry"; defenseBonus: number }
     | { type: "flurry" }
     | { type: "magic_missile"; minDamage: number; maxDamage: number }
-    | { type: "card_seeker"; move: number };
+    | { type: "card_seeker"; move: number }
+    | { type: "knockback_punch"; minDamage: number; maxDamage: number; knockback: number }
+    | { type: "bow_attack"; minDamage: number; maxDamage: number; range: number }
+    | { type: "lightning_bolt"; startDamage: number; startRange: number; chainRange: number }
+    | { type: "haste" }
+    | { type: "stealthy_advance"; move: number; noiseReduction: number; defenseBonus: number }
+    | { type: "fireball"; minDamage: number; maxDamage: number; range: number; minFire: number; maxFire: number };
 }
 
 export type CardType =
@@ -73,7 +79,10 @@ export type DungeonCardEffect =
   /** Next dungeon draw (except Deadlier) has a 50% chance to do nothing. */
   | { type: "stability" }
   /** This floor theme (basic): cannot investigate/scout until next player turn. */
-  | { type: "dust_settles" };
+  | { type: "dust_settles" }
+  | { type: "collapse" }
+  | { type: "lights_out" }
+  | { type: "targeted_collapse" };
 
 export interface DungeonCardDef {
   id: string;
@@ -105,6 +114,12 @@ export interface MonsterInstance {
   /** Slime only: null = not preparing; Point = leaps here next turn. */
   leapTarget?: Point | null;
   skeletonWeapon?: SkeletonWeapon;
+  bowLoaded?: boolean;
+  mimicAsleep?: boolean;
+  douvlonColor?: "red" | "blue";
+  douvlonPairId?: string;
+  /** Stacked Fire levels; decremented each turn after the monster acts, dealing 20% max HP damage. */
+  fireLevels?: number;
 }
 
 export interface PotInstance {
@@ -151,6 +166,12 @@ export interface GroundLootInstance {
   cardId?: string;
 }
 
+export type EnterBlockedResume =
+  | { kind: "play_move"; cardHandIndex: number; range: number }
+  | { kind: "discard_move1"; maxRange: number; fromQuickstep: boolean }
+  | { kind: "play_card_seeker"; cardHandIndex: number }
+  | { kind: "move_token_step" };
+
 export type PendingIntent =
   | { kind: "play_move"; cardHandIndex: number; range: number }
   | { kind: "play_melee"; cardHandIndex: number; minDamage: number; maxDamage: number }
@@ -161,7 +182,18 @@ export type PendingIntent =
   | { kind: "discard_punch" }
   | { kind: "play_magic_missile"; cardHandIndex: number; minDamage: number; maxDamage: number }
   | { kind: "play_card_seeker"; cardHandIndex: number }
-  | { kind: "move_token_step" };
+  | { kind: "move_token_step" }
+  | { kind: "enter_blocked_tile"; dest: Point; resume: EnterBlockedResume }
+  | { kind: "play_knockback_punch"; cardHandIndex: number; minDamage: number; maxDamage: number; knockback: number }
+  | { kind: "play_bow_attack"; cardHandIndex: number; minDamage: number; maxDamage: number; range: number }
+  | {
+      kind: "play_lightning_bolt";
+      cardHandIndex: number;
+      nextDamage: number;
+      chainRange: number;
+      hitIds: string[];
+    }
+  | { kind: "play_fireball"; cardHandIndex: number; minDamage: number; maxDamage: number; range: number; minFire: number; maxFire: number };
 
 export interface StairFeaturePositions {
   pedestal: Point;
@@ -212,6 +244,10 @@ export interface GameState {
     knockbackPrimed: boolean;
     movementCardsPlayedThisTurn: number;
     scoutUsesThisTurn: number;
+    /** Haste card: all movement this turn moves twice as far; Attack/Protection/Aid/Deck cards are blocked. */
+    hasteThisTurn: boolean;
+    /** Fire levels on the player (for future use). */
+    fireLevels: number;
   };
   /** 1-based floor index; dungeon card formulas use this. */
   depth: number;
@@ -256,6 +292,12 @@ export interface GameState {
   scoutBlockedThisTurn: boolean;
   /** Shown at top when a dungeon card resolves; cleared next player turn start or dismiss. */
   dungeonCardReveal: null | { title: string; summary: string };
+  /** Room tiles marked for collapse — applied at end of your next turn. */
+  pendingCollapse: null | { tiles: Point[] };
+  /** Player cell + ortho neighbors marked for collapse — applied at end of your next turn. */
+  pendingTargetedCollapse: Point[] | null;
+  /** While > 0, Lights Out darkness is active; decremented when you end your turn. */
+  lightsOutTurns: number;
   log: string[];
   turn: number;
 }
@@ -278,11 +320,13 @@ export type GameCommand =
     }
   | { type: "DEV_CARD"; cardId: string; action: "add" | "remove" }
   | { type: "DEV_DUNGEON_TOP"; cardId: string }
+  | { type: "DEV_GOTO_FLOOR"; depth: number }
   | { type: "REQUEST_PLAY_CARD"; handIndex: number }
   | { type: "REQUEST_DISCARD_BONUS"; handIndex: number; bonus: "move1" | "punch" | "investigate" }
   | { type: "REQUEST_EQUIP"; handIndex: number }
   | { type: "UNEQUIP" }
   | { type: "CONFIRM_TARGET_TILE"; x: number; y: number }
+  | { type: "CONFIRM_ENTER_BLOCKED"; handIndex: number }
   | { type: "CONFIRM_TARGET_MONSTER"; monsterInstanceId: string }
   | { type: "CONFIRM_TARGET_POT"; potId: string }
   | { type: "CANCEL_PENDING" }

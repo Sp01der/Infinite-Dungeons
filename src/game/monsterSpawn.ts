@@ -5,9 +5,14 @@ export function rollSkeletonWeapon(): SkeletonWeapon {
   const r = Math.random();
   if (r < 0.5) return "sword";
   if (r < 0.7) return "spear";
-  if (r < 0.8) return "axe";
+  if (r < 0.9) return "axe";
   return "scimitar";
 }
+
+export type CreateMonsterOpts = {
+  douvlonColor?: "red" | "blue";
+  douvlonPairId?: string;
+};
 
 export function createMonsterInstance(
   id: string,
@@ -16,6 +21,7 @@ export function createMonsterInstance(
   y: number,
   monsterDefs: Map<string, MonsterDef>,
   dangerLevel: number,
+  opts?: CreateMonsterOpts,
 ): MonsterInstance {
   const def = monsterDefs.get(defId);
   const baseHp = def?.hp ?? 5;
@@ -25,6 +31,15 @@ export function createMonsterInstance(
   if (defId === "slime") return { ...base, leapTarget: null };
   if (defId === "skeleton") return { ...base, skeletonWeapon: rollSkeletonWeapon() };
   if (defId === "rockling") return { ...base, defenseOverride: rollInt(1, 2) };
+  if (defId === "skeleton_archer") return { ...base, bowLoaded: false };
+  if (defId === "mimic") return { ...base, mimicAsleep: true };
+  if (defId === "douvlon" && opts?.douvlonColor && opts?.douvlonPairId) {
+    return {
+      ...base,
+      douvlonColor: opts.douvlonColor,
+      douvlonPairId: opts.douvlonPairId,
+    };
+  }
   return base;
 }
 
