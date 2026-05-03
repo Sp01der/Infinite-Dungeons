@@ -454,7 +454,17 @@ export class GridView extends Container {
       this.makeEntityLabel("You", state.player.x * TILE, state.player.y * TILE, 0xffffff),
     );
 
-    const douvlonPairs = new Map<string, { red?: { x: number; y: number }; blue?: { x: number; y: number } }>();
+    const douvlonPairs = new Map<string, { red?: { x: number; y: number }; blue?: { x: number; y: number }; visibleCount: number }>();
+    for (const m of state.monsters) {
+      if (m.hp <= 0) continue;
+      if (m.defId === "douvlon" && m.douvlonPairId) {
+        const slot = douvlonPairs.get(m.douvlonPairId) ?? { visibleCount: 0 };
+        if (m.douvlonColor === "red") slot.red = { x: m.x, y: m.y };
+        if (m.douvlonColor === "blue") slot.blue = { x: m.x, y: m.y };
+        if (!state.fogOfWar || state.discovered.has(keyOf(m))) slot.visibleCount += 1;
+        douvlonPairs.set(m.douvlonPairId, slot);
+      }
+    }
     for (const m of state.monsters) {
       if (m.hp <= 0) continue;
       if (state.fogOfWar && !state.discovered.has(keyOf(m))) continue;
@@ -488,22 +498,25 @@ export class GridView extends Container {
         badge.y = m.y * TILE + 1;
         this.entityLayer.addChild(badge);
       }
+      if (m.defId === "skeleton_archer" && m.bowLoaded) {
+        const r = Math.max(3, Math.round(TILE * 0.11));
+        const cx = m.x * TILE + Math.max(2, inset / 3) + r;
+        const cy = m.y * TILE + Math.max(2, inset / 3) + r;
+        const dot = new Graphics();
+        dot.circle(cx, cy, r).fill({ color: 0xf39c12, alpha: 0.95 });
+        this.entityLayer.addChild(dot);
+      }
       if (!mimicChest) {
         const label = def?.name ?? "?";
         this.entityLayer.addChild(
           this.makeEntityLabel(`${label} ${m.hp}hp`, m.x * TILE, m.y * TILE, 0xf5e6ff),
         );
       }
-      if (m.defId === "douvlon" && m.douvlonPairId) {
-        const slot = douvlonPairs.get(m.douvlonPairId) ?? {};
-        if (m.douvlonColor === "red") slot.red = { x: m.x, y: m.y };
-        if (m.douvlonColor === "blue") slot.blue = { x: m.x, y: m.y };
-        douvlonPairs.set(m.douvlonPairId, slot);
-      }
     }
 
     for (const [, pair] of douvlonPairs) {
       if (!pair.red || !pair.blue) continue;
+      if (pair.visibleCount === 0) continue;
       const x0 = (pair.red.x + 0.5) * TILE;
       const y0 = (pair.red.y + 0.5) * TILE;
       const x1 = (pair.blue.x + 0.5) * TILE;

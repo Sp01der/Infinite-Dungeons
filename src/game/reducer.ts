@@ -771,7 +771,7 @@ function sealGauntletCorridorTiles(s: GameState): GameState {
   return { ...s, tiles, roomIds };
 }
 
-function gauntletPowerPartitions(maxMonsters: number): number[][] {
+function gauntletPowerPartitions(totalPower: number, maxMonsters: number): number[][] {
   const res: number[][] = [];
   function bt(rem: number, path: number[]) {
     if (path.length > maxMonsters) return;
@@ -783,7 +783,7 @@ function gauntletPowerPartitions(maxMonsters: number): number[][] {
       if (p <= rem) bt(rem - p, [...path, p]);
     }
   }
-  bt(10, []);
+  bt(totalPower, []);
   return res;
 }
 
@@ -829,7 +829,8 @@ function spawnGauntletWave(s: GameState): GameState {
   if (candidates.length < 3) {
     candidates = collectGauntletSpawnCells(s, gauntletRid, false);
   }
-  const options = gauntletPowerPartitions(candidates.length);
+  const totalPower = s.depth * 5 + 5;
+  const options = gauntletPowerPartitions(totalPower, candidates.length);
   if (options.length === 0) {
     return log(s, "Gauntlet spawn failed — not enough space.");
   }

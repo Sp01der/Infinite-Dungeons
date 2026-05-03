@@ -119,6 +119,7 @@ function skillTreeUnlockBlocked(s: GameState): boolean {
 
 function openSkillTreeModal(): void {
   if (state.phase === "defeat") return;
+  if (state.gauntletCommenced && state.phase !== "peace") return;
   skillTreeModal.classList.add("is-open");
   skillTreeModal.setAttribute("aria-hidden", "false");
   renderSkillTree();
@@ -872,7 +873,10 @@ function renderAll(): void {
     state.player.bread <= 0 ||
     state.player.hp >= state.player.maxHp;
 
-  btnSkillTree.disabled = state.phase === "defeat" || choiceModalBlocksPlay(state);
+  btnSkillTree.disabled =
+    state.phase === "defeat" ||
+    choiceModalBlocksPlay(state) ||
+    (state.gauntletCommenced && state.phase !== "peace");
 
   renderDungeonPiles();
   renderTurnTokens();
