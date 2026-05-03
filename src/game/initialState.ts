@@ -155,27 +155,32 @@ export function pickMonsterId(
   if (floorDepth >= 4 && (kind === "normal" || kind === "treasure") && Math.random() < 0.035) {
     return "mimic";
   }
+  const rat = floorDepth >= 5 ? "shadow_rodent" : "dune_rat";
   switch (kind) {
     case "entrance":
       return "slime";
     case "corridor": {
-      const pool =
-        floorDepth >= 2 ? (["slime", "dune_rat", "skeleton_archer"] as const) : (["slime", "dune_rat"] as const);
-      return pickWeightedDefId([...pool], monsterDefs);
+      const pool: string[] =
+        floorDepth >= 2 ? ["slime", rat, "skeleton_archer"] : ["slime", rat];
+      if (floorDepth >= 5) pool.push("elite_skeleton");
+      return pickWeightedDefId(pool, monsterDefs);
     }
     case "normal": {
-      const pool = ["slime", "dune_rat", "skeleton", "mystic_core", "rockling"];
+      const pool = ["slime", rat, "skeleton", "mystic_core", "rockling"];
       if (floorDepth >= 2) pool.push("skeleton_archer");
+      if (floorDepth >= 5) pool.push("elite_skeleton");
       return pickWeightedDefId(pool, monsterDefs);
     }
     case "treasure": {
-      const pool = ["skeleton", "mystic_core", "rockling", "slime", "dune_rat"];
+      const pool = ["skeleton", "mystic_core", "rockling", "slime", rat];
       if (floorDepth >= 2) pool.push("skeleton_archer");
+      if (floorDepth >= 5) pool.push("elite_skeleton");
       return pickWeightedDefId(pool, monsterDefs);
     }
     case "gauntlet": {
-      const pool = ["skeleton", "mystic_core", "slime", "dune_rat", "rockling"];
+      const pool = ["skeleton", "mystic_core", "slime", rat, "rockling"];
       if (floorDepth >= 2) pool.push("skeleton_archer");
+      if (floorDepth >= 5) pool.push("elite_skeleton");
       return pickWeightedDefId(pool, monsterDefs);
     }
     default:

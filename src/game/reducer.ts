@@ -204,6 +204,43 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
     );
   }
 
+  if (cmd.type === "DEV_SUMMON") {
+    if (!state.monsterDefs.has(cmd.defId)) {
+      return noHits(log(state, `Command: unknown monster id "${cmd.defId}".`));
+    }
+    const P = { x: state.player.x, y: state.player.y };
+    const occ = new Set(state.monsters.filter((m) => m.hp > 0).map((m) => keyOf(m)));
+    const dirs = [{ x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }, { x: 0, y: -1 }];
+    const adj = dirs
+      .map((d) => ({ x: P.x + d.x, y: P.y + d.y }))
+      .filter(
+        (np) =>
+          tileAt(state.tiles, np) === "floor" &&
+          !occ.has(keyOf(np)) &&
+          !state.rocks.some((r) => r.x === np.x && r.y === np.y),
+      );
+    if (adj.length === 0) {
+      return noHits(log(state, "Command: no adjacent space to summon."));
+    }
+    const pos = adj[Math.floor(Math.random() * adj.length)]!;
+    const serial = nextMonsterSerial(state.monsters);
+    const inst = createMonsterInstance(
+      `monster_${serial}`,
+      cmd.defId,
+      pos.x,
+      pos.y,
+      state.monsterDefs,
+      cmd.level,
+    );
+    const nm = state.monsterDefs.get(cmd.defId)?.name ?? cmd.defId;
+    return noHits(
+      log(
+        { ...state, monsters: [...state.monsters, inst] },
+        `Command: summoned ${nm} at level ${inst.level}.`,
+      ),
+    );
+  }
+
   if (cmd.type === "DEV_GOTO_FLOOR") {
     const targetDepth = Math.max(1, Math.trunc(cmd.depth));
     const gen = generateFloor({ depth: targetDepth });
@@ -771,7 +808,8 @@ function sealGauntletCorridorTiles(s: GameState): GameState {
   return { ...s, tiles, roomIds };
 }
 
-function gauntletPowerPartitions(totalPower: number, maxMonsters: number): number[][] {
+function gauntletPowerPartitions(totalPower: number, maxMonsters: number, depth: number): number[][] {
+  const validPowers = depth >= 5 ? [2, 4, 5, 8] : [2, 4, 5];
   const res: number[][] = [];
   function bt(rem: number, path: number[]) {
     if (path.length > maxMonsters) return;
@@ -779,7 +817,7 @@ function gauntletPowerPartitions(totalPower: number, maxMonsters: number): numbe
       res.push([...path]);
       return;
     }
-    for (const p of [2, 4, 5]) {
+    for (const p of validPowers) {
       if (p <= rem) bt(rem - p, [...path, p]);
     }
   }
@@ -787,9 +825,14 @@ function gauntletPowerPartitions(totalPower: number, maxMonsters: number): numbe
   return res;
 }
 
-function defIdForGauntletPower(p: number, monsterDefs: Map<string, MonsterDef>): string {
+function defIdForGauntletPower(p: number, depth: number, monsterDefs: Map<string, MonsterDef>): string {
+  if (p === 8) return "elite_skeleton";
   if (p === 5) return "rockling";
-  if (p === 4) return pickWeightedDefId(["skeleton", "mystic_core"], monsterDefs);
+  if (p === 4) {
+    if (depth >= 5) return pickWeightedDefId(["skeleton", "mystic_core", "shadow_rodent"], monsterDefs);
+    return pickWeightedDefId(["skeleton", "mystic_core"], monsterDefs);
+  }
+  if (depth >= 5) return "slime";
   return pickWeightedDefId(["slime", "dune_rat"], monsterDefs);
 }
 
@@ -830,12 +873,12 @@ function spawnGauntletWave(s: GameState): GameState {
     candidates = collectGauntletSpawnCells(s, gauntletRid, false);
   }
   const totalPower = s.depth * 5 + 5;
-  const options = gauntletPowerPartitions(totalPower, candidates.length);
+  const options = gauntletPowerPartitions(totalPower, candidates.length, s.depth);
   if (options.length === 0) {
     return log(s, "Gauntlet spawn failed — not enough space.");
   }
   const powers = options[Math.floor(Math.random() * options.length)]!;
-  const roster = powers.map((p) => defIdForGauntletPower(p, s.monsterDefs));
+  const roster = powers.map((p) => defIdForGauntletPower(p, s.depth, s.monsterDefs));
   shuffleInPlace(roster);
   shuffleInPlace(candidates);
   let serial = nextMonsterSerial(s.monsters);
@@ -844,7 +887,9 @@ function spawnGauntletWave(s: GameState): GameState {
     const defId = roster[i]!;
     const p = candidates[i]!;
     newMons.push(
-      createMonsterInstance(`monster_${serial++}`, defId, p.x, p.y, s.monsterDefs, s.danger),
+      createMonsterInstance(`monster_${serial++}`, defId, p.x, p.y, s.monsterDefs, s.danger, {
+        spawnedInGauntlet: true,
+      }),
     );
   }
   return { ...s, monsters: newMons };
@@ -1132,6 +1177,52 @@ function maybeActivatePedestal(s: GameState): GameState {
   if (s.player.x !== pedestal.x || s.player.y !== pedestal.y) return s;
   const cards = pickPedestalOfferCards(s.cardDefs);
   return { ...s, pedestalOffer: { cards } };
+}
+
+function maybeEliteTeleportAll(s: GameState): GameState {
+  let next = s;
+  for (const m of next.monsters) {
+    if (m.defId !== "elite_skeleton") continue;
+    if (m.hp <= 0 || m.hp > 6 || m.eliteTeleported) continue;
+
+    const P = { x: next.player.x, y: next.player.y };
+    const gauntletRid = next.roomKinds.findIndex((k) => k === "gauntlet");
+    const occ = new Set(next.monsters.filter((x) => x.hp > 0 && x.id !== m.id).map((x) => keyOf(x)));
+
+    const candidates: { x: number; y: number }[] = [];
+    const fallback: { x: number; y: number }[] = [];
+    for (let y = 0; y < next.height; y++) {
+      for (let x = 0; x < next.width; x++) {
+        if (next.tiles[y][x] !== "floor") continue;
+        if (x === m.x && y === m.y) continue;
+        if (occ.has(keyOf({ x, y }))) continue;
+        if (m.spawnedInGauntlet && gauntletRid >= 0 && next.roomIds[y]?.[x] !== gauntletRid) continue;
+        const dist = manhattan({ x, y }, P);
+        if (dist >= 4) candidates.push({ x, y });
+        else fallback.push({ x, y });
+      }
+    }
+
+    const pool = candidates.length > 0 ? candidates : fallback;
+    if (pool.length === 0) {
+      next = {
+        ...next,
+        monsters: next.monsters.map((x) => (x.id === m.id ? { ...x, eliteTeleported: true } : x)),
+      };
+      continue;
+    }
+
+    const dest = pool[Math.floor(Math.random() * pool.length)]!;
+    const nm = next.monsterDefs.get(m.defId)?.name ?? "Elite Skeleton";
+    next = {
+      ...next,
+      monsters: next.monsters.map((x) =>
+        x.id === m.id ? { ...x, x: dest.x, y: dest.y, eliteTeleported: true } : x,
+      ),
+    };
+    next = log(next, `${nm} vanishes in a blur of bone and shadow!`);
+  }
+  return next;
 }
 
 export function processGauntletVictory(s: GameState): GameState {
@@ -1451,6 +1542,81 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
       );
       return { state: st, hits: [] };
     }
+    case "you_are_not_alone": {
+      // Collect eligible rooms: not gauntlet, not gauntlet_corridor, not stair_room
+      const eligibleRids = new Set<number>();
+      const undiscoveredRids = new Set<number>();
+      const roomHasDiscovered = new Map<number, boolean>();
+      for (let y = 0; y < working.height; y++) {
+        for (let x = 0; x < working.width; x++) {
+          if (working.tiles[y][x] !== "floor") continue;
+          const rid = working.roomIds[y][x];
+          if (rid < 0) continue;
+          const kind = working.roomKinds[rid];
+          if (kind === "gauntlet" || kind === "gauntlet_corridor" || kind === "stair_room") continue;
+          eligibleRids.add(rid);
+          if (working.discovered.has(keyOf({ x, y }))) {
+            roomHasDiscovered.set(rid, true);
+          }
+        }
+      }
+      for (const rid of eligibleRids) {
+        if (!roomHasDiscovered.has(rid)) undiscoveredRids.add(rid);
+      }
+      const pool = undiscoveredRids.size > 0 ? [...undiscoveredRids] : [...eligibleRids];
+      if (pool.length === 0) {
+        summary = "Something stirs, but there is nowhere left to lurk.";
+        const st = log(
+          { ...working, dungeonCardReveal: { title, summary } },
+          `Dungeon: ${title} — ${summary}`,
+        );
+        return { state: st, hits: [] };
+      }
+      const chosenRid = pool[rollInt(0, pool.length - 1)]!;
+      // Find free floor tiles in that room (not on player, not on existing monster)
+      const occupiedKeys = new Set<string>();
+      occupiedKeys.add(keyOf({ x: working.player.x, y: working.player.y }));
+      for (const mon of working.monsters) {
+        if (mon.hp > 0) occupiedKeys.add(keyOf({ x: mon.x, y: mon.y }));
+      }
+      const candidateTiles: Point[] = [];
+      for (let y = 0; y < working.height; y++) {
+        for (let x = 0; x < working.width; x++) {
+          if (working.tiles[y][x] !== "floor") continue;
+          if (working.roomIds[y][x] !== chosenRid) continue;
+          if (occupiedKeys.has(keyOf({ x, y }))) continue;
+          candidateTiles.push({ x, y });
+        }
+      }
+      if (candidateTiles.length === 0) {
+        summary = "Something stirs, but cannot find footing.";
+        const st = log(
+          { ...working, dungeonCardReveal: { title, summary } },
+          `Dungeon: ${title} — ${summary}`,
+        );
+        return { state: st, hits: [] };
+      }
+      const spawnTile = candidateTiles[rollInt(0, candidateTiles.length - 1)]!;
+      const serial = nextMonsterSerial(working.monsters);
+      const shade = createMonsterInstance(
+        `monster_${serial}`,
+        "corrupted_shade",
+        spawnTile.x,
+        spawnTile.y,
+        working.monsterDefs,
+        working.danger,
+      );
+      summary = "You are not alone.";
+      const st = log(
+        {
+          ...working,
+          monsters: [...working.monsters, shade],
+          dungeonCardReveal: { title, summary },
+        },
+        `Dungeon: ${title}.`,
+      );
+      return { state: st, hits: [] };
+    }
     default:
       return { state: log(working, "Unknown dungeon card effect."), hits: [] };
   }
@@ -1530,7 +1696,8 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
     cmd.type === "DEV_SET_VARIABLE" ||
     cmd.type === "DEV_CARD" ||
     cmd.type === "DEV_DUNGEON_TOP" ||
-    cmd.type === "DEV_GOTO_FLOOR"
+    cmd.type === "DEV_GOTO_FLOOR" ||
+    cmd.type === "DEV_SUMMON"
   ) {
     return handleDevCommand(state, cmd);
   }
@@ -3208,5 +3375,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
 
 export function dispatch(state: GameState, cmd: GameCommand): DispatchResult {
   const r = dispatchCore(state, cmd);
-  return { state: processGauntletVictory(r.state), hits: r.hits };
+  let s = processGauntletVictory(r.state);
+  s = maybeEliteTeleportAll(s);
+  return { state: s, hits: r.hits };
 }

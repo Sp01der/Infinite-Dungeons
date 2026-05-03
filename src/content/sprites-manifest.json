@@ -15,6 +15,7 @@
     "gauntlet_corridor": { "fallbackColor": "#4a2b2f" },
     "gauntlet_corridor_alt": { "fallbackColor": "#666a73" },
     "fog": { "fallbackColor": "#050508", "alpha": 0.94 },
-    "highlight": { "fallbackColor": "#f1c40f", "alpha": 0.45 }
+    "highlight": { "fallbackColor": "#f1c40f", "alpha": 0.45 },
+    "enemy_corrupted_shade": { "fallbackColor": "#1a0a2e" }
   }
 }

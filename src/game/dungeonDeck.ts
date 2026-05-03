@@ -33,6 +33,9 @@ export function expandRecipe(depth: number, theme: string): string[] {
     d.push("stability", "monsters_from_deep", "targeted_collapse");
     d.push(...themeCardsFor(theme));
   }
+  if (depth >= 5) {
+    d.push("you_are_not_alone");
+  }
   d.push(DUNGEON_DEADLIER_ID);
   return d;
 }

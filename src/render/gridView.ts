@@ -506,6 +506,22 @@ export class GridView extends Container {
         dot.circle(cx, cy, r).fill({ color: 0xf39c12, alpha: 0.95 });
         this.entityLayer.addChild(dot);
       }
+      if (m.defId === "corrupted_shade") {
+        const r = Math.max(3, Math.round(TILE * 0.11));
+        const baseX = m.x * TILE + Math.max(2, inset / 3) + r;
+        const baseY = m.y * TILE + Math.max(2, inset / 3) + r;
+        if (m.darkBoltReady) {
+          const dot = new Graphics();
+          dot.circle(baseX, baseY, r).fill({ color: 0x8e44ad, alpha: 0.95 });
+          this.entityLayer.addChild(dot);
+        }
+        if (m.blackShieldActive) {
+          const dot = new Graphics();
+          const ox = m.darkBoltReady ? r * 2 + 1 : 0;
+          dot.circle(baseX + ox, baseY, r).fill({ color: 0x2980b9, alpha: 0.95 });
+          this.entityLayer.addChild(dot);
+        }
+      }
       if (!mimicChest) {
         const label = def?.name ?? "?";
         this.entityLayer.addChild(

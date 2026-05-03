@@ -78,5 +78,35 @@
     "damage": 3,
     "power": 5,
     "description": "A stony brute with a tough hide."
+  },
+  {
+    "id": "shadow_rodent",
+    "name": "Shadow Rodent",
+    "spriteId": "enemy_rat",
+    "hp": 7,
+    "defense": 0,
+    "damage": 3,
+    "power": 4,
+    "description": "Moves twice and bites hard — attack and movement in any order."
+  },
+  {
+    "id": "corrupted_shade",
+    "name": "Corrupted Shade",
+    "spriteId": "enemy_corrupted_shade",
+    "hp": 8,
+    "defense": 0,
+    "damage": 5,
+    "power": 10,
+    "description": "A shadow that hunts with stolen knowledge of battle. Draws from its own dark deck each turn."
+  },
+  {
+    "id": "elite_skeleton",
+    "name": "Elite Skeleton",
+    "spriteId": "enemy_skeleton",
+    "hp": 8,
+    "defense": 0,
+    "damage": 4,
+    "power": 8,
+    "description": "A seasoned warrior that spawns above the current threat level. Picks its best weapon and retreats when wounded."
   }
 ]

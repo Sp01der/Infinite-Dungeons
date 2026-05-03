@@ -435,9 +435,21 @@ const COMMAND_VARIABLES: Record<string, CommandVariable> = {
 };
 
 function normalizeLookupName(value: string): string {
-  return value
-    .trim()
-    .toLowerCase()
+  // Expand common contractions before stripping punctuation, so "You're Not Alone"
+  // matches defs named "You Are Not Alone" (apostrophe alone would yield "you re").
+  let s = value.trim().toLowerCase();
+  s = s
+    .replace(/\byou're\b/g, "you are")
+    .replace(/\bwe're\b/g, "we are")
+    .replace(/\bthey're\b/g, "they are")
+    .replace(/\bit's\b/g, "it is")
+    .replace(/\bthat's\b/g, "that is")
+    .replace(/\bwhat's\b/g, "what is")
+    .replace(/\bwho's\b/g, "who is")
+    .replace(/\bhere's\b/g, "here is")
+    .replace(/\bthere's\b/g, "there is")
+    .replace(/\bi'm\b/g, "i am");
+  return s
     .replace(/[_-]+/g, " ")
     .replace(/[^a-z0-9]+/g, " ")
     .replace(/\s+/g, " ")
@@ -522,6 +534,19 @@ function runCommandLine(raw: string): string {
     return `Placed ${state.dungeonCardDefs.get(cardId)?.name ?? cardId} on top.`;
   }
 
+  if (verb === "summon") {
+    if (args.length < 1) return "Usage: Summon [monster name] [level (optional)]";
+    const maybeLevel = parseCommandNumber(args[args.length - 1]!);
+    const hasExplicitLevel = maybeLevel !== null && args.length >= 2;
+    const monsterName = hasExplicitLevel ? args.slice(0, -1).join(" ") : args.join(" ");
+    const monsterId = findNamedId(state.monsterDefs as ReadonlyMap<string, { name: string }>, monsterName);
+    if (!monsterId) return `Unknown monster: ${monsterName}`;
+    const defaultLevel = monsterId === "elite_skeleton" ? state.danger + 1 : state.danger;
+    const level = hasExplicitLevel ? maybeLevel! : defaultLevel;
+    apply({ type: "DEV_SUMMON", defId: monsterId, level });
+    return `Summoned ${state.monsterDefs.get(monsterId)?.name ?? monsterId} at level ${level}.`;
+  }
+
   if (verb === "floor") {
     if (args.length < 1) return "Usage: Floor [floor number]";
     const depth = parseCommandNumber(args[0]!);
@@ -531,7 +556,7 @@ function runCommandLine(raw: string): string {
     return `Jumped to floor ${depth}.`;
   }
 
-  return "Unknown command. Try Set, Card, Dungeon, or Floor.";
+  return "Unknown command. Try Set, Card, Dungeon, Floor, or Summon.";
 }
 
 function openPileInspector(which: "deck" | "discard"): void {

@@ -3,6 +3,7 @@ import { keyOf, magicMissilePathClearToPlayer, tileAt } from "../engine/grid";
 import { manhattan } from "../engine/movement";
 import { cullMonstersWithDouvlonPairs, setMonsterHpWithDouvlonSync } from "./douvlon";
 import { addExp } from "./progression";
+import { SHADE_DECK_TEMPLATE } from "./monsterSpawn";
 import { incomingDamageToPlayer } from "./skillsRuntime";
 import type { GameState, HitVisual, MonsterInstance, Point, SkeletonWeapon } from "./types";
 
@@ -123,10 +124,6 @@ function best8Away(s: GameState, m: MonsterInstance, occ: Set<string>): Point | 
     }
   }
   return best;
-}
-
-function queenRange(a: Point, b: Point): number {
-  return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
 }
 
 function playerOnOpenSegmentBetween(red: Point, blue: Point, p: Point): boolean {
@@ -567,6 +564,161 @@ function takeSkeletonArcherTurn(
   return { state: next, dead: false };
 }
 
+function takeShadowRodentTurn(
+  s: GameState,
+  curMon: MonsterInstance,
+  playerPos: Point,
+  hooks: MonsterPhaseHooks,
+  hits: HitVisual[],
+): { state: GameState; dead: boolean } {
+  const nm = s.monsterDefs.get(curMon.defId)?.name ?? "Shadow Rodent";
+  const P = playerPos;
+  const bonus = monsterDamageBonus(curMon.level);
+
+  const tryAttack = (
+    state: GameState,
+    mon: MonsterInstance,
+  ): { state: GameState; dead: boolean } | null => {
+    if (manhattan({ x: mon.x, y: mon.y }, P) !== 1) return null;
+    const raw = rollInt(2, 4) + bonus;
+    return damagePlayer(state, raw, nm, hits);
+  };
+
+  const tryMove = (state: GameState, mon: MonsterInstance): GameState => {
+    const occ = movementOcc(state, mon.id);
+    const step = bestOrthoToward(state, mon, occ);
+    if (!step) return state;
+    return moveMonsterTo(state, mon, step, hooks);
+  };
+
+  let next = s;
+  let mon = curMon;
+  // Attack can happen at slot 0 (before move 1), 1 (between moves), or 2 (after move 2)
+  const attackSlot = Math.floor(Math.random() * 3);
+
+  if (attackSlot === 0) {
+    const atk = tryAttack(next, mon);
+    if (atk) {
+      if (atk.dead) return atk;
+      next = atk.state;
+    }
+  }
+
+  mon = next.monsters.find((x) => x.id === curMon.id)!;
+  if (mon) next = tryMove(next, mon);
+
+  if (attackSlot === 1) {
+    mon = next.monsters.find((x) => x.id === curMon.id)!;
+    if (mon) {
+      const atk = tryAttack(next, mon);
+      if (atk) {
+        if (atk.dead) return atk;
+        next = atk.state;
+      }
+    }
+  }
+
+  mon = next.monsters.find((x) => x.id === curMon.id)!;
+  if (mon) next = tryMove(next, mon);
+
+  if (attackSlot === 2) {
+    mon = next.monsters.find((x) => x.id === curMon.id)!;
+    if (mon) {
+      const atk = tryAttack(next, mon);
+      if (atk) {
+        if (atk.dead) return atk;
+        next = atk.state;
+      }
+    }
+  }
+
+  return { state: next, dead: false };
+}
+
+/** Weapons sorted by minimum damage descending: axe (3) first, then all min-2 weapons. */
+const ELITE_WEAPON_PRIORITY: SkeletonWeapon[] = ["axe", "scimitar", "sword", "spear"];
+
+function bestEliteWeaponToHit(
+  monPos: Point,
+  P: Point,
+  movedThisTurn: boolean,
+): SkeletonWeapon | null {
+  for (const w of ELITE_WEAPON_PRIORITY) {
+    if (skeletonCanHit(w, monPos, P, movedThisTurn)) return w;
+  }
+  return null;
+}
+
+function takeEliteSkeletonTurn(
+  s: GameState,
+  m: MonsterInstance,
+  hooks: MonsterPhaseHooks,
+  hits: HitVisual[],
+): { state: GameState; dead: boolean } {
+  const bonus = monsterDamageBonus(m.level);
+  const name = s.monsterDefs.get(m.defId)?.name ?? "Elite Skeleton";
+  const P: Point = { x: s.player.x, y: s.player.y };
+  let movedThisTurn = false;
+  let moveBudget = 3;
+  let cur = m;
+  let next = s;
+
+  // Phase 1: attack in place if any weapon is already in range
+  const wInPlace = bestEliteWeaponToHit({ x: cur.x, y: cur.y }, P, false);
+  if (wInPlace) {
+    const raw = skeletonRollDamage(wInPlace, bonus);
+    const d = damagePlayer(next, raw, name, hits);
+    if (d.dead) return d;
+    next = d.state;
+    cur = next.monsters.find((x) => x.id === m.id)!;
+    // Back off using remaining move budget
+    for (let i = 0; i < 3; i++) {
+      cur = next.monsters.find((x) => x.id === m.id)!;
+      if (!cur) break;
+      const occ = movementOcc(next, cur.id);
+      const away = bestOrthoAway(next, cur, occ);
+      if (!away) break;
+      next = moveMonsterTo(next, cur, away, hooks);
+    }
+    return { state: next, dead: false };
+  }
+
+  // Phase 2: move up to 3 steps toward player; strike with best available weapon after each step
+  while (moveBudget > 0) {
+    cur = next.monsters.find((x) => x.id === m.id)!;
+    if (!cur) break;
+    const occ = movementOcc(next, cur.id);
+    const toward = bestOrthoToward(next, cur, occ);
+    if (!toward) break;
+    next = moveMonsterTo(next, cur, toward, hooks);
+    cur = next.monsters.find((x) => x.id === m.id)!;
+    moveBudget -= 1;
+    movedThisTurn = true;
+
+    const wAfterMove = bestEliteWeaponToHit({ x: cur.x, y: cur.y }, P, movedThisTurn);
+    if (wAfterMove) {
+      const raw = skeletonRollDamage(wAfterMove, bonus);
+      const d = damagePlayer(next, raw, name, hits);
+      if (d.dead) return d;
+      next = d.state;
+      cur = next.monsters.find((x) => x.id === m.id)!;
+      // Back off remaining budget
+      while (moveBudget > 0) {
+        cur = next.monsters.find((x) => x.id === m.id)!;
+        if (!cur) break;
+        const occ2 = movementOcc(next, cur.id);
+        const away = bestOrthoAway(next, cur, occ2);
+        if (!away) break;
+        next = moveMonsterTo(next, cur, away, hooks);
+        moveBudget -= 1;
+      }
+      return { state: next, dead: false };
+    }
+  }
+
+  return { state: next, dead: false };
+}
+
 function takeMimicTurn(
   s: GameState,
   m: MonsterInstance,
@@ -677,6 +829,240 @@ function takeDouvlonPairTurn(
   return { state: next, dead: false };
 }
 
+function shuffleShadeDeck(arr: string[]): string[] {
+  const a = [...arr];
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j]!, a[i]!];
+  }
+  return a;
+}
+
+function shadeDrawHand(
+  deck: string[],
+  discard: string[],
+  n: number,
+): { hand: string[]; deck: string[]; discard: string[] } {
+  let d = [...deck];
+  let dc = [...discard];
+  const hand: string[] = [];
+  for (let i = 0; i < n; i++) {
+    if (d.length === 0) {
+      if (dc.length === 0) break;
+      d = shuffleShadeDeck(dc);
+      dc = [];
+    }
+    hand.push(d.shift()!);
+  }
+  return { hand, deck: d, discard: dc };
+}
+
+function shadeShadowStep(
+  s: GameState,
+  mId: string,
+  toward: boolean,
+  P: Point,
+): GameState {
+  const cur = s.monsters.find((x) => x.id === mId);
+  if (!cur) return s;
+  const roomId = s.roomIds[cur.y]?.[cur.x] ?? -1;
+  if (roomId < 0) return s;
+  const occ = new Set(s.monsters.filter((x) => x.hp > 0 && x.id !== mId).map((x) => keyOf(x)));
+  let bestScore = toward ? Infinity : -1;
+  let bestTile: Point | null = null;
+  for (let y = 0; y < s.height; y++) {
+    for (let x = 0; x < s.width; x++) {
+      if (s.tiles[y][x] !== "floor") continue;
+      if (s.roomIds[y]?.[x] !== roomId) continue;
+      if (occ.has(keyOf({ x, y }))) continue;
+      if (x === cur.x && y === cur.y) continue;
+      const d = manhattan({ x, y }, P);
+      if (toward ? d < bestScore : d > bestScore) {
+        bestScore = d;
+        bestTile = { x, y };
+      }
+    }
+  }
+  if (!bestTile) return s;
+  return {
+    ...s,
+    monsters: s.monsters.map((x) =>
+      x.id === mId ? { ...x, x: bestTile!.x, y: bestTile!.y } : x,
+    ),
+  };
+}
+
+function takeCorruptedShadeTurn(
+  s: GameState,
+  m: MonsterInstance,
+  hooks: MonsterPhaseHooks,
+  hits: HitVisual[],
+): { state: GameState; dead: boolean } {
+  const name = s.monsterDefs.get(m.defId)?.name ?? "Corrupted Shade";
+  const P: Point = { x: s.player.x, y: s.player.y };
+  let next = s;
+  let cur = m;
+
+  // Clear black shield at start of turn
+  next = {
+    ...next,
+    monsters: next.monsters.map((x) =>
+      x.id === m.id ? { ...x, blackShieldActive: false } : x,
+    ),
+  };
+  cur = next.monsters.find((x) => x.id === m.id)!;
+
+  // Fire dark bolt if ready and player in magic missile range
+  if (cur.darkBoltReady) {
+    next = {
+      ...next,
+      monsters: next.monsters.map((x) => (x.id === m.id ? { ...x, darkBoltReady: false } : x)),
+    };
+    cur = next.monsters.find((x) => x.id === m.id)!;
+    const mp: Point = { x: cur.x, y: cur.y };
+    if (magicMissilePathClearToPlayer(next.tiles, next.monsters, mp, P, cur.id)) {
+      next = appendLog(next, `${name} releases the Dark Bolt!`);
+      const d = damagePlayer(next, rollInt(4, 7), name, hits);
+      if (d.dead) return d;
+      next = d.state;
+      cur = next.monsters.find((x) => x.id === m.id)!;
+    }
+  }
+
+  // Draw 3 cards
+  const deckIn = cur.shadeDeck ?? shuffleShadeDeck(SHADE_DECK_TEMPLATE);
+  const discardIn = cur.shadeDiscard ?? [];
+  const drawn = shadeDrawHand(deckIn, discardIn, 3);
+  let deck = drawn.deck;
+  let discard = drawn.discard;
+  const hand = [...drawn.hand];
+
+  next = {
+    ...next,
+    monsters: next.monsters.map((x) =>
+      x.id === m.id ? { ...x, shadeDeck: deck, shadeDiscard: discard } : x,
+    ),
+  };
+  cur = next.monsters.find((x) => x.id === m.id)!;
+
+  // Helper: move shade 2 orthogonal steps toward/away player
+  const shadeMove = (toward: boolean) => {
+    for (let step = 0; step < 2; step++) {
+      cur = next.monsters.find((x) => x.id === m.id)!;
+      if (!cur) break;
+      const occ = movementOcc(next, cur.id);
+      const dest = toward ? bestOrthoToward(next, cur, occ) : bestOrthoAway(next, cur, occ);
+      if (!dest) break;
+      next = moveMonsterTo(next, cur, dest, hooks);
+    }
+    cur = next.monsters.find((x) => x.id === m.id)!;
+  };
+
+  // Helper: discard a played shade card
+  const playCard = (card: string) => {
+    discard = [...discard, card];
+    next = {
+      ...next,
+      monsters: next.monsters.map((x) => (x.id === m.id ? { ...x, shadeDiscard: discard } : x)),
+    };
+    cur = next.monsters.find((x) => x.id === m.id)!;
+  };
+
+  const takeFromHand = (card: string): boolean => {
+    const idx = hand.indexOf(card);
+    if (idx < 0) return false;
+    hand.splice(idx, 1);
+    return true;
+  };
+
+  const isAdjacent = () => cur && manhattan({ x: cur.x, y: cur.y }, P) === 1;
+
+  // 1. Black Shield — play first if drawn
+  if (takeFromHand("shade_black_shield")) {
+    next = {
+      ...next,
+      monsters: next.monsters.map((x) => (x.id === m.id ? { ...x, blackShieldActive: true } : x)),
+    };
+    cur = next.monsters.find((x) => x.id === m.id)!;
+    next = appendLog(next, `${name} raises the Black Shield!`);
+    playCard("shade_black_shield");
+  }
+
+  // 2. Attack phase: maneuver to get adjacent and slash with Blade(s), then retreat
+  if (hand.includes("shade_blade")) {
+    // Approach with Move cards
+    while (hand.includes("shade_move") && !isAdjacent()) {
+      takeFromHand("shade_move");
+      shadeMove(true);
+      playCard("shade_move");
+    }
+    // Approach with Shadow Step if still not adjacent
+    if (!isAdjacent() && hand.includes("shade_shadow_step")) {
+      takeFromHand("shade_shadow_step");
+      next = shadeShadowStep(next, m.id, true, P);
+      cur = next.monsters.find((x) => x.id === m.id)!;
+      next = appendLog(next, `${name} shadow-steps closer!`);
+      playCard("shade_shadow_step");
+    }
+    // Slash all Blade(s)
+    while (hand.includes("shade_blade")) {
+      takeFromHand("shade_blade");
+      if (isAdjacent()) {
+        const raw = next.danger + rollInt(4, 5);
+        next = appendLog(next, `${name} slashes with the Blade of Darkness!`);
+        const d = damagePlayer(next, raw, name, hits);
+        playCard("shade_blade");
+        if (d.dead) return d;
+        next = d.state;
+        cur = next.monsters.find((x) => x.id === m.id)!;
+      } else {
+        playCard("shade_blade");
+      }
+    }
+    // Retreat with remaining Move cards
+    while (hand.includes("shade_move")) {
+      takeFromHand("shade_move");
+      shadeMove(false);
+      playCard("shade_move");
+    }
+    // Shadow Step away if still held
+    if (hand.includes("shade_shadow_step")) {
+      takeFromHand("shade_shadow_step");
+      next = shadeShadowStep(next, m.id, false, P);
+      cur = next.monsters.find((x) => x.id === m.id)!;
+      playCard("shade_shadow_step");
+    }
+  } else {
+    // No Blade — approach and set up ranged
+    while (hand.includes("shade_move")) {
+      takeFromHand("shade_move");
+      shadeMove(true);
+      playCard("shade_move");
+    }
+    if (hand.includes("shade_shadow_step")) {
+      takeFromHand("shade_shadow_step");
+      next = shadeShadowStep(next, m.id, true, P);
+      cur = next.monsters.find((x) => x.id === m.id)!;
+      next = appendLog(next, `${name} shadow-steps!`);
+      playCard("shade_shadow_step");
+    }
+  }
+
+  // 3. Dark Bolt — charge if not already ready and still in hand
+  if (hand.includes("shade_dark_bolt") && !cur.darkBoltReady) {
+    takeFromHand("shade_dark_bolt");
+    next = {
+      ...next,
+      monsters: next.monsters.map((x) => (x.id === m.id ? { ...x, darkBoltReady: true } : x)),
+    };
+    cur = next.monsters.find((x) => x.id === m.id)!;
+    next = appendLog(next, `${name} charges the Dark Bolt...`);
+    playCard("shade_dark_bolt");
+  }
+
+  return { state: next, dead: false };
+}
+
 export function runMonsterPhaseWithHooks(
   state: GameState,
   hooks: MonsterPhaseHooks,
@@ -756,6 +1142,27 @@ export function runMonsterPhaseWithHooks(
 
     if (curMon.defId === "dune_rat") {
       const r = takeDustRatTurn(s, curMon, playerPos, hooks, hits);
+      s = r.state;
+      if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      continue;
+    }
+
+    if (curMon.defId === "shadow_rodent") {
+      const r = takeShadowRodentTurn(s, curMon, playerPos, hooks, hits);
+      s = r.state;
+      if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      continue;
+    }
+
+    if (curMon.defId === "elite_skeleton") {
+      const r = takeEliteSkeletonTurn(s, curMon, hooks, hits);
+      s = r.state;
+      if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      continue;
+    }
+
+    if (curMon.defId === "corrupted_shade") {
+      const r = takeCorruptedShadeTurn(s, curMon, hooks, hits);
       s = r.state;
       if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
       continue;

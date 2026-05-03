@@ -82,7 +82,8 @@ export type DungeonCardEffect =
   | { type: "dust_settles" }
   | { type: "collapse" }
   | { type: "lights_out" }
-  | { type: "targeted_collapse" };
+  | { type: "targeted_collapse" }
+  | { type: "you_are_not_alone" };
 
 export interface DungeonCardDef {
   id: string;
@@ -120,6 +121,18 @@ export interface MonsterInstance {
   douvlonPairId?: string;
   /** Stacked Fire levels; decremented each turn after the monster acts, dealing 20% max HP damage. */
   fireLevels?: number;
+  /** Elite Skeleton only: true once the low-HP teleport has already fired (prevents repeat). */
+  eliteTeleported?: boolean;
+  /** Elite Skeleton only: true when spawned inside the gauntlet wave (constrains teleport destination). */
+  spawnedInGauntlet?: boolean;
+  /** Corrupted Shade only: remaining draw pile of shade cards. */
+  shadeDeck?: string[];
+  /** Corrupted Shade only: discard pile of shade cards. */
+  shadeDiscard?: string[];
+  /** Corrupted Shade only: dark bolt charged — fires at magic-missile range at start of next turn. */
+  darkBoltReady?: boolean;
+  /** Corrupted Shade only: +5 defense until start of next shade turn. */
+  blackShieldActive?: boolean;
 }
 
 export interface PotInstance {
@@ -321,6 +334,7 @@ export type GameCommand =
   | { type: "DEV_CARD"; cardId: string; action: "add" | "remove" }
   | { type: "DEV_DUNGEON_TOP"; cardId: string }
   | { type: "DEV_GOTO_FLOOR"; depth: number }
+  | { type: "DEV_SUMMON"; defId: string; level: number }
   | { type: "REQUEST_PLAY_CARD"; handIndex: number }
   | { type: "REQUEST_DISCARD_BONUS"; handIndex: number; bonus: "move1" | "punch" | "investigate" }
   | { type: "REQUEST_EQUIP"; handIndex: number }
