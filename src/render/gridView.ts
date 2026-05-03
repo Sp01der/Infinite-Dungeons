@@ -617,7 +617,18 @@ export class GridView extends Container {
         rockKeys,
       );
     }
-    if (pending.kind === "discard_move1" || pending.kind === "play_card_seeker") {
+    if (pending.kind === "discard_move1") {
+      return reachableOrthogonal(
+        state.tiles,
+        state.width,
+        state.height,
+        from,
+        pending.maxRange,
+        occ,
+        rockKeys,
+      );
+    }
+    if (pending.kind === "play_card_seeker" || pending.kind === "move_token_step") {
       return reachableOrthogonal(state.tiles, state.width, state.height, from, 1, occ, rockKeys);
     }
     if (

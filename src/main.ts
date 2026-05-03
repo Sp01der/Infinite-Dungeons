@@ -5,8 +5,14 @@ import type { FloorDef } from "./game/types";
 import { createInitialState, createInitialStateGenerated } from "./game/initialState";
 import { dispatch } from "./game/reducer";
 import { expToNextLevel } from "./game/progression";
-import { SKILL_CATEGORIES, SKILL_DEFS, type SkillDef } from "./game/skillDefs";
-import type { GameCommand, GameState } from "./game/types";
+import {
+  getSkillDef,
+  getSkillParentId,
+  SKILL_CATEGORIES,
+  SKILL_DEFS,
+  type SkillDef,
+} from "./game/skillDefs";
+import { CARD_TYPE_ORDER, type CardDef, type GameCommand, type GameState } from "./game/types";
 import { loadSpriteStyles } from "./render/assets";
 import { GridView, VIEW_HEIGHT_PX, VIEW_WIDTH_PX } from "./render/gridView";
 
@@ -56,6 +62,7 @@ const pedestalOfferSkip = document.querySelector<HTMLButtonElement>("#pedestal-o
 const deckDestroyOfferEl = document.querySelector<HTMLDivElement>("#deck-destroy-offer")!;
 const deckDestroyBackdrop = document.querySelector<HTMLDivElement>("#deck-destroy-backdrop")!;
 const deckDestroyBody = document.querySelector<HTMLDivElement>("#deck-destroy-body")!;
+const deckDestroySkip = document.querySelector<HTMLButtonElement>("#deck-destroy-skip")!;
 const dungeonCardToast = document.querySelector<HTMLDivElement>("#dungeon-card-toast")!;
 const dungeonCardToastTitle = document.querySelector<HTMLDivElement>("#dungeon-card-toast-title")!;
 const dungeonCardToastSummary = document.querySelector<HTMLDivElement>("#dungeon-card-toast-summary")!;
@@ -68,7 +75,22 @@ const skillTreeClose = document.querySelector<HTMLButtonElement>("#skill-tree-cl
 const skillTreeScroll = document.querySelector<HTMLDivElement>("#skill-tree-scroll")!;
 const skillTreeCanvas = document.querySelector<HTMLDivElement>("#skill-tree-canvas")!;
 const skillTreeTooltip = document.querySelector<HTMLDivElement>("#skill-tree-tooltip")!;
+const skillTreeSkillPts = document.querySelector<HTMLSpanElement>("#skill-tree-skill-pts")!;
 const btnSkillTree = document.querySelector<HTMLButtonElement>("#btn-skill-tree")!;
+const turnTokensEl = document.querySelector<HTMLDivElement>("#turn-tokens")!;
+const deckBuilderOfferEl = document.querySelector<HTMLDivElement>("#deck-builder-offer")!;
+const deckBuilderBackdrop = document.querySelector<HTMLDivElement>("#deck-builder-backdrop")!;
+const deckBuilderNote = document.querySelector<HTMLParagraphElement>("#deck-builder-note")!;
+const deckBuilderTypeGrid = document.querySelector<HTMLDivElement>("#deck-builder-type-grid")!;
+const deckBuilderCards = document.querySelector<HTMLDivElement>("#deck-builder-cards")!;
+const deckBuilderSkip = document.querySelector<HTMLButtonElement>("#deck-builder-skip")!;
+const commandWindowBtn = document.querySelector<HTMLButtonElement>("#btn-command-window")!;
+const commandWindow = document.querySelector<HTMLDivElement>("#command-window")!;
+const commandWindowBackdrop = document.querySelector<HTMLDivElement>("#command-window-backdrop")!;
+const commandWindowClose = document.querySelector<HTMLButtonElement>("#command-window-close")!;
+const commandForm = document.querySelector<HTMLFormElement>("#command-form")!;
+const commandInput = document.querySelector<HTMLInputElement>("#command-input")!;
+const commandFeedback = document.querySelector<HTMLParagraphElement>("#command-feedback")!;
 
 const useSampleFloor =
   typeof window !== "undefined" &&
@@ -86,7 +108,8 @@ function choiceModalBlocksPlay(s: GameState): boolean {
     !!s.chestOffer ||
     (s.cardPickupOffer?.queue.length ?? 0) > 0 ||
     !!s.pedestalOffer ||
-    s.deckDestroyPending
+    s.deckDestroyPending ||
+    !!s.deckBuilderOffer
   );
 }
 
@@ -142,29 +165,75 @@ function hideSkillTooltip(): void {
   skillTreeTooltip.hidden = true;
 }
 
+function drawSkillTreeEdges(wrap: HTMLElement, svg: SVGSVGElement): void {
+  const chart = wrap.querySelector(".skill-tree-chart") as HTMLElement | null;
+  if (!chart) return;
+  const rect = chart.getBoundingClientRect();
+  svg.replaceChildren();
+  svg.setAttribute("width", String(Math.max(1, chart.offsetWidth)));
+  svg.setAttribute("height", String(Math.max(1, chart.offsetHeight)));
+  wrap.querySelectorAll<HTMLElement>("[data-skill-node]").forEach((nodeEl) => {
+    const sid = nodeEl.dataset.skillNode;
+    if (!sid) return;
+    const sk = getSkillDef(sid);
+    const pid = sk ? getSkillParentId(sk) : null;
+    if (!pid) return;
+    const pWrap = wrap.querySelector(`[data-skill-node="${pid}"]`) as HTMLElement | null;
+    if (!pWrap || !nodeEl) return;
+    const pr = pWrap.getBoundingClientRect();
+    const cr = nodeEl.getBoundingClientRect();
+    const x1 = pr.right - rect.left;
+    const y1 = pr.top + pr.height / 2 - rect.top;
+    const x2 = cr.left - rect.left;
+    const y2 = cr.top + cr.height / 2 - rect.top;
+    const mid = (x1 + x2) / 2;
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", `M ${x1} ${y1} C ${mid} ${y1}, ${mid} ${y2}, ${x2} ${y2}`);
+    path.setAttribute("class", "skill-tree-edge");
+    svg.appendChild(path);
+  });
+}
+
 function renderSkillTree(): void {
+  const n = state.player.skillPoints;
+  skillTreeSkillPts.textContent = `${n} skill point${n === 1 ? "" : "s"}`;
   skillTreeCanvas.replaceChildren();
   for (const cat of SKILL_CATEGORIES) {
-    const row = document.createElement("div");
-    row.className = "skill-tree-row";
+    const skills = SKILL_DEFS.filter((s) => s.category === cat).sort((a, b) => {
+      if (a.layoutCol !== b.layoutCol) return a.layoutCol - b.layoutCol;
+      return a.id.localeCompare(b.id);
+    });
+    const maxCol = skills.reduce((m, s) => Math.max(m, s.layoutCol), 0);
+
+    const wrap = document.createElement("div");
+    wrap.className = "skill-tree-row-wrap";
+
     const label = document.createElement("span");
     label.className = "skill-tree-cat";
     label.textContent = cat;
-    const cellsWrap = document.createElement("div");
-    cellsWrap.className = "skill-tree-row-cells";
-    const skills = SKILL_DEFS.filter((s) => s.category === cat).sort((a, b) => a.column - b.column);
-    const maxCol = skills.reduce((m, s) => Math.max(m, s.column), 0);
-    cellsWrap.style.gridTemplateColumns = `repeat(${maxCol + 1}, 6.5rem)`;
+
+    const chart = document.createElement("div");
+    chart.className = "skill-tree-chart";
+
+    const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    svg.classList.add("skill-tree-svg");
+
+    const colsWrap = document.createElement("div");
+    colsWrap.className = "skill-tree-cols";
 
     for (let c = 0; c <= maxCol; c++) {
-      const sk = skills.find((x) => x.column === c);
-      const slot = document.createElement("div");
-      slot.className = "skill-tree-slot";
-      if (sk) {
+      const colEl = document.createElement("div");
+      colEl.className = "skill-tree-col";
+      const inCol = skills.filter((sk) => sk.layoutCol === c);
+      for (const sk of inCol) {
         const unlocked = state.player.skillsUnlocked.includes(sk.id);
         const prereqOk = sk.requires.every((r) => state.player.skillsUnlocked.includes(r));
         const affordable = state.player.skillPoints >= sk.cost;
         const blocked = skillTreeUnlockBlocked(state);
+        const nodeWrap = document.createElement("div");
+        nodeWrap.className = "skill-tree-node-wrap";
+        nodeWrap.dataset.skillNode = sk.id;
+
         const btn = document.createElement("button");
         btn.type = "button";
         btn.className = "skill-node";
@@ -184,13 +253,67 @@ function renderSkillTree(): void {
         btn.addEventListener("mouseenter", (ev) => showSkillTooltip(ev, sk, reqNames));
         btn.addEventListener("mousemove", (ev) => positionSkillTooltip(ev.clientX, ev.clientY));
         btn.addEventListener("mouseleave", hideSkillTooltip);
-        slot.appendChild(btn);
+
+        const hintRow = document.createElement("div");
+        hintRow.className = "skill-token-hint";
+        if (sk.grantsTokens?.length) {
+          for (const g of sk.grantsTokens) {
+            const chip = document.createElement("span");
+            chip.className = "skill-token-hint-chip";
+            chip.textContent =
+              g.kind === "move"
+                ? `+${g.perTurn} move${g.perTurn > 1 ? "" : ""}/turn`
+                : `+${g.perTurn} knockback/turn`;
+            hintRow.appendChild(chip);
+          }
+        }
+
+        nodeWrap.appendChild(btn);
+        nodeWrap.appendChild(hintRow);
+        colEl.appendChild(nodeWrap);
       }
-      cellsWrap.appendChild(slot);
+      colsWrap.appendChild(colEl);
     }
-    row.appendChild(label);
-    row.appendChild(cellsWrap);
-    skillTreeCanvas.appendChild(row);
+
+    chart.appendChild(svg);
+    chart.appendChild(colsWrap);
+    wrap.appendChild(label);
+    wrap.appendChild(chart);
+    skillTreeCanvas.appendChild(wrap);
+
+    requestAnimationFrame(() => drawSkillTreeEdges(wrap, svg));
+  }
+}
+
+function renderTurnTokens(): void {
+  turnTokensEl.replaceChildren();
+  if (state.phase === "defeat") return;
+  const blocked = choiceModalBlocksPlay(state);
+  if (state.player.moveTokens > 0) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "turn-token turn-token--move";
+    b.textContent = `Move ×${state.player.moveTokens}`;
+    b.title = "Spend one token, then click a highlighted tile to step 1 space.";
+    b.disabled = state.phase !== "player" || !!state.pending || blocked;
+    b.addEventListener("click", () => apply({ type: "USE_MOVE_TOKEN" }));
+    turnTokensEl.appendChild(b);
+  }
+  if (state.player.knockbackTokens > 0) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "turn-token turn-token--kb";
+    b.textContent = `Knockback ×${state.player.knockbackTokens}`;
+    b.title = "Spend to prime your next weapon attack to push the enemy back.";
+    b.disabled = state.phase !== "player" || !!state.pending || blocked;
+    b.addEventListener("click", () => apply({ type: "USE_KNOCKBACK_TOKEN" }));
+    turnTokensEl.appendChild(b);
+  }
+  if (state.player.knockbackPrimed) {
+    const span = document.createElement("span");
+    span.className = "turn-token-primed";
+    span.textContent = "KB ready";
+    turnTokensEl.appendChild(span);
   }
 }
 
@@ -227,6 +350,22 @@ function cardChrome(cardId: string): { icon: string; accent: string } {
     default:
       return { icon: "?", accent: "#888888" };
   }
+}
+
+function createCardTypesElement(def: CardDef | undefined): HTMLDivElement | null {
+  const types = def?.types ?? [];
+  if (types.length === 0) return null;
+
+  const row = document.createElement("div");
+  row.className = "card-type-row";
+  row.setAttribute("aria-label", `Card types: ${types.join(", ")}`);
+  for (const type of types) {
+    const pill = document.createElement("span");
+    pill.className = "card-type-pill";
+    pill.textContent = type;
+    row.appendChild(pill);
+  }
+  return row;
 }
 
 function apply(cmd: GameCommand): void {
@@ -270,6 +409,115 @@ function countIds(ids: readonly string[]): Map<string, number> {
   const m = new Map<string, number>();
   for (const id of ids) m.set(id, (m.get(id) ?? 0) + 1);
   return m;
+}
+
+type CommandVariable = Extract<GameCommand, { type: "DEV_SET_VARIABLE" }>["variable"];
+
+const COMMAND_VARIABLES: Record<string, CommandVariable> = {
+  level: "level",
+  danger: "danger",
+  "max hp": "maxHp",
+  maxhp: "maxHp",
+  hp: "hp",
+  gold: "gold",
+  bread: "bread",
+  noise: "noise",
+  exp: "exp",
+  experience: "exp",
+  "skill points": "skillPoints",
+  skillpoints: "skillPoints",
+  sp: "skillPoints",
+};
+
+function normalizeLookupName(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[_-]+/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function findNamedId(defs: ReadonlyMap<string, { name: string }>, rawName: string): string | null {
+  const needle = normalizeLookupName(rawName);
+  if (!needle) return null;
+  for (const [id, def] of defs) {
+    if (id.toLowerCase() === rawName.trim().toLowerCase()) return id;
+    if (normalizeLookupName(id) === needle || normalizeLookupName(def.name) === needle) return id;
+  }
+  return null;
+}
+
+function parseCommandNumber(raw: string): number | null {
+  if (!/^-?\d+$/.test(raw.trim())) return null;
+  const n = Number(raw);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+function playerHasCardCopy(cardId: string): boolean {
+  return (
+    state.player.hand.includes(cardId) ||
+    state.player.discardPile.includes(cardId) ||
+    state.player.drawPile.includes(cardId) ||
+    state.player.equipped === cardId
+  );
+}
+
+function openCommandWindow(): void {
+  commandWindow.classList.add("is-open");
+  commandWindow.setAttribute("aria-hidden", "false");
+  commandFeedback.textContent = "";
+  requestAnimationFrame(() => commandInput.focus());
+}
+
+function closeCommandWindow(): void {
+  commandWindow.classList.remove("is-open");
+  commandWindow.setAttribute("aria-hidden", "true");
+}
+
+function runCommandLine(raw: string): string {
+  const trimmed = raw.trim();
+  if (!trimmed) return "Enter a command.";
+
+  const [verbRaw, ...args] = trimmed.split(/\s+/);
+  const verb = verbRaw?.toLowerCase();
+
+  if (verb === "set") {
+    if (args.length < 2) return "Usage: Set [variable] [number]";
+    const value = parseCommandNumber(args[args.length - 1]!);
+    if (value === null) return "Set command needs a whole number.";
+    const variableText = args.slice(0, -1).join(" ");
+    const variable = COMMAND_VARIABLES[normalizeLookupName(variableText)];
+    if (!variable) return `Unknown variable: ${variableText}`;
+    apply({ type: "DEV_SET_VARIABLE", variable, value });
+    return `Set ${variableText} to ${value}.`;
+  }
+
+  if (verb === "card") {
+    if (args.length < 2) return "Usage: Card [card name] [add or remove]";
+    const action = args[args.length - 1]!.toLowerCase();
+    if (action !== "add" && action !== "remove") return "Card action must be add or remove.";
+    const cardName = args.slice(0, -1).join(" ");
+    const cardId = findNamedId(state.cardDefs, cardName);
+    if (!cardId) return `Unknown card: ${cardName}`;
+    if (action === "remove" && !playerHasCardCopy(cardId)) {
+      return `You do not have ${state.cardDefs.get(cardId)?.name ?? cardId}.`;
+    }
+    apply({ type: "DEV_CARD", cardId, action });
+    return `${action === "add" ? "Added" : "Removed"} ${state.cardDefs.get(cardId)?.name ?? cardId}.`;
+  }
+
+  if (verb === "dungeon") {
+    if (args.length < 1) return "Usage: Dungeon [card name]";
+    const cardName = args.join(" ");
+    const cardId = findNamedId(state.dungeonCardDefs, cardName);
+    if (!cardId) return `Unknown dungeon card: ${cardName}`;
+    apply({ type: "DEV_DUNGEON_TOP", cardId });
+    return `Placed ${state.dungeonCardDefs.get(cardId)?.name ?? cardId} on top.`;
+  }
+
+  return "Unknown command. Try Set, Card, or Dungeon.";
 }
 
 function openPileInspector(which: "deck" | "discard"): void {
@@ -344,10 +592,12 @@ function buildOfferCardArticle(cardId: string): HTMLElement {
   const body = document.createElement("div");
   body.className = "card-body";
   body.textContent = def?.description ?? "";
+  const typeRow = createCardTypesElement(def);
 
   card.appendChild(rail);
   card.appendChild(header);
   card.appendChild(body);
+  if (typeRow) card.appendChild(typeRow);
   return card;
 }
 
@@ -424,10 +674,65 @@ function syncChestOfferModal(): void {
   });
 }
 
+function syncDeckBuilderModal(): void {
+  const offer = state.deckBuilderOffer;
+  if (!offer) {
+    deckBuilderOfferEl.classList.remove("is-open");
+    deckBuilderOfferEl.setAttribute("aria-hidden", "true");
+    deckBuilderTypeGrid.hidden = true;
+    deckBuilderTypeGrid.replaceChildren();
+    return;
+  }
+  deckBuilderOfferEl.classList.add("is-open");
+  deckBuilderOfferEl.setAttribute("aria-hidden", "false");
+  deckBuilderCards.replaceChildren();
+  if (offer.step === "choose_type") {
+    deckBuilderNote.textContent =
+      "Choose a card type. You will be offered three random cards of that type — pick one to add to your discard pile.";
+    deckBuilderTypeGrid.hidden = false;
+    deckBuilderTypeGrid.replaceChildren();
+    deckBuilderSkip.textContent = "Skip (no card)";
+    deckBuilderSkip.onclick = () => apply({ type: "RESOLVE_DECK_BUILDER_CANCEL" });
+    for (const ct of CARD_TYPE_ORDER) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "deck-builder-type-btn";
+      b.textContent = ct;
+      b.addEventListener("click", () => apply({ type: "RESOLVE_DECK_BUILDER_TYPE", cardType: ct }));
+      deckBuilderTypeGrid.appendChild(b);
+    }
+  } else {
+    deckBuilderNote.textContent = `Choose one ${offer.cardType} card to add to your deck (discard pile), or take none.`;
+    deckBuilderTypeGrid.hidden = true;
+    deckBuilderTypeGrid.replaceChildren();
+    deckBuilderSkip.textContent = "Take none";
+    deckBuilderSkip.onclick = () => apply({ type: "RESOLVE_DECK_BUILDER_PICK", pickIndex: null });
+    offer.options.forEach((cardId, idx) => {
+      const slot = document.createElement("div");
+      slot.className = "chest-offer-slot";
+      slot.appendChild(buildOfferCardArticle(cardId));
+      const take = document.createElement("button");
+      take.type = "button";
+      take.className = "primary";
+      take.textContent = "Add to deck";
+      take.addEventListener("click", () =>
+        apply({ type: "RESOLVE_DECK_BUILDER_PICK", pickIndex: idx }),
+      );
+      slot.appendChild(take);
+      deckBuilderCards.appendChild(slot);
+    });
+  }
+}
+
 function syncCardPickupModal(): void {
   const q = state.cardPickupOffer?.queue;
   const cardId =
-    q && q.length > 0 && !state.chestOffer && !state.pedestalOffer && !state.deckDestroyPending
+    q &&
+    q.length > 0 &&
+    !state.chestOffer &&
+    !state.pedestalOffer &&
+    !state.deckDestroyPending &&
+    !state.deckBuilderOffer
       ? q[0]!
       : null;
   if (!cardId) {
@@ -517,6 +822,10 @@ function renderAll(): void {
   hudLevel.textContent = String(state.player.level);
   hudExp.textContent = `${state.player.exp} / ${expToNextLevel(state.player.level)}`;
   hudSkillPts.textContent = String(state.player.skillPoints);
+  {
+    const n = state.player.skillPoints;
+    skillTreeSkillPts.textContent = `${n} skill point${n === 1 ? "" : "s"}`;
+  }
   hudGold.textContent = String(state.player.gold);
   hudBread.textContent = String(state.player.bread);
   hudDanger.textContent = String(state.danger);
@@ -549,11 +858,17 @@ function renderAll(): void {
     state.player.bread <= 0 ||
     state.player.hp >= state.player.maxHp;
 
-  btnSkillTree.disabled = state.phase === "defeat";
+  btnSkillTree.disabled = state.phase === "defeat" || choiceModalBlocksPlay(state);
 
   renderDungeonPiles();
+  renderTurnTokens();
 
-  if (state.chestOffer) {
+  if (state.deckBuilderOffer) {
+    hintEl.textContent =
+      state.deckBuilderOffer.step === "choose_type"
+        ? "Deck Builder — choose a card type (or skip)."
+        : "Deck Builder — pick one card for your discard pile, or take none.";
+  } else if (state.chestOffer) {
     hintEl.textContent = "Choose one chest card to add to your discard pile, or take none.";
   } else if ((state.cardPickupOffer?.queue.length ?? 0) > 0) {
     hintEl.textContent =
@@ -562,7 +877,7 @@ function renderAll(): void {
         : "Add this card to your deck (discard pile), or leave it.";
   } else if (state.phase === "peace") {
     if (state.deckDestroyPending) {
-      hintEl.textContent = "Destroy one copy of a card from your deck.";
+      hintEl.textContent = "Pedestal — destroy one deck card, or skip.";
     } else if (state.pedestalOffer) {
       hintEl.textContent = "Pedestal — take one card into discard, or take none.";
     } else {
@@ -574,7 +889,13 @@ function renderAll(): void {
   } else if (state.pending?.kind === "play_melee") {
     hintEl.textContent = "Click an adjacent enemy on the map to strike with your sword.";
   } else if (state.pending?.kind === "discard_move1") {
-    hintEl.textContent = "Click a highlighted tile to step 1 space.";
+    const mr = state.pending.maxRange;
+    hintEl.textContent =
+      mr > 1
+        ? `Click a highlighted tile to move up to ${mr} spaces (Quickstep + Sprinter).`
+        : "Click a highlighted tile to step 1 space.";
+  } else if (state.pending?.kind === "move_token_step") {
+    hintEl.textContent = "Click a highlighted tile to use your move token (1 step).";
   } else if (state.pending?.kind === "discard_punch") {
     hintEl.textContent = "Click an adjacent enemy to punch.";
   } else if (state.pending?.kind === "play_spear") {
@@ -633,6 +954,7 @@ function renderAll(): void {
     const body = document.createElement("div");
     body.className = "card-body";
     body.textContent = def?.description ?? "";
+    const typeRow = createCardTypesElement(def);
 
     const actions = document.createElement("div");
     actions.className = "card-actions";
@@ -685,6 +1007,7 @@ function renderAll(): void {
     card.appendChild(rail);
     card.appendChild(header);
     card.appendChild(body);
+    if (typeRow) card.appendChild(typeRow);
     card.appendChild(actions);
     handEl.appendChild(card);
   });
@@ -701,6 +1024,7 @@ function renderAll(): void {
   syncPedestalOfferModal();
   syncDeckDestroyModal();
   syncCardPickupModal();
+  syncDeckBuilderModal();
 
   if (skillTreeModal.classList.contains("is-open")) {
     renderSkillTree();
@@ -733,22 +1057,46 @@ pedestalOfferSkip.addEventListener("click", () => {
 pedestalOfferBackdrop.addEventListener("click", () => {
   if (state.pedestalOffer) apply({ type: "RESOLVE_PEDESTAL_PICK", pickIndex: null });
 });
-deckDestroyBackdrop.addEventListener("click", () => {
-  /* must pick a card — backdrop does nothing */
+function skipDeckDestroy(): void {
+  if (state.deckDestroyPending) apply({ type: "RESOLVE_DECK_DESTROY", cardId: null });
+}
+
+deckDestroySkip.addEventListener("click", () => skipDeckDestroy());
+deckDestroyBackdrop.addEventListener("click", () => skipDeckDestroy());
+
+deckBuilderBackdrop.addEventListener("click", () => {
+  if (!state.deckBuilderOffer) return;
+  if (state.deckBuilderOffer.step === "choose_type") {
+    apply({ type: "RESOLVE_DECK_BUILDER_CANCEL" });
+  } else {
+    apply({ type: "RESOLVE_DECK_BUILDER_PICK", pickIndex: null });
+  }
 });
 
 cardPickupAccept.addEventListener("click", () => {
-  if ((state.cardPickupOffer?.queue.length ?? 0) > 0 && !state.chestOffer) {
+  if (
+    (state.cardPickupOffer?.queue.length ?? 0) > 0 &&
+    !state.chestOffer &&
+    !state.deckBuilderOffer
+  ) {
     apply({ type: "RESOLVE_CARD_PICKUP", accept: true });
   }
 });
 cardPickupDecline.addEventListener("click", () => {
-  if ((state.cardPickupOffer?.queue.length ?? 0) > 0 && !state.chestOffer) {
+  if (
+    (state.cardPickupOffer?.queue.length ?? 0) > 0 &&
+    !state.chestOffer &&
+    !state.deckBuilderOffer
+  ) {
     apply({ type: "RESOLVE_CARD_PICKUP", accept: false });
   }
 });
 cardPickupBackdrop.addEventListener("click", () => {
-  if ((state.cardPickupOffer?.queue.length ?? 0) > 0 && !state.chestOffer) {
+  if (
+    (state.cardPickupOffer?.queue.length ?? 0) > 0 &&
+    !state.chestOffer &&
+    !state.deckBuilderOffer
+  ) {
     apply({ type: "RESOLVE_CARD_PICKUP", accept: false });
   }
 });
@@ -756,6 +1104,16 @@ cardPickupBackdrop.addEventListener("click", () => {
 btnSkillTree.addEventListener("click", () => openSkillTreeModal());
 skillTreeBackdrop.addEventListener("click", () => closeSkillTreeModal());
 skillTreeClose.addEventListener("click", () => closeSkillTreeModal());
+
+commandWindowBtn.addEventListener("click", () => openCommandWindow());
+commandWindowBackdrop.addEventListener("click", () => closeCommandWindow());
+commandWindowClose.addEventListener("click", () => closeCommandWindow());
+commandForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  const feedback = runCommandLine(commandInput.value);
+  commandFeedback.textContent = feedback;
+  commandInput.select();
+});
 
 skillTreeScroll.addEventListener(
   "wheel",
@@ -769,6 +1127,22 @@ skillTreeScroll.addEventListener(
 );
 
 document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && commandWindow.classList.contains("is-open")) {
+    closeCommandWindow();
+    return;
+  }
+  if (e.key === "Escape" && deckBuilderOfferEl.classList.contains("is-open")) {
+    if (state.deckBuilderOffer?.step === "choose_type") {
+      apply({ type: "RESOLVE_DECK_BUILDER_CANCEL" });
+    } else if (state.deckBuilderOffer?.step === "choose_card") {
+      apply({ type: "RESOLVE_DECK_BUILDER_PICK", pickIndex: null });
+    }
+    return;
+  }
+  if (e.key === "Escape" && deckDestroyOfferEl.classList.contains("is-open")) {
+    if (state.deckDestroyPending) skipDeckDestroy();
+    return;
+  }
   if (e.key === "Escape" && pedestalOfferEl.classList.contains("is-open")) {
     if (state.pedestalOffer) apply({ type: "RESOLVE_PEDESTAL_PICK", pickIndex: null });
     return;

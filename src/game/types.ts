@@ -12,6 +12,7 @@ export interface CardDef {
   name: string;
   rarity: string;
   description: string;
+  types: CardType[];
   effect:
     | { type: "move"; range: number }
     | { type: "melee_attack"; minDamage: number; maxDamage: number }
@@ -27,6 +28,26 @@ export interface CardDef {
     | { type: "magic_missile"; minDamage: number; maxDamage: number }
     | { type: "card_seeker"; move: number };
 }
+
+export type CardType =
+  | "Move"
+  | "Attack"
+  | "Deck"
+  | "Aid"
+  | "Skill"
+  | "Protection"
+  | "Magic";
+
+/** UI / Deck Builder: pick a type from this list. */
+export const CARD_TYPE_ORDER: CardType[] = [
+  "Move",
+  "Attack",
+  "Deck",
+  "Aid",
+  "Skill",
+  "Protection",
+  "Magic",
+];
 
 export type SkeletonWeapon = "sword" | "spear" | "axe" | "scimitar";
 
@@ -136,10 +157,11 @@ export type PendingIntent =
   | { kind: "play_spear"; cardHandIndex: number; minDamage: number; maxDamage: number }
   | { kind: "play_knife"; cardHandIndex: number; minDamage: number; maxDamage: number }
   | { kind: "play_axe"; cardHandIndex: number; minDamage: number; maxDamage: number }
-  | { kind: "discard_move1" }
+  | { kind: "discard_move1"; maxRange: number; fromQuickstep: boolean }
   | { kind: "discard_punch" }
   | { kind: "play_magic_missile"; cardHandIndex: number; minDamage: number; maxDamage: number }
-  | { kind: "play_card_seeker"; cardHandIndex: number };
+  | { kind: "play_card_seeker"; cardHandIndex: number }
+  | { kind: "move_token_step" };
 
 export interface StairFeaturePositions {
   pedestal: Point;
@@ -183,6 +205,13 @@ export interface GameState {
     exp: number;
     skillPoints: number;
     skillsUnlocked: string[];
+    /** Spend to step 1 orthogonal space (cleared at end of turn). */
+    moveTokens: number;
+    knockbackTokens: number;
+    /** After spending a knockback token; next weapon hit pushes if possible. */
+    knockbackPrimed: boolean;
+    movementCardsPlayedThisTurn: number;
+    scoutUsesThisTurn: number;
   };
   /** 1-based floor index; dungeon card formulas use this. */
   depth: number;
@@ -207,6 +236,11 @@ export interface GameState {
   chestOffer: null | { cards: [string, string, string] };
   /** Pot / ground card finds: take into discard or decline (queue if several). */
   cardPickupOffer: null | { queue: string[] };
+  /** Deck Builder skill: choose a card type, then one of three cards to add to discard. */
+  deckBuilderOffer:
+    | null
+    | { step: "choose_type" }
+    | { step: "choose_card"; cardType: CardType; options: [string, string, string] };
   /** First time the player steps into the gauntlet chamber: seal approach, spawn gauntlet wave. */
   gauntletCommenced: boolean;
   /** Set when the last gauntlet monster dies: stair room attached, peace mode, deck shuffled. */
@@ -214,7 +248,7 @@ export interface GameState {
   /** Card pedestal in the stair room (after peace). */
   pedestalUsed: boolean;
   pedestalOffer: null | { cards: [string, string, string] };
-  /** After taking/skipping pedestal cards, pick one deck card to destroy. */
+  /** After taking/skipping pedestal cards, optionally destroy one deck card (or skip). */
   deckDestroyPending: boolean;
   /** After Stability resolves; next dungeon draw may fizzle (Deadlier always applies). */
   stabilityBuffActive: boolean;
@@ -237,6 +271,13 @@ export type DispatchResult = { state: GameState; hits: HitVisual[] };
 
 export type GameCommand =
   | { type: "BEGIN_FIRST_TURN" }
+  | {
+      type: "DEV_SET_VARIABLE";
+      variable: "level" | "danger" | "maxHp" | "hp" | "gold" | "bread" | "noise" | "exp" | "skillPoints";
+      value: number;
+    }
+  | { type: "DEV_CARD"; cardId: string; action: "add" | "remove" }
+  | { type: "DEV_DUNGEON_TOP"; cardId: string }
   | { type: "REQUEST_PLAY_CARD"; handIndex: number }
   | { type: "REQUEST_DISCARD_BONUS"; handIndex: number; bonus: "move1" | "punch" | "investigate" }
   | { type: "REQUEST_EQUIP"; handIndex: number }
@@ -252,5 +293,10 @@ export type GameCommand =
   | { type: "DISMISS_DUNGEON_TOAST" }
   | { type: "PEACE_MOVE_TO"; x: number; y: number }
   | { type: "RESOLVE_PEDESTAL_PICK"; pickIndex: number | null }
-  | { type: "RESOLVE_DECK_DESTROY"; cardId: string }
-  | { type: "UNLOCK_SKILL"; skillId: string };
+  | { type: "RESOLVE_DECK_DESTROY"; cardId: string | null }
+  | { type: "UNLOCK_SKILL"; skillId: string }
+  | { type: "USE_MOVE_TOKEN" }
+  | { type: "USE_KNOCKBACK_TOKEN" }
+  | { type: "RESOLVE_DECK_BUILDER_TYPE"; cardType: CardType }
+  | { type: "RESOLVE_DECK_BUILDER_PICK"; pickIndex: number | null }
+  | { type: "RESOLVE_DECK_BUILDER_CANCEL" };

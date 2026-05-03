@@ -1,5 +1,5 @@
 import { rollInt } from "../engine/combat";
-import type { CardDef } from "./types";
+import type { CardDef, CardType } from "./types";
 
 export type PotLoot =
   | { kind: "nothing" }
@@ -7,9 +7,9 @@ export type PotLoot =
   | { kind: "bread" }
   | { kind: "card"; cardId: string };
 
-/** 40% any loot; then 55% coin / 25% bread / 20% random deck card. */
-export function rollPotLoot(cardPool: string[]): PotLoot {
-  if (Math.random() >= 0.4) return { kind: "nothing" };
+/** Default 40% any loot; then 55% coin / 25% bread / 20% random deck card. `hitChance` caps at ~0.95. */
+export function rollPotLoot(cardPool: string[], hitChance = 0.4): PotLoot {
+  if (Math.random() >= hitChance) return { kind: "nothing" };
 
   const r = Math.random();
   if (r < 0.55) return { kind: "coin", amount: 1 };
@@ -54,8 +54,25 @@ export function pickThreeFromPool(pool: string[], fallback: string): [string, st
 }
 
 /** Three offered cards for a chest (may repeat if the pool is tiny). */
-function isPlayableDeckCard(d: CardDef): boolean {
+export function isPlayableDeckCard(d: CardDef): boolean {
   return d.effect.type !== "bonus_chit";
+}
+
+/** Deck Builder: three random playable cards that include `cardType` in their types; fallback if pool empty. */
+export function pickDeckBuilderThreeForType(
+  cardDefs: Map<string, CardDef>,
+  cardType: CardType,
+): [string, string, string] {
+  const pool = [...cardDefs.entries()]
+    .filter(([, d]) => d.types.includes(cardType) && isPlayableDeckCard(d))
+    .map(([id]) => id);
+  if (pool.length === 0) {
+    const fallback = [...cardDefs.entries()]
+      .filter(([, d]) => isPlayableDeckCard(d))
+      .map(([id]) => id);
+    return pickThreeFromPool(fallback, "move");
+  }
+  return pickThreeFromPool(pool, pool[0]!);
 }
 
 export function pickChestOfferCards(

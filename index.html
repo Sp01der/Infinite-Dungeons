@@ -9,7 +9,12 @@
   <body>
     <div id="app">
       <header class="top-bar">
-        <h1 class="game-title">The Infinite Dungeon</h1>
+        <div class="top-bar-main">
+          <h1 class="game-title">The Infinite Dungeon</h1>
+          <button type="button" id="btn-command-window" class="command-open-btn" title="Open command window">
+            Commands
+          </button>
+        </div>
         <p class="tagline">Dungeon deck on the right · End turn is bottom-right</p>
       </header>
 
@@ -132,6 +137,7 @@
               <button type="button" class="btn-skill-tree" id="btn-skill-tree" title="Open skill tree">
                 Skills
               </button>
+              <div id="turn-tokens" class="turn-tokens" aria-label="Skill tokens this turn"></div>
             </div>
             <button
               type="button"
@@ -151,13 +157,43 @@
     <div id="skill-tree-modal" class="skill-tree-modal" aria-hidden="true" role="dialog" aria-labelledby="skill-tree-title">
       <div class="skill-tree-backdrop" id="skill-tree-backdrop" tabindex="-1"></div>
       <div class="skill-tree-panel">
-        <h2 id="skill-tree-title" class="skill-tree-heading">Skill tree</h2>
+        <div class="skill-tree-header-row">
+          <h2 id="skill-tree-title" class="skill-tree-heading">Skill tree</h2>
+          <span id="skill-tree-skill-pts" class="skill-tree-skill-pts" aria-live="polite">0 skill points</span>
+        </div>
         <p class="skill-tree-note">Spend skill points on branches (left to right). Scroll horizontally with the mouse wheel.</p>
         <div id="skill-tree-scroll" class="skill-tree-scroll">
           <div id="skill-tree-canvas" class="skill-tree-canvas"></div>
         </div>
         <div id="skill-tree-tooltip" class="skill-tree-tooltip" hidden></div>
         <button type="button" class="skill-tree-close" id="skill-tree-close">Close</button>
+      </div>
+    </div>
+
+    <div id="command-window" class="command-window" aria-hidden="true" role="dialog" aria-labelledby="command-window-title">
+      <div class="command-window-backdrop" id="command-window-backdrop" tabindex="-1"></div>
+      <div class="command-window-panel">
+        <div class="command-window-header">
+          <h2 id="command-window-title" class="command-window-heading">Commands</h2>
+          <button type="button" id="command-window-close" class="command-window-close" aria-label="Close commands">×</button>
+        </div>
+        <form id="command-form" class="command-form">
+          <input
+            id="command-input"
+            class="command-input"
+            type="text"
+            autocomplete="off"
+            spellcheck="false"
+            placeholder="Set danger 3"
+          />
+          <button type="submit" class="command-submit">Run</button>
+        </form>
+        <p id="command-feedback" class="command-feedback" aria-live="polite"></p>
+        <div class="command-help">
+          <p><code>Set [variable] [number]</code> — level, danger, max hp, hp, gold, bread, noise, exp, skill points</p>
+          <p><code>Card [card name] [add|remove]</code> — adds to discard or removes one copy</p>
+          <p><code>Dungeon [card name]</code> — places a dungeon card on top</p>
+        </div>
       </div>
     </div>
 
@@ -187,7 +223,7 @@
       <div class="chest-offer-backdrop" id="pedestal-offer-backdrop" tabindex="-1"></div>
       <div class="chest-offer-panel">
         <h2 id="pedestal-offer-title" class="chest-offer-heading">Card pedestal</h2>
-        <p class="chest-offer-note">Take one card into your discard pile (any rarity), or take none. Next you will destroy one card from your deck.</p>
+        <p class="chest-offer-note">Take one card into your discard pile (any rarity), or take none. Next you may destroy one card from your deck or skip.</p>
         <div id="pedestal-offer-cards" class="chest-offer-cards"></div>
         <div class="chest-offer-actions">
           <button type="button" class="chest-offer-skip" id="pedestal-offer-skip">Take none</button>
@@ -198,9 +234,25 @@
     <div id="deck-destroy-offer" class="chest-offer" aria-hidden="true" role="dialog" aria-labelledby="deck-destroy-title">
       <div class="chest-offer-backdrop" id="deck-destroy-backdrop" tabindex="-1"></div>
       <div class="chest-offer-panel">
-        <h2 id="deck-destroy-title" class="chest-offer-heading">Destroy a card</h2>
-        <p class="chest-offer-note">Remove one copy from your deck (draw, discard, or hand).</p>
+        <h2 id="deck-destroy-title" class="chest-offer-heading">Card pedestal — trim deck</h2>
+        <p class="chest-offer-note">Remove one copy from your deck (draw, discard, or hand), or skip and keep every card.</p>
         <div id="deck-destroy-body" class="chest-offer-cards deck-destroy-body"></div>
+        <div class="chest-offer-actions">
+          <button type="button" class="chest-offer-skip" id="deck-destroy-skip">Don&apos;t destroy any card</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="deck-builder-offer" class="chest-offer deck-builder-offer" aria-hidden="true" role="dialog" aria-labelledby="deck-builder-title">
+      <div class="chest-offer-backdrop" id="deck-builder-backdrop" tabindex="-1"></div>
+      <div class="chest-offer-panel deck-builder-panel">
+        <h2 id="deck-builder-title" class="chest-offer-heading">Deck Builder</h2>
+        <p id="deck-builder-note" class="chest-offer-note"></p>
+        <div id="deck-builder-type-grid" class="deck-builder-type-grid" hidden></div>
+        <div id="deck-builder-cards" class="chest-offer-cards"></div>
+        <div class="chest-offer-actions deck-builder-actions">
+          <button type="button" class="chest-offer-skip" id="deck-builder-skip">Skip</button>
+        </div>
       </div>
     </div>
 

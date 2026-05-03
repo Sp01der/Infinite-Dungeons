@@ -25,12 +25,36 @@ body {
   border-bottom: 1px solid #2a2d3a;
 }
 
+.top-bar-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
 .game-title {
   margin: 0;
   font-size: 1.1rem;
   font-weight: 650;
   letter-spacing: 0.02em;
   color: #f4f1ea;
+}
+
+.command-open-btn {
+  padding: 0.3rem 0.65rem;
+  border-radius: 6px;
+  border: 1px solid #5a4a7a;
+  background: linear-gradient(145deg, #2b2440, #1d192c);
+  color: #e8ddff;
+  font: inherit;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.command-open-btn:hover {
+  border-color: #8b72c8;
+  background: linear-gradient(145deg, #3a2e58, #26203a);
 }
 
 .tagline {
@@ -766,6 +790,25 @@ button.pile-inspect:focus-visible {
   color: #b8bec9;
 }
 
+.card-type-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+  padding: 0 0.45rem 0.3rem;
+}
+
+.card-type-pill {
+  padding: 0.08rem 0.28rem;
+  border: 1px solid rgba(154, 163, 178, 0.35);
+  border-radius: 999px;
+  color: #8f98aa;
+  font-size: 0.48rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+
 .card-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1072,6 +1115,37 @@ button.pile-inspect:focus-visible {
   color: #eef0f5;
 }
 
+.deck-builder-type-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  justify-content: center;
+}
+
+.deck-builder-type-btn {
+  padding: 0.4rem 0.65rem;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 2px solid #5a6a88;
+  background: #252a38;
+  color: #c8cdd8;
+  cursor: pointer;
+}
+
+.deck-builder-type-btn:hover {
+  border-color: #7a8ab8;
+  color: #eef0f5;
+}
+
+.deck-builder-actions {
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
 @media (max-width: 900px) {
   .bottom-dock {
     grid-template-columns: 1fr;
@@ -1171,6 +1245,48 @@ button.pile-inspect:focus-visible {
   cursor: not-allowed;
 }
 
+.turn-tokens {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  margin-top: 0.35rem;
+  min-height: 1.5rem;
+}
+
+.turn-token {
+  font: inherit;
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.2rem 0.45rem;
+  border-radius: 5px;
+  border: 1px solid #4a5f82;
+  background: #1e2638;
+  color: #b8c8e0;
+  cursor: pointer;
+}
+
+.turn-token--move {
+  border-color: #3d8c5c;
+  color: #c8f0d0;
+}
+
+.turn-token--kb {
+  border-color: #8b5a7a;
+  color: #f0d0e8;
+}
+
+.turn-token:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.turn-token-primed {
+  font-size: 0.62rem;
+  color: #e6a23c;
+  font-weight: 600;
+}
+
 .skill-tree-modal {
   position: fixed;
   inset: 0;
@@ -1201,8 +1317,8 @@ button.pile-inspect:focus-visible {
 .skill-tree-panel {
   position: relative;
   z-index: 1;
-  width: min(56rem, 96vw);
-  max-height: min(85vh, 40rem);
+  width: min(78rem, 98vw);
+  max-height: min(92vh, 56rem);
   display: flex;
   flex-direction: column;
   padding: 1rem 1.15rem;
@@ -1212,11 +1328,33 @@ button.pile-inspect:focus-visible {
   box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
 }
 
+.skill-tree-header-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  margin-bottom: 0.25rem;
+}
+
 .skill-tree-heading {
-  margin: 0 0 0.25rem;
+  margin: 0;
   font-size: 1.05rem;
   font-weight: 700;
   color: #eef0f5;
+}
+
+.skill-tree-skill-pts {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #c9d4e8;
+  white-space: nowrap;
+}
+
+.skill-tree-skill-pts::before {
+  content: "★ ";
+  color: #e6a23c;
+  font-size: 0.85em;
 }
 
 .skill-tree-note {
@@ -1227,7 +1365,7 @@ button.pile-inspect:focus-visible {
 
 .skill-tree-scroll {
   flex: 1;
-  min-height: 12rem;
+  min-height: 22rem;
   overflow-x: auto;
   overflow-y: hidden;
   margin-bottom: 0.75rem;
@@ -1243,15 +1381,16 @@ button.pile-inspect:focus-visible {
   padding: 0.25rem 0.15rem 0.5rem;
 }
 
-.skill-tree-row {
+.skill-tree-row-wrap {
   display: flex;
   flex-direction: row;
-  align-items: center;
-  gap: 0.65rem;
+  align-items: stretch;
+  gap: 0.55rem;
 }
 
 .skill-tree-cat {
   flex: 0 0 5.25rem;
+  align-self: center;
   font-size: 0.72rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -1259,16 +1398,63 @@ button.pile-inspect:focus-visible {
   color: #9aa8c0;
 }
 
-.skill-tree-row-cells {
-  display: grid;
+.skill-tree-chart {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.skill-tree-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.skill-tree-edge {
+  fill: none;
+  stroke: #5a6a88;
+  stroke-width: 1.5;
+  opacity: 0.85;
+}
+
+.skill-tree-cols {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 0.65rem;
+}
+
+.skill-tree-col {
+  display: flex;
+  flex-direction: column;
   gap: 0.45rem;
+  min-width: 6.5rem;
+}
+
+.skill-tree-node-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
   align-items: stretch;
 }
 
-.skill-tree-slot {
-  min-height: 2.4rem;
+.skill-token-hint {
   display: flex;
-  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+  justify-content: center;
+  min-height: 0.85rem;
+}
+
+.skill-token-hint-chip {
+  font-size: 0.55rem;
+  color: #8a93a8;
+  opacity: 0.95;
 }
 
 .skill-node {
@@ -1362,4 +1548,142 @@ button.pile-inspect:focus-visible {
 
 .skill-tree-close:hover {
   background: #343c50;
+}
+
+.command-window {
+  position: fixed;
+  inset: 0;
+  z-index: 240;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 3.25rem 1rem 1rem;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.15s ease, visibility 0.15s;
+}
+
+.command-window.is-open {
+  pointer-events: auto;
+  visibility: visible;
+  opacity: 1;
+}
+
+.command-window-backdrop {
+  position: absolute;
+  inset: 0;
+  background: rgba(6, 8, 12, 0.45);
+  cursor: pointer;
+}
+
+.command-window-panel {
+  position: relative;
+  z-index: 1;
+  width: min(28rem, 100%);
+  padding: 0.9rem;
+  border-radius: 10px;
+  border: 2px solid #5a4a7a;
+  background: linear-gradient(165deg, #1f1b2c, #121018);
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+
+.command-window-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+
+.command-window-heading {
+  margin: 0;
+  font-size: 1rem;
+  color: #f0e8ff;
+}
+
+.command-window-close {
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: #a99ac8;
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.command-window-close:hover {
+  color: #f0e8ff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.command-form {
+  display: flex;
+  gap: 0.45rem;
+}
+
+.command-input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.5rem 0.6rem;
+  border-radius: 6px;
+  border: 1px solid #4a5068;
+  background: #0d0e14;
+  color: #eef0f5;
+  font: inherit;
+}
+
+.command-input:focus {
+  outline: 2px solid #8b72c8;
+  outline-offset: 2px;
+}
+
+.command-submit {
+  padding: 0.5rem 0.85rem;
+  border-radius: 6px;
+  border: 1px solid #5a7a68;
+  background: #21382b;
+  color: #d8f0dc;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.command-submit:hover {
+  border-color: #7fb890;
+  background: #2a4735;
+}
+
+.command-feedback {
+  min-height: 1.2rem;
+  margin: 0.55rem 0;
+  font-size: 0.8rem;
+  color: #d9d0ee;
+}
+
+.command-help {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-top: 0.4rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid #3d354e;
+  font-size: 0.72rem;
+  line-height: 1.35;
+  color: #aaa2b8;
+}
+
+.command-help p {
+  margin: 0;
+}
+
+.command-help code {
+  color: #f0e8ff;
+  background: #171420;
+  border: 1px solid #3d354e;
+  border-radius: 4px;
+  padding: 0.05rem 0.25rem;
 }

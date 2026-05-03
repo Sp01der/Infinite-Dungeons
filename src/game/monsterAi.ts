@@ -1,6 +1,7 @@
 import { applyDefense, monsterDamageBonus, rollInt } from "../engine/combat";
 import { keyOf, magicMissilePathClearToPlayer, tileAt } from "../engine/grid";
 import { manhattan } from "../engine/movement";
+import { incomingDamageToPlayer } from "./skillsRuntime";
 import type { GameState, HitVisual, MonsterInstance, Point, SkeletonWeapon } from "./types";
 
 const ORTHO: Point[] = [
@@ -148,7 +149,7 @@ function damagePlayer(
   monName: string,
   hits: HitVisual[],
 ): { state: GameState; dead: boolean } {
-  const dmg = applyDefense(raw, s.player.defenseBonusThisTurn);
+  const dmg = incomingDamageToPlayer(s, raw);
   const px = s.player.x;
   const py = s.player.y;
   const hp = Math.max(0, s.player.hp - dmg);

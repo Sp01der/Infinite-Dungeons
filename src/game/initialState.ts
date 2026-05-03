@@ -26,6 +26,67 @@ function shuffleInPlace<T>(xs: T[]): void {
   }
 }
 
+const GOLD_SEEKER_SKILL = "mob_gold_seeker";
+
+/** +1 ground gold on each new floor (Gold Seeker). */
+function appendGoldSeekerIfSkill(
+  prev: GameState,
+  groundLoot: GroundLootInstance[],
+  tiles: TileKind[][],
+  roomIds: number[][],
+  roomKinds: RoomKind[],
+  width: number,
+  height: number,
+  playerStart: Point,
+  pots: PotInstance[],
+  chests: ChestInstance[],
+  depth: number,
+): GroundLootInstance[] {
+  if (!prev.player.skillsUnlocked.includes(GOLD_SEEKER_SKILL)) return groundLoot;
+  const blocked = new Set<string>();
+  for (const g of groundLoot) blocked.add(keyOf(g));
+  blocked.add(keyOf(playerStart));
+  for (const p of pots) blocked.add(keyOf(p));
+  for (const c of chests) blocked.add(keyOf(c));
+  const candidates: Point[] = [];
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (tiles[y][x] !== "floor") continue;
+      const rid = roomIds[y][x];
+      if (rid < 0) continue;
+      const rk = roomKinds[rid];
+      if (rk === "gauntlet" || rk === "gauntlet_corridor") continue;
+      const pt: Point = { x, y };
+      if (blocked.has(keyOf(pt))) continue;
+      candidates.push(pt);
+    }
+  }
+  if (candidates.length === 0) return groundLoot;
+  shuffleInPlace(candidates);
+  const p = candidates[0]!;
+  const id = `gloot_gs_${depth}_${groundLoot.length}`;
+  return [...groundLoot, { id, x: p.x, y: p.y, kind: "coin", amount: 1 }];
+}
+
+/** Gold Seeker: place one coin on the current floor (e.g. right after unlocking the skill). */
+export function appendGoldSeekerBonusCoin(s: GameState): GameState {
+  if (!s.player.skillsUnlocked.includes(GOLD_SEEKER_SKILL)) return s;
+  const groundLoot = appendGoldSeekerIfSkill(
+    s,
+    s.groundLoot,
+    s.tiles,
+    s.roomIds,
+    s.roomKinds,
+    s.width,
+    s.height,
+    { x: s.player.x, y: s.player.y },
+    s.pots,
+    s.chests,
+    s.depth,
+  );
+  return { ...s, groundLoot };
+}
+
 const STARTER_COMMONS = ["spear", "knife", "axe", "quickstep"] as const;
 
 function buildStartingDeck(): string[] {
@@ -389,6 +450,11 @@ export function createInitialState(floorDef: FloorDef): GameState {
       exp: 0,
       skillPoints: 0,
       skillsUnlocked: [],
+      moveTokens: 0,
+      knockbackTokens: 0,
+      knockbackPrimed: false,
+      movementCardsPlayedThisTurn: 0,
+      scoutUsesThisTurn: 0,
     },
     depth: 1,
     danger: 1,
@@ -408,6 +474,7 @@ export function createInitialState(floorDef: FloorDef): GameState {
     pending: null,
     chestOffer: null,
     cardPickupOffer: null,
+    deckBuilderOffer: null,
     gauntletCommenced: false,
     stairFeatures: null,
     pedestalUsed: false,
@@ -481,6 +548,11 @@ export function createInitialStateGenerated(gen: GeneratedFloor): GameState {
       exp: 0,
       skillPoints: 0,
       skillsUnlocked: [],
+      moveTokens: 0,
+      knockbackTokens: 0,
+      knockbackPrimed: false,
+      movementCardsPlayedThisTurn: 0,
+      scoutUsesThisTurn: 0,
     },
     depth: 1,
     danger: 1,
@@ -500,6 +572,7 @@ export function createInitialStateGenerated(gen: GeneratedFloor): GameState {
     pending: null,
     chestOffer: null,
     cardPickupOffer: null,
+    deckBuilderOffer: null,
     gauntletCommenced: false,
     stairFeatures: null,
     pedestalUsed: false,
@@ -535,7 +608,7 @@ export function createNextFloorState(prev: GameState, gen: GeneratedFloor): Game
     danger,
   );
   const cardDefs = prev.cardDefs;
-  const groundLoot = spawnGroundLoot(
+  let groundLoot = spawnGroundLoot(
     tiles,
     roomIds,
     roomKinds,
@@ -545,6 +618,19 @@ export function createNextFloorState(prev: GameState, gen: GeneratedFloor): Game
     pots,
     chests,
     cardDefs,
+  );
+  groundLoot = appendGoldSeekerIfSkill(
+    prev,
+    groundLoot,
+    tiles,
+    roomIds,
+    roomKinds,
+    width,
+    height,
+    playerStart,
+    pots,
+    chests,
+    depth,
   );
 
   const drawPile = [...prev.player.drawPile, ...prev.player.discardPile, ...prev.player.hand];
@@ -569,6 +655,11 @@ export function createNextFloorState(prev: GameState, gen: GeneratedFloor): Game
       suppressNextMove: false,
       defenseBonusThisTurn: 0,
       doublePunchThisTurn: false,
+      moveTokens: 0,
+      knockbackTokens: 0,
+      knockbackPrimed: false,
+      movementCardsPlayedThisTurn: 0,
+      scoutUsesThisTurn: 0,
     },
     depth,
     danger,
@@ -588,6 +679,7 @@ export function createNextFloorState(prev: GameState, gen: GeneratedFloor): Game
     pending: null,
     chestOffer: null,
     cardPickupOffer: null,
+    deckBuilderOffer: prev.deckBuilderOffer,
     gauntletCommenced: false,
     stairFeatures: null,
     pedestalUsed: false,
