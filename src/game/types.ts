@@ -1,6 +1,12 @@
 export type Phase = "player" | "dungeon_resolve" | "monsters" | "defeat" | "peace";
 
-export type TileKind = "floor" | "wall" | "blocked";
+/** Dev / future effects: bias integer rolls from `rollInt`. Shuffles still use `Math.random`. */
+export type ChanceMode = "normal" | "highest" | "lowest";
+
+export type TileKind = "floor" | "wall" | "blocked" | "water";
+
+/** Procedural floor visual / spawn theme (floors 1–5). */
+export type FloorTheme = "normal" | "overgrown" | "damp" | "brownstone";
 
 export interface Point {
   x: number;
@@ -83,7 +89,10 @@ export type DungeonCardEffect =
   | { type: "collapse" }
   | { type: "lights_out" }
   | { type: "targeted_collapse" }
-  | { type: "you_are_not_alone" };
+  | { type: "you_are_not_alone" }
+  | { type: "overgrowth" }
+  | { type: "flooding" }
+  | { type: "stalactites_fall" };
 
 export interface DungeonCardDef {
   id: string;
@@ -133,6 +142,8 @@ export interface MonsterInstance {
   darkBoltReady?: boolean;
   /** Corrupted Shade only: +5 defense until start of next shade turn. */
   blackShieldActive?: boolean;
+  /** Drosir and other aquatic monsters: only move on water; treat bridges as water. */
+  aquatic?: boolean;
 }
 
 export interface PotInstance {
@@ -155,7 +166,8 @@ export type RoomKind =
   | "treasure"
   | "gauntlet"
   | "gauntlet_corridor"
-  | "stair_room";
+  | "stair_room"
+  | "greenhouse";
 
 export interface ChestInstance {
   id: string;
@@ -165,7 +177,17 @@ export interface ChestInstance {
   tier: number;
 }
 
-export type GroundLootKind = "coin" | "bread" | "card";
+export type GroundLootKind = "coin" | "bread" | "card" | "herb";
+
+/** Tangleweed obstacle: blocks movement; can be attacked like a monster. */
+export interface TangleweedPropInstance {
+  id: string;
+  x: number;
+  y: number;
+  hp: number;
+  /** Monster instance id of the owning tangleweed_bloom. */
+  bloomId: string;
+}
 
 /** Dropped loot; may share a tile with monsters (not with pots/chests). */
 export interface GroundLootInstance {
@@ -197,6 +219,7 @@ export type PendingIntent =
   | { kind: "play_card_seeker"; cardHandIndex: number }
   | { kind: "move_token_step" }
   | { kind: "enter_blocked_tile"; dest: Point; resume: EnterBlockedResume }
+  | { kind: "water_escape"; waterX: number; waterY: number }
   | { kind: "play_knockback_punch"; cardHandIndex: number; minDamage: number; maxDamage: number; knockback: number }
   | { kind: "play_bow_attack"; cardHandIndex: number; minDamage: number; maxDamage: number; range: number }
   | {
@@ -219,8 +242,8 @@ export interface GameState {
   phase: Phase;
   floorId: string;
   floorName: string;
-  /** Dungeon deck theme cards (e.g. basic → The Dust Settles). */
-  floorTheme: string;
+  /** Dungeon deck theme cards + floor generation theme. */
+  floorTheme: FloorTheme;
   width: number;
   height: number;
   tiles: TileKind[][];
@@ -234,6 +257,8 @@ export interface GameState {
     maxHp: number;
     gold: number;
     bread: number;
+    /** Healing Herb: use for +1 HP (held like bread). */
+    herb: number;
     drawPile: string[];
     discardPile: string[];
     hand: string[];
@@ -272,6 +297,16 @@ export interface GameState {
   /** Falling rocks block movement continuation and cost extra to leave. */
   rocks: RockInstance[];
   groundLoot: GroundLootInstance[];
+  /** Bridge cells on water: walkable for non-aquatic; aquatic treats as water. */
+  bridgeTiles: Point[];
+  /** Flooding dungeon card: room id whose floor tiles convert to water each turn. */
+  floodingRoomId: number | null;
+  /** Stalactites Fall: tiles that deal damage at start of next player turn. */
+  pendingStalactites: Point[];
+  /** Tangleweed obstacles (Overgrown). */
+  tangleweeds: TangleweedPropInstance[];
+  /** Count of times each theme was picked this run (weighted re-roll). */
+  themePickHistory: Partial<Record<FloorTheme, number>>;
   /** -1 wall; else index into roomKinds */
   roomIds: number[][];
   roomKinds: RoomKind[];
@@ -311,6 +346,10 @@ export interface GameState {
   pendingTargetedCollapse: Point[] | null;
   /** While > 0, Lights Out darkness is active; decremented when you end your turn. */
   lightsOutTurns: number;
+  /** Integer roll bias for testing (see `rollInt` + `Chance` command). */
+  chanceMode: ChanceMode;
+  /** If true, only player-origin rolls use `chanceMode`; world rolls (dungeon, monsters) stay random. */
+  chancePlayerOnly: boolean;
   log: string[];
   turn: number;
 }
@@ -328,13 +367,24 @@ export type GameCommand =
   | { type: "BEGIN_FIRST_TURN" }
   | {
       type: "DEV_SET_VARIABLE";
-      variable: "level" | "danger" | "maxHp" | "hp" | "gold" | "bread" | "noise" | "exp" | "skillPoints";
+      variable:
+        | "level"
+        | "danger"
+        | "maxHp"
+        | "hp"
+        | "gold"
+        | "bread"
+        | "herb"
+        | "noise"
+        | "exp"
+        | "skillPoints";
       value: number;
     }
   | { type: "DEV_CARD"; cardId: string; action: "add" | "remove" }
   | { type: "DEV_DUNGEON_TOP"; cardId: string }
   | { type: "DEV_GOTO_FLOOR"; depth: number }
   | { type: "DEV_SUMMON"; defId: string; level: number }
+  | { type: "DEV_CHANCE"; mode: ChanceMode; playerOnly: boolean }
   | { type: "REQUEST_PLAY_CARD"; handIndex: number }
   | { type: "REQUEST_DISCARD_BONUS"; handIndex: number; bonus: "move1" | "punch" | "investigate" }
   | { type: "REQUEST_EQUIP"; handIndex: number }
@@ -342,9 +392,13 @@ export type GameCommand =
   | { type: "CONFIRM_TARGET_TILE"; x: number; y: number }
   | { type: "CONFIRM_ENTER_BLOCKED"; handIndex: number }
   | { type: "CONFIRM_TARGET_MONSTER"; monsterInstanceId: string }
+  | { type: "CONFIRM_TARGET_TANGLEWEED"; tangleweedId: string }
   | { type: "CONFIRM_TARGET_POT"; potId: string }
   | { type: "CANCEL_PENDING" }
   | { type: "USE_BREAD" }
+  | { type: "USE_HERB" }
+  | { type: "CONFIRM_WATER_ESCAPE"; destX: number; destY: number }
+  | { type: "CANCEL_WATER_ESCAPE" }
   | { type: "END_TURN" }
   | { type: "RESOLVE_CHEST_OFFER"; pickIndex: number | null }
   | { type: "RESOLVE_CARD_PICKUP"; accept: boolean }

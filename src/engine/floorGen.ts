@@ -1,4 +1,4 @@
-import type { Point, RoomKind, TileKind } from "../game/types";
+import type { FloorTheme, Point, RoomKind, TileKind } from "../game/types";
 
 /** Compact work area — chambers are placed tight to keep cropped maps small. */
 const WORK_W = 40;
@@ -15,6 +15,10 @@ export interface GeneratedFloor {
   roomKinds: RoomKind[];
   /** Monster level/HP scaling for spawns on this floor (matches starting danger). */
   spawnDanger: number;
+  /** Water tiles that count as land for non-aquatic (bridge overlay). */
+  bridgeTiles: Point[];
+  /** Theme used to generate this layout. */
+  floorTheme: FloorTheme;
 }
 
 function mulberry32(seed: number): () => number {
@@ -58,11 +62,16 @@ function rollInt(rng: () => number, lo: number, hi: number): number {
   return lo + Math.floor(rng() * (hi - lo + 1));
 }
 
-function buildChamberList(nNormal: number): Chamber[] {
+function buildChamberList(nNormal: number, theme: FloorTheme, rng: () => number): Chamber[] {
   const list: Chamber[] = [];
   list.push({ kind: "entrance", idx: 0, x: 0, y: 0, w: 0, h: 0 });
+  let greenhouseSlot = -1;
+  if (theme === "overgrown" && rng() < 0.25 && nNormal > 0) {
+    greenhouseSlot = rollInt(rng, 0, nNormal - 1);
+  }
   for (let i = 0; i < nNormal; i++) {
-    list.push({ kind: "normal", idx: 1 + i, x: 0, y: 0, w: 0, h: 0 });
+    const kind: RoomKind = i === greenhouseSlot ? "greenhouse" : "normal";
+    list.push({ kind, idx: 1 + i, x: 0, y: 0, w: 0, h: 0 });
   }
   list.push({ kind: "treasure", idx: 1 + nNormal, x: 0, y: 0, w: 0, h: 0 });
   list.push({ kind: "gauntlet", idx: nNormal + 2, x: 0, y: 0, w: 0, h: 0 });
@@ -73,6 +82,8 @@ function assignSize(rng: () => number, kind: RoomKind): { w: number; h: number }
   switch (kind) {
     case "entrance":
       return { w: rollInt(rng, 4, 7), h: rollInt(rng, 3, 5) };
+    case "greenhouse":
+      return { w: 5, h: 5 };
     case "normal":
       return { w: rollInt(rng, 3, 7), h: rollInt(rng, 3, 6) };
     case "treasure":
@@ -310,6 +321,314 @@ function carveL(
   carveCell(tiles, roomMap, to.x, to.y);
 }
 
+/** Two tiles wide: horizontal leg uses rows y,y+1; vertical leg uses columns x,x+1. */
+function carveTunnel2Wide(
+  tiles: TileKind[][],
+  roomMap: number[][],
+  from: Point,
+  to: Point,
+  horizFirst: boolean,
+): void {
+  let x = from.x;
+  let y = from.y;
+  const carveHStep = () => {
+    const s = Math.sign(to.x - x);
+    if (s === 0) return false;
+    x += s;
+    carveCell(tiles, roomMap, x, y);
+    carveCell(tiles, roomMap, x, y + 1);
+    return true;
+  };
+  const carveVStep = () => {
+    const s = Math.sign(to.y - y);
+    if (s === 0) return false;
+    y += s;
+    carveCell(tiles, roomMap, x, y);
+    carveCell(tiles, roomMap, x + 1, y);
+    return true;
+  };
+  if (horizFirst) {
+    while (x !== to.x) {
+      carveHStep();
+    }
+    if (to.y !== from.y && x === to.x) {
+      carveCell(tiles, roomMap, x + 1, y);
+      carveCell(tiles, roomMap, x + 1, y + 1);
+    }
+    while (y !== to.y) {
+      carveVStep();
+    }
+  } else {
+    while (y !== to.y) {
+      carveVStep();
+    }
+    if (to.x !== from.x && y === to.y) {
+      carveCell(tiles, roomMap, x, y + 1);
+      carveCell(tiles, roomMap, x + 1, y + 1);
+    }
+    while (x !== to.x) {
+      carveHStep();
+    }
+  }
+  carveCell(tiles, roomMap, to.x, to.y);
+  carveCell(tiles, roomMap, to.x + 1, to.y);
+  carveCell(tiles, roomMap, to.x, to.y + 1);
+  carveCell(tiles, roomMap, to.x + 1, to.y + 1);
+}
+
+function bridgeKey(p: Point): string {
+  return `${p.x},${p.y}`;
+}
+
+function landWalkable(tiles: TileKind[][], bridges: Set<string>, x: number, y: number): boolean {
+  const t = tiles[y]?.[x];
+  if (t === "floor") return true;
+  if (t === "water" && bridges.has(`${x},${y}`)) return true;
+  return false;
+}
+
+function bfsLandReachable(
+  tiles: TileKind[][],
+  bridges: Set<string>,
+  w: number,
+  h: number,
+  start: Point,
+): Set<string> {
+  const seen = new Set<string>();
+  if (!landWalkable(tiles, bridges, start.x, start.y)) return seen;
+  const q: Point[] = [start];
+  seen.add(bridgeKey(start));
+  while (q.length) {
+    const p = q.shift()!;
+    for (const o of [
+      { x: 1, y: 0 },
+      { x: -1, y: 0 },
+      { x: 0, y: 1 },
+      { x: 0, y: -1 },
+    ]) {
+      const nx = p.x + o.x;
+      const ny = p.y + o.y;
+      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+      if (!landWalkable(tiles, bridges, nx, ny)) continue;
+      const k = `${nx},${ny}`;
+      if (seen.has(k)) continue;
+      seen.add(k);
+      q.push({ x: nx, y: ny });
+    }
+  }
+  return seen;
+}
+
+function allLandTilesReachable(
+  tiles: TileKind[][],
+  bridges: Set<string>,
+  w: number,
+  h: number,
+  start: Point,
+): boolean {
+  const reach = bfsLandReachable(tiles, bridges, w, h, start);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      if (landWalkable(tiles, bridges, x, y) && !reach.has(`${x},${y}`)) return false;
+    }
+  }
+  return true;
+}
+
+function shufflePoints(xs: Point[], rng: () => number): void {
+  for (let i = xs.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [xs[i], xs[j]] = [xs[j]!, xs[i]!];
+  }
+}
+
+function applyGauntletWaterRingDamp(
+  tiles: TileKind[][],
+  roomMap: number[][],
+  gch: Chamber,
+  gauntletRoomIdx: number,
+  bridgeWorld: Point[],
+  rng: () => number,
+): void {
+  const x0 = gch.x + 3;
+  const x1 = gch.x + 4;
+  const y0 = gch.y + 3;
+  const y1 = gch.y + 4;
+  const ring: Point[] = [];
+  for (let y = gch.y + 2; y <= gch.y + 5; y++) {
+    for (let x = gch.x + 2; x <= gch.x + 5; x++) {
+      if (x >= x0 && x <= x1 && y >= y0 && y <= y1) continue;
+      if (roomMap[y]?.[x] !== gauntletRoomIdx) continue;
+      if (tiles[y]?.[x] !== "floor") continue;
+      ring.push({ x, y });
+    }
+  }
+  if (ring.length === 0) return;
+  const bridge = ring[Math.floor(rng() * ring.length)]!;
+  for (const p of ring) {
+    if (p.x === bridge.x && p.y === bridge.y) continue;
+    tiles[p.y][p.x] = "water";
+  }
+  bridgeWorld.push(bridge);
+}
+
+function applyDampRoomWaterFeatures(
+  tiles: TileKind[][],
+  roomIds: number[][],
+  roomKinds: RoomKind[],
+  bridges: Point[],
+  rng: () => number,
+  start: Point,
+): void {
+  const h = tiles.length;
+  const w = tiles[0]!.length;
+  const bridgeSet = new Set(bridges.map(bridgeKey));
+
+  const tryPool = (cells: Point[]) => {
+    if (cells.length < 6) return;
+    shufflePoints(cells, rng);
+    const target = rollInt(rng, 3, 8);
+    let placed = 0;
+    for (const c of cells) {
+      if (placed >= target) break;
+      const prev = tiles[c.y][c.x];
+      if (prev !== "floor") continue;
+      tiles[c.y][c.x] = "water";
+      if (!allLandTilesReachable(tiles, bridgeSet, w, h, start)) {
+        tiles[c.y][c.x] = prev;
+      } else {
+        placed++;
+      }
+    }
+  };
+
+  const tryRiver = (cells: Point[]) => {
+    if (cells.length < 8) return;
+    const byx = new Map<number, Point[]>();
+    const byy = new Map<number, Point[]>();
+    for (const c of cells) {
+      if (!byx.has(c.x)) byx.set(c.x, []);
+      byx.get(c.x)!.push(c);
+      if (!byy.has(c.y)) byy.set(c.y, []);
+      byy.get(c.y)!.push(c);
+    }
+    const vertical = rng() < 0.5;
+    if (vertical) {
+      const xs = [...byx.keys()].filter((x) => byx.get(x)!.length >= 3);
+      if (xs.length === 0) return;
+      const colX = xs[Math.floor(rng() * xs.length)]!;
+      const col = byx.get(colX)!.sort((a, b) => a.y - b.y);
+      if (col.length < 3) return;
+      const bridgeI = 1 + Math.floor(rng() * Math.max(1, col.length - 2));
+      for (const c of col) {
+        const prev = tiles[c.y][c.x];
+        if (prev !== "floor") continue;
+        tiles[c.y][c.x] = "water";
+        if (!allLandTilesReachable(tiles, bridgeSet, w, h, start)) {
+          tiles[c.y][c.x] = prev;
+          continue;
+        }
+        const idx = col.indexOf(c);
+        if (idx === bridgeI) {
+          bridges.push({ x: c.x, y: c.y });
+          bridgeSet.add(bridgeKey(c));
+        }
+      }
+    } else {
+      const ys = [...byy.keys()].filter((y) => byy.get(y)!.length >= 3);
+      if (ys.length === 0) return;
+      const rowY = ys[Math.floor(rng() * ys.length)]!;
+      const row = byy.get(rowY)!.sort((a, b) => a.x - b.x);
+      if (row.length < 3) return;
+      const bridgeI = 1 + Math.floor(rng() * Math.max(1, row.length - 2));
+      for (const c of row) {
+        const prev = tiles[c.y][c.x];
+        if (prev !== "floor") continue;
+        tiles[c.y][c.x] = "water";
+        if (!allLandTilesReachable(tiles, bridgeSet, w, h, start)) {
+          tiles[c.y][c.x] = prev;
+          continue;
+        }
+        const idx = row.indexOf(c);
+        if (idx === bridgeI) {
+          bridges.push({ x: c.x, y: c.y });
+          bridgeSet.add(bridgeKey(c));
+        }
+      }
+    }
+  };
+
+  for (let rid = 0; rid < roomKinds.length; rid++) {
+    const k = roomKinds[rid];
+    if (k !== "normal" && k !== "treasure" && k !== "entrance" && k !== "greenhouse") continue;
+    const roomCells: Point[] = [];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (roomIds[y][x] === rid && tiles[y][x] === "floor") roomCells.push({ x, y });
+      }
+    }
+    if (roomCells.length === 0) continue;
+    if (rng() < 0.3) tryPool([...roomCells]);
+    if (rng() < 0.2) tryRiver(roomCells);
+  }
+}
+
+function applyBrownstoneInteriorWalls(
+  tiles: TileKind[][],
+  roomIds: number[][],
+  roomKinds: RoomKind[],
+  bridges: Point[],
+  rng: () => number,
+  start: Point,
+): void {
+  const h = tiles.length;
+  const w = tiles[0]!.length;
+  const bridgeSet = new Set(bridges.map(bridgeKey));
+  const orth = [
+    { x: 1, y: 0 },
+    { x: -1, y: 0 },
+    { x: 0, y: 1 },
+    { x: 0, y: -1 },
+  ];
+
+  for (let rid = 0; rid < roomKinds.length; rid++) {
+    const k = roomKinds[rid];
+    if (k !== "entrance" && k !== "normal" && k !== "treasure" && k !== "gauntlet") continue;
+    const nWalls = rollInt(rng, 1, 3);
+    const candidates: Point[] = [];
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (roomIds[y][x] !== rid || tiles[y][x] !== "floor") continue;
+        let touchesWall = false;
+        let foreign = false;
+        for (const o of orth) {
+          const nx = x + o.x;
+          const ny = y + o.y;
+          if (nx < 0 || ny < 0 || nx >= w || ny >= h) {
+            touchesWall = true;
+            continue;
+          }
+          const t = tiles[ny][nx];
+          if (t === "wall") touchesWall = true;
+          if (t === "floor" && roomIds[ny][nx] !== rid) foreign = true;
+        }
+        if (touchesWall && !foreign) candidates.push({ x, y });
+      }
+    }
+    shufflePoints(candidates, rng);
+    let added = 0;
+    for (const c of candidates) {
+      if (added >= nWalls) break;
+      tiles[c.y][c.x] = "wall";
+      if (!allLandTilesReachable(tiles, bridgeSet, w, h, start)) {
+        tiles[c.y][c.x] = "floor";
+      } else {
+        added++;
+      }
+    }
+  }
+}
+
 function floodCorridors(roomMap: number[][], tiles: TileKind[][], startId: number): number {
   let nextId = startId;
   for (let y = 0; y < WORK_H; y++) {
@@ -352,7 +671,7 @@ function cropMap(
   let maxY = 0;
   for (let y = 0; y < WORK_H; y++) {
     for (let x = 0; x < WORK_W; x++) {
-      if (tiles[y][x] === "floor") {
+      if (tiles[y][x] === "floor" || tiles[y][x] === "water") {
         minX = Math.min(minX, x);
         minY = Math.min(minY, y);
         maxX = Math.max(maxX, x);
@@ -385,40 +704,16 @@ function cropMap(
   return { tilesOut, roomIdsOut, ox: minX, oy: minY };
 }
 
-function bfsReachableFloor(tiles: TileKind[][], w: number, h: number, start: Point): Set<string> {
-  const seen = new Set<string>();
-  const q: Point[] = [start];
-  seen.add(`${start.x},${start.y}`);
-  while (q.length) {
-    const p = q.shift()!;
-    for (const o of [
-      { x: 1, y: 0 },
-      { x: -1, y: 0 },
-      { x: 0, y: 1 },
-      { x: 0, y: -1 },
-    ]) {
-      const nx = p.x + o.x;
-      const ny = p.y + o.y;
-      if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-      if (tiles[ny][nx] !== "floor") continue;
-      const k = `${nx},${ny}`;
-      if (seen.has(k)) continue;
-      seen.add(k);
-      q.push({ x: nx, y: ny });
-    }
-  }
-  return seen;
-}
-
 /** Exported for sanity checks / tooling. */
 export function verifyGeneratedFloor(f: GeneratedFloor): string | null {
-  const { width: w, height: h, tiles, playerStart: p, roomIds, roomKinds } = f;
-  if (tiles[p.y]?.[p.x] !== "floor") return "player not on floor";
-  const reach = bfsReachableFloor(tiles, w, h, p);
+  const { width: w, height: h, tiles, playerStart: p, roomIds, roomKinds, bridgeTiles } = f;
+  const bridgeSet = new Set(bridgeTiles.map(bridgeKey));
+  if (!landWalkable(tiles, bridgeSet, p.x, p.y)) return "player not on walkable tile";
+  const reach = bfsLandReachable(tiles, bridgeSet, w, h, p);
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      if (tiles[y][x] === "floor" && !reach.has(`${x},${y}`)) return "disconnected floor";
-      if (tiles[y][x] === "floor") {
+      if (landWalkable(tiles, bridgeSet, x, y) && !reach.has(`${x},${y}`)) return "disconnected floor";
+      if (tiles[y][x] === "floor" || tiles[y][x] === "water") {
         const rid = roomIds[y][x];
         if (rid < 0 || rid >= roomKinds.length) return "invalid room id";
       }
@@ -431,7 +726,7 @@ export function verifyGeneratedFloor(f: GeneratedFloor): string | null {
   const present = new Set<number>();
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      if (tiles[y][x] !== "floor") continue;
+      if (tiles[y][x] !== "floor" && tiles[y][x] !== "water") continue;
       present.add(roomIds[y][x]);
     }
   }
@@ -445,7 +740,7 @@ export function verifyGeneratedFloor(f: GeneratedFloor): string | null {
   const corridorCount = countKind("corridor");
   if (corridorCount < 4 || corridorCount > 14) return "corridor count out of bounds";
   const nonCorrCount = roomKinds.filter((k) =>
-    k === "entrance" || k === "normal" || k === "treasure" || k === "gauntlet",
+    k === "entrance" || k === "normal" || k === "treasure" || k === "gauntlet" || k === "greenhouse",
   ).length;
   if (nonCorrCount < 9 || nonCorrCount > 12) return "non-corridor room count out of bounds";
   if (countKind("entrance") !== 1) return "invalid entrance count";
@@ -476,7 +771,8 @@ export function verifyGeneratedFloor(f: GeneratedFloor): string | null {
 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      if (tiles[y][x] !== "floor" || roomIds[y][x] !== gauntletRid) continue;
+      if (roomIds[y][x] !== gauntletRid) continue;
+      if (tiles[y][x] !== "floor" && tiles[y][x] !== "water") continue;
       for (const o of [
         { x: 1, y: 0 },
         { x: -1, y: 0 },
@@ -486,7 +782,8 @@ export function verifyGeneratedFloor(f: GeneratedFloor): string | null {
         const nx = x + o.x;
         const ny = y + o.y;
         if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-        if (tiles[ny][nx] !== "floor") continue;
+        const nt = tiles[ny][nx];
+        if (nt !== "floor" && nt !== "water") continue;
         const nr = roomIds[ny][nx];
         if (nr === gauntletRid || nr === gauntletCorrRid) continue;
         return "gauntlet borders a room or corridor other than its approach";
@@ -502,7 +799,7 @@ export function countCorridorRegions(f: GeneratedFloor): number {
   const present = new Set<number>();
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
-      if (tiles[y][x] === "floor") present.add(roomIds[y][x]);
+      if (tiles[y][x] === "floor" || tiles[y][x] === "water") present.add(roomIds[y][x]);
     }
   }
   let n = 0;
@@ -526,8 +823,9 @@ function corridorCountTarget(depth: number): { lo: number; hi: number } {
   return { lo: 8, hi: 9 };
 }
 
-export function generateFloor(opts?: { seed?: number; depth?: number }): GeneratedFloor {
+export function generateFloor(opts?: { seed?: number; depth?: number; theme?: FloorTheme }): GeneratedFloor {
   const depth = opts?.depth ?? 1;
+  const theme: FloorTheme = opts?.theme ?? "normal";
   let seed = opts?.seed ?? Math.floor(Math.random() * 0x7fffffff);
   let attempts = 0;
   while (attempts < 520) {
@@ -535,7 +833,7 @@ export function generateFloor(opts?: { seed?: number; depth?: number }): Generat
     const rng = mulberry32(seed);
     const nNormal = normalChamberCountTarget(depth, rng);
     const { lo: corrLo, hi: corrHi } = corridorCountTarget(depth);
-    const chambers = buildChamberList(nNormal);
+    const chambers = buildChamberList(nNormal, theme, rng);
 
     const parents = new Map<number, number>();
     const placementOrder: number[] = [];
@@ -584,6 +882,11 @@ export function generateFloor(opts?: { seed?: number; depth?: number }): Generat
       for (let y = ch.y; y < ch.y + ch.h; y++) {
         for (let x = ch.x; x < ch.x + ch.w; x++) {
           if (x < 0 || y < 0 || x >= WORK_W || y >= WORK_H) continue;
+          if (ch.kind === "greenhouse") {
+            const lx = x - ch.x;
+            const ly = y - ch.y;
+            if ((lx === 0 || lx === 4) && (ly === 0 || ly === 4)) continue;
+          }
           tiles[y][x] = "floor";
           roomMap[y][x] = ch.idx;
         }
@@ -601,11 +904,22 @@ export function generateFloor(opts?: { seed?: number; depth?: number }): Generat
       const cb = chambers[bi]!;
       if (chambersOrthAdjacent(ca, cb)) continue;
       const [pa, pb] = shortestBoundaryPair(ca, cb);
-      carveL(tiles, roomMap, pa, pb, rng() < 0.5);
+      const horizFirst = rng() < 0.5;
+      if (theme === "brownstone") {
+        carveTunnel2Wide(tiles, roomMap, pa, pb, horizFirst);
+      } else {
+        carveL(tiles, roomMap, pa, pb, horizFirst);
+      }
     }
 
     for (const p of gauntletApproach.tiles) {
       carveCell(tiles, roomMap, p.x, p.y);
+    }
+
+    const bridgeWorld: Point[] = [];
+    if (theme === "damp") {
+      const gch = chambers[C - 1]!;
+      applyGauntletWaterRingDamp(tiles, roomMap, gch, gch.idx, bridgeWorld, rng);
     }
 
     const corridorStart = C;
@@ -637,6 +951,14 @@ export function generateFloor(opts?: { seed?: number; depth?: number }): Generat
     const px = rollInt(rng, ch0.x, ch0.x + ch0.w - 1) - ox;
     const py = rollInt(rng, ch0.y, ch0.y + ch0.h - 1) - oy;
 
+    const bridgeTiles: Point[] = bridgeWorld.map((p) => ({ x: p.x - ox, y: p.y - oy }));
+    if (theme === "damp") {
+      applyDampRoomWaterFeatures(tilesOut, roomIdsOut, roomKinds, bridgeTiles, rng, { x: px, y: py });
+    }
+    if (theme === "brownstone") {
+      applyBrownstoneInteriorWalls(tilesOut, roomIdsOut, roomKinds, bridgeTiles, rng, { x: px, y: py });
+    }
+
     const floor: GeneratedFloor = {
       id: `gen_${(seed >>> 0).toString(16)}`,
       name: "Generated dungeon",
@@ -647,6 +969,8 @@ export function generateFloor(opts?: { seed?: number; depth?: number }): Generat
       roomIds: roomIdsOut,
       roomKinds,
       spawnDanger: depth,
+      bridgeTiles,
+      floorTheme: theme,
     };
 
     const err = verifyGeneratedFloor(floor);

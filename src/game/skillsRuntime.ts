@@ -83,13 +83,30 @@ export function heavyPunchBonus(s: GameState): number {
 export function fighterTrainingBonus(s: GameState, def: CardDef | undefined): number {
   if (!hasSkill(s, SID.ATK_FIGHTER) || !def) return 0;
   const t = def.effect.type;
-  if (t === "melee_attack" || t === "spear_line" || t === "knife" || t === "axe") return 1;
+  if (
+    t === "melee_attack" ||
+    t === "spear_line" ||
+    t === "knife" ||
+    t === "axe" ||
+    t === "bow_attack" ||
+    t === "knockback_punch"
+  ) {
+    return 1;
+  }
   return 0;
 }
 
 export function mageTrainingBonus(s: GameState, def: CardDef | undefined): number {
   if (!hasSkill(s, SID.ATK_MAGE) || !def) return 0;
-  return def.effect.type === "magic_missile" ? 1 : 0;
+  const t = def.effect.type;
+  if (t === "magic_missile" || t === "lightning_bolt") return 1;
+  return 0;
+}
+
+/** Flat damage added to each Lightning Bolt chain hop (range/decay still use the card's base step). */
+export function lightningBoltSkillDamageBonus(s: GameState, cardId: string | undefined): number {
+  const def = cardId ? s.cardDefs.get(cardId) : undefined;
+  return attackStrengthBonus(s) + mageTrainingBonus(s, def);
 }
 
 export function sprinterExtraMoveRange(s: GameState, def: CardDef | undefined): number {

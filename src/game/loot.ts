@@ -8,16 +8,14 @@ export type PotLoot =
   | { kind: "card"; cardId: string };
 
 /** Default 40% any loot; then 55% coin / 25% bread / 20% random deck card. `hitChance` caps at ~0.95. */
-export function rollPotLoot(cardPool: string[], hitChance = 0.4): PotLoot {
+export function rollPotLoot(cardDefs: Map<string, CardDef>, depth: number, hitChance = 0.4): PotLoot {
   if (Math.random() >= hitChance) return { kind: "nothing" };
 
   const r = Math.random();
   if (r < 0.55) return { kind: "coin", amount: 1 };
   if (r < 0.8) return { kind: "bread" };
 
-  if (cardPool.length === 0) return { kind: "bread" };
-  const cardId = cardPool[rollInt(0, cardPool.length - 1)]!;
-  return { kind: "card", cardId };
+  return { kind: "card", cardId: pickRandomLootCardId(cardDefs, depth) };
 }
 
 export type ChestLootRoll =
@@ -58,18 +56,65 @@ export function isPlayableDeckCard(d: CardDef): boolean {
   return d.effect.type !== "bonus_chit";
 }
 
+const NON_CHEST_BASE_RARITIES = new Set(["Basic", "Common", "Uncommon"]);
+
+/** Random playable card from ground / pots / similar (not chest rare+ draft). */
+export function pickRandomLootCardId(cardDefs: Map<string, CardDef>, depth: number): string {
+  const playable = [...cardDefs.entries()].filter(([, d]) => isPlayableDeckCard(d));
+  const basic = playable.filter(([, d]) => NON_CHEST_BASE_RARITIES.has(d.rarity)).map(([id]) => id);
+  const rare = playable.filter(([, d]) => d.rarity === "Rare").map(([id]) => id);
+  const leg = playable.filter(([, d]) => d.rarity === "Legendary").map(([id]) => id);
+
+  const pick = (pool: string[]) => pool[rollInt(0, pool.length - 1)]!;
+
+  if (depth <= 1) {
+    if (basic.length === 0) return "move";
+    return pick(basic);
+  }
+  if (depth <= 3) {
+    if (rare.length > 0 && Math.random() < 0.12) return pick(rare);
+    if (basic.length === 0) return rare.length ? pick(rare) : "move";
+    return pick(basic);
+  }
+  if (leg.length > 0 && Math.random() < 0.08) return pick(leg);
+  if (rare.length > 0 && Math.random() < 0.18) return pick(rare);
+  if (basic.length === 0) {
+    if (rare.length > 0) return pick(rare);
+    if (leg.length > 0) return pick(leg);
+    return "move";
+  }
+  return pick(basic);
+}
+
+function filterIdsByLootDepthForDeckBuilder(
+  entries: [string, CardDef][],
+  depth: number,
+): string[] {
+  return entries
+    .filter(([, d]) => {
+      if (!isPlayableDeckCard(d)) return false;
+      if (depth <= 1) return NON_CHEST_BASE_RARITIES.has(d.rarity);
+      if (depth <= 3) return d.rarity !== "Legendary";
+      return true;
+    })
+    .map(([id]) => id);
+}
+
 /** Deck Builder: three random playable cards that include `cardType` in their types; fallback if pool empty. */
 export function pickDeckBuilderThreeForType(
   cardDefs: Map<string, CardDef>,
   cardType: CardType,
+  depth: number,
 ): [string, string, string] {
-  const pool = [...cardDefs.entries()]
-    .filter(([, d]) => d.types.includes(cardType) && isPlayableDeckCard(d))
-    .map(([id]) => id);
+  const typed = [...cardDefs.entries()].filter(
+    ([, d]) => d.types.includes(cardType) && isPlayableDeckCard(d),
+  );
+  const pool = filterIdsByLootDepthForDeckBuilder(typed, depth);
   if (pool.length === 0) {
-    const fallback = [...cardDefs.entries()]
-      .filter(([, d]) => isPlayableDeckCard(d))
-      .map(([id]) => id);
+    const fallback = filterIdsByLootDepthForDeckBuilder(
+      [...cardDefs.entries()].filter(([, d]) => isPlayableDeckCard(d)),
+      depth,
+    );
     return pickThreeFromPool(fallback, "move");
   }
   return pickThreeFromPool(pool, pool[0]!);
@@ -78,6 +123,7 @@ export function pickDeckBuilderThreeForType(
 export function pickChestOfferCards(
   cardDefs: Map<string, CardDef>,
   tier: "basicToUncommon" | "rarePlus",
+  floorDepth: number,
 ): [string, string, string] {
   if (tier === "basicToUncommon") {
     const pool = [...cardDefs.entries()]
@@ -89,9 +135,12 @@ export function pickChestOfferCards(
   const rare = [...cardDefs.entries()]
     .filter(([, d]) => d.rarity === "Rare" && isPlayableDeckCard(d))
     .map(([id]) => id);
-  const leg = [...cardDefs.entries()]
-    .filter(([, d]) => d.rarity === "Legendary" && isPlayableDeckCard(d))
-    .map(([id]) => id);
+  const leg =
+    floorDepth >= 4
+      ? [...cardDefs.entries()]
+          .filter(([, d]) => d.rarity === "Legendary" && isPlayableDeckCard(d))
+          .map(([id]) => id)
+      : [];
   const out: string[] = [];
   for (let i = 0; i < 3; i++) {
     const pickLegendary = leg.length > 0 && (rare.length === 0 || Math.random() < 0.22);
@@ -103,10 +152,18 @@ export function pickChestOfferCards(
   return [out[0]!, out[1]!, out[2]!];
 }
 
-/** Stair pedestal: any playable rarity (no bonus chits). */
-export function pickPedestalOfferCards(cardDefs: Map<string, CardDef>): [string, string, string] {
+/** Stair pedestal: playable by rarity vs floor depth (floor 1: no rare; legendary only depth 4+). */
+export function pickPedestalOfferCards(
+  cardDefs: Map<string, CardDef>,
+  floorDepth: number,
+): [string, string, string] {
   const pool = [...cardDefs.entries()]
-    .filter(([, d]) => d.effect.type !== "bonus_chit")
+    .filter(([, d]) => {
+      if (!isPlayableDeckCard(d)) return false;
+      if (floorDepth <= 1) return NON_CHEST_BASE_RARITIES.has(d.rarity);
+      if (floorDepth <= 3) return d.rarity !== "Legendary";
+      return true;
+    })
     .map(([id]) => id);
   return pickThreeFromPool(pool, "move");
 }

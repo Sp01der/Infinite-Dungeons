@@ -18,11 +18,20 @@ export function isWalkable(
   height: number,
   p: Point,
   occupied: Set<string>,
+  bridgeTileKeys?: Set<string>,
 ): boolean {
   if (!inBounds(p, width, height)) return false;
-  if (tileAt(tiles, p) !== "floor") return false;
-  if (occupied.has(keyOf(p))) return false;
-  return true;
+  const t = tileAt(tiles, p);
+  const bridges = bridgeTileKeys ?? new Set<string>();
+  if (t === "floor") {
+    if (occupied.has(keyOf(p))) return false;
+    return true;
+  }
+  if (t === "water" && bridges.has(keyOf(p))) {
+    if (occupied.has(keyOf(p))) return false;
+    return true;
+  }
+  return false;
 }
 
 /** Reachable tiles in <= maxSteps orthogonal moves from `from`, excluding blocked. */
@@ -34,6 +43,7 @@ export function reachableOrthogonal(
   maxSteps: number,
   occupied: Set<string>,
   rockTileKeys?: Set<string>,
+  bridgeTileKeys?: Set<string>,
 ): Set<string> {
   const rocks = rockTileKeys ?? new Set<string>();
   if (rocks.size === 0) {
@@ -49,7 +59,7 @@ export function reachableOrthogonal(
         const np = { x: cur.p.x + o.x, y: cur.p.y + o.y };
         const nk = keyOf(np);
         if (seen.has(nk)) continue;
-        if (!isWalkable(tiles, width, height, np, occupied)) continue;
+        if (!isWalkable(tiles, width, height, np, occupied, bridgeTileKeys)) continue;
         seen.add(nk);
         queue.push({ p: np, d: cur.d + 1 });
       }
@@ -85,7 +95,7 @@ export function reachableOrthogonal(
     for (const o of ORTHO) {
       const np = { x: p.x + o.x, y: p.y + o.y };
       const nk = keyOf(np);
-      if (!isWalkable(tiles, width, height, np, occupied)) continue;
+      if (!isWalkable(tiles, width, height, np, occupied, bridgeTileKeys)) continue;
       const stepCost =
         rocks.has(bestK) && maxSteps > 1 ? 2 : 1;
       const nd = bestD + stepCost;

@@ -108,5 +108,45 @@
     "damage": 4,
     "power": 8,
     "description": "A seasoned warrior that spawns above the current threat level. Picks its best weapon and retreats when wounded."
+  },
+  {
+    "id": "vineshon",
+    "name": "Vineshon",
+    "spriteId": "enemy_slime",
+    "hp": 4,
+    "defense": 0,
+    "damage": 2,
+    "power": 2,
+    "description": "Vine whip pulls prey close, then lashes for light damage."
+  },
+  {
+    "id": "tangleweed_bloom",
+    "name": "Tangleweed Bloom",
+    "spriteId": "enemy_mystic_core",
+    "hp": 5,
+    "defense": 0,
+    "damage": 0,
+    "power": 1,
+    "description": "Roots spread tangleweed across the floor."
+  },
+  {
+    "id": "drosir",
+    "name": "Drosir",
+    "spriteId": "enemy_drosir",
+    "hp": 5,
+    "defense": 0,
+    "damage": 2,
+    "power": 2,
+    "description": "Aquatic predator — glides through water to strike."
+  },
+  {
+    "id": "beetle",
+    "name": "Beetle",
+    "spriteId": "enemy_rockling",
+    "hp": 4,
+    "defense": 1,
+    "damage": 3,
+    "power": 3,
+    "description": "Chitinous skitterer that flees when badly hurt."
   }
 ]

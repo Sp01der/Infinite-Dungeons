@@ -1,11 +1,11 @@
-import { applyDefense, monsterDamageBonus, rollInt } from "../engine/combat";
-import { keyOf, magicMissilePathClearToPlayer, tileAt } from "../engine/grid";
+import { applyDefense, monsterDamageBonus, monsterMaxHp, rollInt } from "../engine/combat";
+import { keyOf, magicMissilePathClearToPlayer, tileAt, chebyshev } from "../engine/grid";
 import { manhattan } from "../engine/movement";
 import { cullMonstersWithDouvlonPairs, setMonsterHpWithDouvlonSync } from "./douvlon";
 import { addExp } from "./progression";
 import { SHADE_DECK_TEMPLATE } from "./monsterSpawn";
 import { incomingDamageToPlayer } from "./skillsRuntime";
-import type { GameState, HitVisual, MonsterInstance, Point, SkeletonWeapon } from "./types";
+import type { GameState, HitVisual, MonsterInstance, Point, SkeletonWeapon, TangleweedPropInstance } from "./types";
 
 const ORTHO: Point[] = [
   { x: 1, y: 0 },
@@ -39,6 +39,19 @@ function occupiedByMonsters(state: GameState): Set<string> {
   return s;
 }
 
+function bridgeKeySet(s: GameState): Set<string> {
+  return new Set(s.bridgeTiles.map(keyOf));
+}
+
+/** Walkable tile for this monster (land vs aquatic). */
+export function monsterTilePassable(s: GameState, m: MonsterInstance, p: Point): boolean {
+  const t = tileAt(s.tiles, p);
+  if (m.aquatic) return t === "water";
+  if (t === "floor") return true;
+  if (t === "water" && bridgeKeySet(s).has(keyOf(p))) return true;
+  return false;
+}
+
 function movementOcc(s: GameState, excludeMonsterId: string): Set<string> {
   const occ = new Set<string>();
   for (const m of s.monsters) {
@@ -47,11 +60,10 @@ function movementOcc(s: GameState, excludeMonsterId: string): Set<string> {
   }
   occ.add(keyOf({ x: s.player.x, y: s.player.y }));
   for (const r of s.rocks) occ.add(keyOf(r));
+  for (const tw of s.tangleweeds) {
+    if (tw.hp > 0) occ.add(keyOf(tw));
+  }
   return occ;
-}
-
-function chebyshev(a: Point, b: Point): number {
-  return Math.max(Math.abs(a.x - b.x), Math.abs(a.y - b.y));
 }
 
 function playerInSlimePlusRange(slime: Point, p: Point): boolean {
@@ -68,7 +80,7 @@ function bestOrthoToward(s: GameState, m: MonsterInstance, occ: Set<string>): Po
   let bestDist = Infinity;
   for (const o of ORTHO) {
     const np = { x: m.x + o.x, y: m.y + o.y };
-    if (occ.has(keyOf(np)) || tileAt(s.tiles, np) !== "floor") continue;
+    if (occ.has(keyOf(np)) || !monsterTilePassable(s, m, np)) continue;
     const d = manhattan(np, playerPos);
     if (d < bestDist) {
       bestDist = d;
@@ -84,7 +96,7 @@ function bestOrthoAway(s: GameState, m: MonsterInstance, occ: Set<string>): Poin
   let bestDist = -1;
   for (const o of ORTHO) {
     const np = { x: m.x + o.x, y: m.y + o.y };
-    if (occ.has(keyOf(np)) || tileAt(s.tiles, np) !== "floor") continue;
+    if (occ.has(keyOf(np)) || !monsterTilePassable(s, m, np)) continue;
     const d = manhattan(np, playerPos);
     if (d > bestDist) {
       bestDist = d;
@@ -100,7 +112,7 @@ function best8Toward(s: GameState, m: MonsterInstance, occ: Set<string>): Point 
   let bestDist = Infinity;
   for (const o of ALL8) {
     const np = { x: m.x + o.x, y: m.y + o.y };
-    if (occ.has(keyOf(np)) || tileAt(s.tiles, np) !== "floor") continue;
+    if (occ.has(keyOf(np)) || !monsterTilePassable(s, m, np)) continue;
     const d = chebyshev(np, playerPos);
     if (d < bestDist) {
       bestDist = d;
@@ -116,7 +128,7 @@ function best8Away(s: GameState, m: MonsterInstance, occ: Set<string>): Point | 
   let bestDist = -1;
   for (const o of ALL8) {
     const np = { x: m.x + o.x, y: m.y + o.y };
-    if (occ.has(keyOf(np)) || tileAt(s.tiles, np) !== "floor") continue;
+    if (occ.has(keyOf(np)) || !monsterTilePassable(s, m, np)) continue;
     const d = chebyshev(np, playerPos);
     if (d > bestDist) {
       bestDist = d;
@@ -513,18 +525,24 @@ function takeSkeletonArcherTurn(
   const P: Point = { x: s.player.x, y: s.player.y };
   let next = s;
   let cur = m;
+  const mp: Point = { x: cur.x, y: cur.y };
 
-  if (manhattan({ x: cur.x, y: cur.y }, P) === 1) {
-    const occ = movementOcc(next, cur.id);
-    const away = bestOrthoAway(next, cur, occ);
-    if (away) {
-      next = moveMonsterTo(next, cur, away, hooks);
+  // Orthogonal or diagonal neighbor: back off before bow logic (orthogonal moves).
+  if (chebyshev(mp, P) <= 1) {
+    let budget = 2;
+    while (budget > 0) {
       cur = next.monsters.find((x) => x.id === m.id)!;
+      if (!cur || chebyshev({ x: cur.x, y: cur.y }, P) > 1) break;
+      const occ = movementOcc(next, cur.id);
+      const away = bestOrthoAway(next, cur, occ);
+      if (!away) break;
+      next = moveMonsterTo(next, cur, away, hooks);
+      budget -= 1;
     }
     return { state: next, dead: false };
   }
 
-  const mp: Point = { x: cur.x, y: cur.y };
+  // In bow range (Manhattan "radius" + clear queen-line shot) but not adjacent.
   if (
     manhattan(mp, P) <= 6 &&
     magicMissilePathClearToPlayer(next.tiles, next.monsters, mp, P, cur.id)
@@ -575,11 +593,14 @@ function takeShadowRodentTurn(
   const P = playerPos;
   const bonus = monsterDamageBonus(curMon.level);
 
+  const distToPlayer = (mon: MonsterInstance): number =>
+    manhattan({ x: mon.x, y: mon.y }, P);
+
   const tryAttack = (
     state: GameState,
     mon: MonsterInstance,
   ): { state: GameState; dead: boolean } | null => {
-    if (manhattan({ x: mon.x, y: mon.y }, P) !== 1) return null;
+    if (distToPlayer(mon) !== 1) return null;
     const raw = rollInt(2, 4) + bonus;
     return damagePlayer(state, raw, nm, hits);
   };
@@ -591,45 +612,40 @@ function takeShadowRodentTurn(
     return moveMonsterTo(state, mon, step, hooks);
   };
 
+  const tryMoveAway = (state: GameState, mon: MonsterInstance): GameState => {
+    const occ = movementOcc(state, mon.id);
+    const step = bestOrthoAway(state, mon, occ);
+    if (!step) return state;
+    return moveMonsterTo(state, mon, step, hooks);
+  };
+
   let next = s;
   let mon = curMon;
-  // Attack can happen at slot 0 (before move 1), 1 (between moves), or 2 (after move 2)
-  const attackSlot = Math.floor(Math.random() * 3);
+  let movesLeft = 2;
+  let attacked = false;
 
-  if (attackSlot === 0) {
+  while (movesLeft > 0 && distToPlayer(mon) > 1) {
+    next = tryMove(next, mon);
+    mon = next.monsters.find((x) => x.id === curMon.id)!;
+    if (!mon) return { state: next, dead: false };
+    movesLeft -= 1;
+  }
+
+  if (distToPlayer(mon) === 1) {
     const atk = tryAttack(next, mon);
     if (atk) {
       if (atk.dead) return atk;
       next = atk.state;
+      attacked = true;
     }
+    mon = next.monsters.find((x) => x.id === curMon.id)!;
   }
 
-  mon = next.monsters.find((x) => x.id === curMon.id)!;
-  if (mon) next = tryMove(next, mon);
-
-  if (attackSlot === 1) {
+  while (movesLeft > 0 && attacked) {
+    if (!mon) break;
+    next = tryMoveAway(next, mon);
     mon = next.monsters.find((x) => x.id === curMon.id)!;
-    if (mon) {
-      const atk = tryAttack(next, mon);
-      if (atk) {
-        if (atk.dead) return atk;
-        next = atk.state;
-      }
-    }
-  }
-
-  mon = next.monsters.find((x) => x.id === curMon.id)!;
-  if (mon) next = tryMove(next, mon);
-
-  if (attackSlot === 2) {
-    mon = next.monsters.find((x) => x.id === curMon.id)!;
-    if (mon) {
-      const atk = tryAttack(next, mon);
-      if (atk) {
-        if (atk.dead) return atk;
-        next = atk.state;
-      }
-    }
+    movesLeft -= 1;
   }
 
   return { state: next, dead: false };
@@ -1063,6 +1079,253 @@ function takeCorruptedShadeTurn(
   return { state: next, dead: false };
 }
 
+function vineWhipPullDestination(s: GameState, v: Point, p: Point, excludeMonsterId: string): Point | null {
+  if (!magicMissilePathClearToPlayer(s.tiles, s.monsters, v, p, excludeMonsterId)) return null;
+  let x = p.x;
+  let y = p.y;
+  for (let guard = 0; guard < 64; guard++) {
+    if (chebyshev({ x, y }, v) <= 1) return { x, y };
+    const dx = Math.sign(v.x - x);
+    const dy = Math.sign(v.y - y);
+    if (dx !== 0 && dy !== 0) {
+      x += dx;
+      y += dy;
+    } else if (dx !== 0) x += dx;
+    else if (dy !== 0) y += dy;
+    else return null;
+  }
+  return null;
+}
+
+function takeVineshonTurn(
+  s: GameState,
+  m: MonsterInstance,
+  hooks: MonsterPhaseHooks,
+  hits: HitVisual[],
+): { state: GameState; dead: boolean } {
+  const P: Point = { x: s.player.x, y: s.player.y };
+  const name = s.monsterDefs.get(m.defId)?.name ?? "Vineshon";
+  let next = s;
+  let cur = m;
+  if (manhattan({ x: cur.x, y: cur.y }, P) > 4) {
+    for (let i = 0; i < 2; i++) {
+      const occ = movementOcc(next, cur.id);
+      const step = best8Toward(next, cur, occ);
+      if (!step) break;
+      next = moveMonsterTo(next, cur, step, hooks);
+      cur = next.monsters.find((x) => x.id === m.id)!;
+    }
+  } else {
+    const dest = vineWhipPullDestination(next, { x: cur.x, y: cur.y }, P, cur.id);
+    if (dest && tileAt(next.tiles, dest) === "floor") {
+      next = { ...next, player: { ...next.player, x: dest.x, y: dest.y } };
+      next = appendLog(next, `${name}'s vines haul you in!`);
+      next = hooks.resolvePlayerEnter(next, dest.x, dest.y);
+    }
+  }
+  cur = next.monsters.find((x) => x.id === m.id)!;
+  if (manhattan({ x: cur.x, y: cur.y }, { x: next.player.x, y: next.player.y }) <= 1) {
+    const raw = rollInt(1, 3) + monsterDamageBonus(cur.level);
+    const d = damagePlayer(next, raw, name, hits);
+    if (d.dead) return { state: d.state, dead: true };
+    next = d.state;
+  }
+  return { state: next, dead: false };
+}
+
+function tileBlockedForTangleweedSpawn(s: GameState, x: number, y: number): boolean {
+  if (tileAt(s.tiles, { x, y }) !== "floor") return true;
+  if (s.player.x === x && s.player.y === y) return true;
+  if (s.monsters.some((m) => m.hp > 0 && m.x === x && m.y === y)) return true;
+  if (s.rocks.some((r) => r.x === x && r.y === y)) return true;
+  if (s.tangleweeds.some((t) => t.hp > 0 && t.x === x && t.y === y)) return true;
+  if (s.monsters.some((m) => m.defId === "tangleweed_bloom" && m.hp > 0 && m.x === x && m.y === y))
+    return true;
+  return false;
+}
+
+function takeTangleweedBloomTurn(s: GameState, m: MonsterInstance): GameState {
+  const bloomId = m.id;
+  const candidates: Point[] = [];
+  for (const o of ORTHO) {
+    const p = { x: m.x + o.x, y: m.y + o.y };
+    if (!tileBlockedForTangleweedSpawn(s, p.x, p.y)) candidates.push(p);
+  }
+  if (candidates.length === 0) {
+    for (const tw of s.tangleweeds) {
+      if (tw.bloomId !== bloomId || tw.hp <= 0) continue;
+      for (const o of ORTHO) {
+        const n = { x: tw.x + o.x, y: tw.y + o.y };
+        if (!tileBlockedForTangleweedSpawn(s, n.x, n.y)) candidates.push(n);
+      }
+    }
+  }
+  if (candidates.length === 0) return s;
+  const dest = candidates[rollInt(0, candidates.length - 1)]!;
+  const id = `tangle_${s.tangleweeds.length}_${Math.floor(Math.random() * 1e6)}`;
+  return {
+    ...s,
+    tangleweeds: [...s.tangleweeds, { id, x: dest.x, y: dest.y, hp: 1, bloomId }],
+    log: [...s.log.slice(-50), "Tangleweed spreads."],
+  };
+}
+
+function takeDrosirTurn(
+  s: GameState,
+  m: MonsterInstance,
+  hooks: MonsterPhaseHooks,
+  hits: HitVisual[],
+): { state: GameState; dead: boolean } {
+  const name = s.monsterDefs.get(m.defId)?.name ?? "Drosir";
+  let next = s;
+  let cur = m;
+  const P = { x: next.player.x, y: next.player.y };
+  const canAttackNow = () =>
+    tileAt(next.tiles, { x: cur.x, y: cur.y }) === "water" &&
+    manhattan({ x: cur.x, y: cur.y }, P) === 1;
+  const doAttack = (): boolean => {
+    const raw = rollInt(2, 3) + monsterDamageBonus(cur.level);
+    const d = damagePlayer(next, raw, name, hits);
+    if (d.dead) return true;
+    next = d.state;
+    cur = next.monsters.find((x) => x.id === m.id)!;
+    return false;
+  };
+  const moveOnce = (): void => {
+    const occ = movementOcc(next, cur.id);
+    let best: Point | null = null;
+    let bestDist = Infinity;
+    for (const o of ORTHO) {
+      const np = { x: cur.x + o.x, y: cur.y + o.y };
+      if (occ.has(keyOf(np)) || !monsterTilePassable(next, cur, np)) continue;
+      const d = manhattan(np, P);
+      if (d < bestDist) {
+        bestDist = d;
+        best = np;
+      }
+    }
+    if (best) {
+      next = moveMonsterTo(next, cur, best, hooks);
+      cur = next.monsters.find((x) => x.id === m.id)!;
+    }
+  };
+  if (Math.random() < 0.5) {
+    for (let i = 0; i < 3; i++) moveOnce();
+    if (canAttackNow() && doAttack()) return { state: { ...next, phase: "defeat" }, dead: true };
+  } else {
+    if (canAttackNow() && doAttack()) return { state: { ...next, phase: "defeat" }, dead: true };
+    for (let i = 0; i < 3; i++) moveOnce();
+    if (canAttackNow() && doAttack()) return { state: { ...next, phase: "defeat" }, dead: true };
+  }
+  return { state: next, dead: false };
+}
+
+function takeBeetleTurn(
+  s: GameState,
+  m: MonsterInstance,
+  hooks: MonsterPhaseHooks,
+  hits: HitVisual[],
+): { state: GameState; dead: boolean } {
+  const def = s.monsterDefs.get(m.defId);
+  const name = def?.name ?? "Beetle";
+  const maxHp = monsterMaxHp(def?.hp ?? 4, m.level);
+  const P = { x: s.player.x, y: s.player.y };
+  let next = s;
+  let cur = m;
+  const startAdj = manhattan({ x: cur.x, y: cur.y }, P) === 1;
+  const flee = cur.hp * 2 <= maxHp;
+  const doAttack = (): boolean => {
+    const raw = rollInt(2, 4) + monsterDamageBonus(cur.level);
+    const d = damagePlayer(next, raw, name, hits);
+    if (d.dead) return true;
+    next = d.state;
+    cur = next.monsters.find((x) => x.id === m.id)!;
+    return false;
+  };
+  const fleeTwo = () => {
+    for (let i = 0; i < 2; i++) {
+      const occ = movementOcc(next, cur.id);
+      const away = best8Away(next, cur, occ);
+      if (!away) break;
+      next = moveMonsterTo(next, cur, away, hooks);
+      cur = next.monsters.find((x) => x.id === m.id)!;
+    }
+  };
+  const closeTwo = () => {
+    for (let i = 0; i < 2; i++) {
+      const occ = movementOcc(next, cur.id);
+      const toward = best8Toward(next, cur, occ);
+      if (!toward) break;
+      next = moveMonsterTo(next, cur, toward, hooks);
+      cur = next.monsters.find((x) => x.id === m.id)!;
+    }
+  };
+  if (startAdj) {
+    if (doAttack()) return { state: { ...next, phase: "defeat" }, dead: true };
+    if (flee) fleeTwo();
+    return { state: next, dead: false };
+  }
+  if (flee) {
+    fleeTwo();
+    return { state: next, dead: false };
+  }
+  if (Math.random() < 0.5) {
+    closeTwo();
+    if (manhattan({ x: cur.x, y: cur.y }, P) === 1 && doAttack())
+      return { state: { ...next, phase: "defeat" }, dead: true };
+  } else {
+    if (manhattan({ x: cur.x, y: cur.y }, P) === 1 && doAttack())
+      return { state: { ...next, phase: "defeat" }, dead: true };
+    closeTwo();
+    if (manhattan({ x: cur.x, y: cur.y }, P) === 1 && doAttack())
+      return { state: { ...next, phase: "defeat" }, dead: true };
+  }
+  return { state: next, dead: false };
+}
+
+function cullDisconnectedTangleweeds(s: GameState): GameState {
+  const bloomOf = new Map<string, Point>();
+  for (const mon of s.monsters) {
+    if (mon.defId === "tangleweed_bloom" && mon.hp > 0) bloomOf.set(mon.id, { x: mon.x, y: mon.y });
+  }
+  const byBloom = new Map<string, TangleweedPropInstance[]>();
+  for (const tw of s.tangleweeds) {
+    if (tw.hp <= 0) continue;
+    if (!byBloom.has(tw.bloomId)) byBloom.set(tw.bloomId, []);
+    byBloom.get(tw.bloomId)!.push(tw);
+  }
+  const kept: TangleweedPropInstance[] = [];
+  for (const [bloomId, group] of byBloom) {
+    const bp = bloomOf.get(bloomId);
+    if (!bp) continue;
+    const adjBloom = new Set(ORTHO.map((o) => keyOf({ x: bp.x + o.x, y: bp.y + o.y })));
+    const cells = new Set(group.map(keyOf));
+    const visited = new Set<string>();
+    for (const tw of group) {
+      const start = keyOf(tw);
+      if (visited.has(start)) continue;
+      const stack = [start];
+      const comp: TangleweedPropInstance[] = [];
+      let touches = false;
+      while (stack.length) {
+        const k = stack.pop()!;
+        if (visited.has(k)) continue;
+        visited.add(k);
+        const [x, y] = k.split(",").map(Number) as [number, number];
+        if (adjBloom.has(k)) touches = true;
+        const here = group.find((t) => keyOf(t) === k);
+        if (here) comp.push(here);
+        for (const o of ORTHO) {
+          const nk = keyOf({ x: x + o.x, y: y + o.y });
+          if (cells.has(nk) && !visited.has(nk)) stack.push(nk);
+        }
+      }
+      if (touches) kept.push(...comp);
+    }
+  }
+  return { ...s, tangleweeds: kept };
+}
+
 export function runMonsterPhaseWithHooks(
   state: GameState,
   hooks: MonsterPhaseHooks,
@@ -1140,6 +1403,32 @@ export function runMonsterPhaseWithHooks(
       continue;
     }
 
+    if (curMon.defId === "vineshon") {
+      const r = takeVineshonTurn(s, curMon, hooks, hits);
+      s = r.state;
+      if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      continue;
+    }
+
+    if (curMon.defId === "tangleweed_bloom") {
+      s = takeTangleweedBloomTurn(s, curMon);
+      continue;
+    }
+
+    if (curMon.defId === "drosir") {
+      const r = takeDrosirTurn(s, curMon, hooks, hits);
+      s = r.state;
+      if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      continue;
+    }
+
+    if (curMon.defId === "beetle") {
+      const r = takeBeetleTurn(s, curMon, hooks, hits);
+      s = r.state;
+      if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      continue;
+    }
+
     if (curMon.defId === "dune_rat") {
       const r = takeDustRatTurn(s, curMon, playerPos, hooks, hits);
       s = r.state;
@@ -1202,7 +1491,7 @@ export function runMonsterPhaseWithHooks(
     let bestDist = Infinity;
     for (const o of ORTHO) {
       const np = { x: curMon.x + o.x, y: curMon.y + o.y };
-      if (!occ.has(keyOf(np)) && tileAt(s.tiles, np) === "floor") {
+      if (!occ.has(keyOf(np)) && monsterTilePassable(s, curMon, np)) {
         const d = manhattan(np, playerPos);
         if (d < bestDist) {
           bestDist = d;
@@ -1215,5 +1504,6 @@ export function runMonsterPhaseWithHooks(
     }
   }
 
+  s = cullDisconnectedTangleweeds(s);
   return { state: s, hits };
 }

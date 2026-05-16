@@ -14,7 +14,13 @@ import {
   manhattan,
   reachableOrthogonal,
 } from "../engine/movement";
-import type { GameState, HitVisual, PendingIntent, SkeletonWeapon } from "../game/types";
+import type {
+  GameState,
+  HitVisual,
+  PendingIntent,
+  RoomKind,
+  SkeletonWeapon,
+} from "../game/types";
 import type { SpriteStyle } from "./assets";
 
 /** Logical tile size in pixels (smaller than original 48 for a wider view). */
@@ -270,6 +276,8 @@ export class GridView extends Container {
       return state.tiles[ty][tx] === "wall";
     };
 
+    const bridgeKeys = this.bridgeKeySet(state);
+
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
         const kind = state.tiles[y][x];
@@ -284,20 +292,16 @@ export class GridView extends Container {
         }
         const rid = state.roomIds[y]?.[x] ?? -1;
         const rkind = rid >= 0 ? state.roomKinds[rid] : undefined;
-        const id =
-          kind === "wall"
-            ? "wall"
-            : rkind === "gauntlet_corridor"
-              ? (x + y) % 2 === 0
-                ? "gauntlet_corridor"
-                : "gauntlet_corridor_alt"
-              : rkind === "stair_room"
-                ? (x + y) % 2 === 0
-                  ? "floor"
-                  : "floor_alt"
-              : (x + y) % 2 === 0
-                ? "floor"
-                : "floor_alt";
+        let id: string;
+        if (kind === "wall") {
+          id = "wall";
+        } else if (kind === "water") {
+          id = bridgeKeys.has(keyOf({ x, y }))
+            ? this.pickThemedFloorSpriteId(state, x, y, rid, rkind)
+            : "water";
+        } else {
+          id = this.pickThemedFloorSpriteId(state, x, y, rid, rkind);
+        }
         const spr = this.makeSprite(id);
         spr.x = x * TILE;
         spr.y = y * TILE;
@@ -308,10 +312,31 @@ export class GridView extends Container {
       }
     }
 
+    for (const b of state.bridgeTiles) {
+      if (b.x < 0 || b.y < 0 || b.x >= w || b.y >= h) continue;
+      if (state.tiles[b.y][b.x] !== "water") continue;
+      if (state.fogOfWar && !state.discovered.has(keyOf(b))) continue;
+      const g = new Graphics();
+      const pad = TILE * 0.2;
+      g.roundRect(b.x * TILE + pad, b.y * TILE + TILE * 0.38, TILE - pad * 2, TILE * 0.22, 3).fill({
+        color: 0x6b5344,
+        alpha: 0.92,
+      });
+      g.moveTo(b.x * TILE + TILE * 0.18, b.y * TILE + TILE * 0.52)
+        .lineTo(b.x * TILE + TILE * 0.82, b.y * TILE + TILE * 0.58)
+        .stroke({ width: 1.4, color: 0x2a1a10, alpha: 0.9 });
+      g.moveTo(b.x * TILE + TILE * 0.22, b.y * TILE + TILE * 0.62)
+        .lineTo(b.x * TILE + TILE * 0.78, b.y * TILE + TILE * 0.68)
+        .stroke({ width: 1.2, color: 0x2a1a10, alpha: 0.75 });
+      this.floorLayer.addChild(g);
+    }
+
     if (state.fogOfWar) {
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
-          if (!state.discovered.has(keyOf({ x, y })) || state.tiles[y][x] !== "floor") continue;
+          if (!state.discovered.has(keyOf({ x, y }))) continue;
+          const discKind = state.tiles[y][x];
+          if (discKind !== "floor" && !(discKind === "water" && bridgeKeys.has(keyOf({ x, y })))) continue;
           const ox = x * TILE;
           const oy = y * TILE;
           if (isSolidWall(x, y - 1)) {
@@ -339,7 +364,8 @@ export class GridView extends Container {
     } else {
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
-          if (state.tiles[y][x] !== "floor") continue;
+          const fk = state.tiles[y][x];
+          if (fk !== "floor" && !(fk === "water" && bridgeKeys.has(keyOf({ x, y })))) continue;
           const ox = x * TILE;
           const oy = y * TILE;
           if (isSolidWall(x, y - 1)) {
@@ -384,6 +410,46 @@ export class GridView extends Container {
       for (const t of state.pendingTargetedCollapse) markCollapseTile(t.x, t.y);
     }
 
+    const markFloodingTile = (cx: number, cy: number) => {
+      const pad = TILE * 0.16;
+      const x0 = cx * TILE + pad;
+      const y0 = cy * TILE + pad;
+      const x1 = (cx + 1) * TILE - pad;
+      const y1 = (cy + 1) * TILE - pad;
+      const g = new Graphics();
+      g.moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 3, color: 0x3498db, alpha: 0.88 });
+      g.moveTo(x1, y0).lineTo(x0, y1).stroke({ width: 3, color: 0x3498db, alpha: 0.88 });
+      this.collapseMarkerLayer.addChild(g);
+    };
+    if (state.floodingRoomId != null) {
+      const frid = state.floodingRoomId;
+      for (let y = 0; y < h; y++) {
+        for (let x = 0; x < w; x++) {
+          if (state.roomIds[y][x] !== frid) continue;
+          const tk = state.tiles[y][x];
+          if (tk !== "floor" && tk !== "water") continue;
+          if (state.fogOfWar && !state.discovered.has(keyOf({ x, y }))) continue;
+          markFloodingTile(x, y);
+        }
+      }
+    }
+
+    const markStalactiteTile = (cx: number, cy: number) => {
+      const pad = TILE * 0.2;
+      const x0 = cx * TILE + pad;
+      const y0 = cy * TILE + pad;
+      const x1 = (cx + 1) * TILE - pad;
+      const y1 = (cy + 1) * TILE - pad;
+      const g = new Graphics();
+      g.moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 3, color: 0xf1c40f, alpha: 0.9 });
+      g.moveTo(x1, y0).lineTo(x0, y1).stroke({ width: 3, color: 0xf1c40f, alpha: 0.9 });
+      this.collapseMarkerLayer.addChild(g);
+    };
+    for (const st of state.pendingStalactites) {
+      if (state.fogOfWar && !state.discovered.has(keyOf(st))) continue;
+      markStalactiteTile(st.x, st.y);
+    }
+
     const inset = Math.round(4 * (TILE / 40));
 
     for (const pot of state.pots) {
@@ -408,6 +474,17 @@ export class GridView extends Container {
       this.rockLayer.addChild(g);
     }
 
+    for (const tw of state.tangleweeds) {
+      if (tw.hp <= 0) continue;
+      if (state.fogOfWar && !state.discovered.has(keyOf(tw))) continue;
+      const g = new Graphics();
+      const cx = tw.x * TILE + TILE * 0.5;
+      const cy = tw.y * TILE + TILE * 0.5;
+      const r = Math.max(4, Math.round(TILE * 0.16));
+      g.circle(cx, cy, r).fill({ color: 0x1e8449, alpha: 0.94 });
+      this.rockLayer.addChild(g);
+    }
+
     for (const loot of state.groundLoot) {
       if (state.fogOfWar && !state.discovered.has(keyOf(loot))) continue;
       const g = new Graphics();
@@ -416,6 +493,7 @@ export class GridView extends Container {
       const r = Math.max(3, Math.round(TILE * 0.12));
       let color = 0xe8c547;
       if (loot.kind === "bread") color = 0xc4a574;
+      if (loot.kind === "herb") color = 0x27ae60;
       if (loot.kind === "card") color = 0x9b59b6;
       g.circle(cx, cy, r).fill({ color, alpha: 0.92 });
       this.lootLayer.addChild(g);
@@ -685,6 +763,31 @@ export class GridView extends Container {
     return t;
   }
 
+  private bridgeKeySet(state: GameState): Set<string> {
+    return new Set(state.bridgeTiles.map((b) => keyOf(b)));
+  }
+
+  private pickThemedFloorSpriteId(
+    state: GameState,
+    x: number,
+    y: number,
+    _rid: number,
+    rkind: RoomKind | undefined,
+  ): string {
+    if (rkind === "gauntlet_corridor") {
+      return (x + y) % 2 === 0 ? "gauntlet_corridor" : "gauntlet_corridor_alt";
+    }
+    if (rkind === "stair_room") {
+      return (x + y) % 2 === 0 ? "floor" : "floor_alt";
+    }
+    if (rkind === "greenhouse") return "floor_greenhouse";
+    const alt = (x + y) % 2 === 0;
+    const th = state.floorTheme;
+    if (th === "overgrown") return alt ? "floor_overgrown" : "floor_overgrown_alt";
+    if (th === "brownstone") return alt ? "floor_brownstone" : "floor_brownstone_alt";
+    return alt ? "floor" : "floor_alt";
+  }
+
   private peaceStepTiles(state: GameState): Set<string> {
     const from = { x: state.player.x, y: state.player.y };
     const occ = new Set<string>();
@@ -692,6 +795,7 @@ export class GridView extends Container {
       if (m.hp > 0) occ.add(keyOf(m));
     }
     const rockKeys = new Set(state.rocks.map((r) => keyOf(r)));
+    const bridgeKeys = this.bridgeKeySet(state);
     const out = new Set<string>();
     for (const o of [
       { x: 1, y: 0 },
@@ -701,7 +805,9 @@ export class GridView extends Container {
     ]) {
       const t = { x: from.x + o.x, y: from.y + o.y };
       if (t.x < 0 || t.y < 0 || t.x >= state.width || t.y >= state.height) continue;
-      if (state.tiles[t.y][t.x] !== "floor") continue;
+      const tk = state.tiles[t.y][t.x];
+      const walk = tk === "floor" || (tk === "water" && bridgeKeys.has(keyOf(t)));
+      if (!walk) continue;
       if (occ.has(keyOf(t))) continue;
       if (rockKeys.has(keyOf(t))) continue;
       out.add(keyOf(t));
@@ -738,6 +844,39 @@ export class GridView extends Container {
       if (m.hp > 0) occ.add(keyOf(m));
     }
     const rockKeys = new Set(state.rocks.map((r) => keyOf(r)));
+    const bridgeKeys = this.bridgeKeySet(state);
+    if (pending.kind === "water_escape") {
+      const occW = new Set<string>();
+      for (const m of state.monsters) {
+        if (m.hp > 0) occW.add(keyOf(m));
+      }
+      for (const m of state.monsters) {
+        if (m.defId === "mimic" && m.mimicAsleep && m.hp > 0) occW.delete(keyOf(m));
+      }
+      for (const tw of state.tangleweeds) {
+        if (tw.hp > 0) occW.add(keyOf(tw));
+      }
+      const cells = new Set<string>();
+      const wx = pending.waterX;
+      const wy = pending.waterY;
+      for (const o of [
+        { x: 1, y: 0 },
+        { x: -1, y: 0 },
+        { x: 0, y: 1 },
+        { x: 0, y: -1 },
+      ]) {
+        const t = { x: wx + o.x, y: wy + o.y };
+        if (t.x < 0 || t.y < 0 || t.x >= state.width || t.y >= state.height) continue;
+        if (state.fogOfWar && !state.discovered.has(keyOf(t))) continue;
+        const tile = state.tiles[t.y][t.x];
+        const land = tile === "floor" || (tile === "water" && bridgeKeys.has(keyOf(t)));
+        if (!land) continue;
+        if (occW.has(keyOf(t))) continue;
+        if (rockKeys.has(keyOf(t))) continue;
+        cells.add(keyOf(t));
+      }
+      return cells;
+    }
     if (pending.kind === "play_move") {
       const base = reachableOrthogonal(
         state.tiles,
@@ -747,6 +886,7 @@ export class GridView extends Container {
         pending.range,
         occ,
         rockKeys,
+        bridgeKeys,
       );
       const needExtra = state.player.hand.length >= 2;
       return extendReachableWithBlockedDestinations(
@@ -768,6 +908,7 @@ export class GridView extends Container {
         pending.maxRange,
         occ,
         rockKeys,
+        bridgeKeys,
       );
       const needExtra = state.player.hand.length >= 1;
       return extendReachableWithBlockedDestinations(
@@ -781,7 +922,16 @@ export class GridView extends Container {
       );
     }
     if (pending.kind === "play_card_seeker" || pending.kind === "move_token_step") {
-      const base = reachableOrthogonal(state.tiles, state.width, state.height, from, 1, occ, rockKeys);
+      const base = reachableOrthogonal(
+        state.tiles,
+        state.width,
+        state.height,
+        from,
+        1,
+        occ,
+        rockKeys,
+        bridgeKeys,
+      );
       const needExtra =
         pending.kind === "play_card_seeker"
           ? state.player.hand.length >= 2

@@ -2,6 +2,7 @@ import type {
   CardDef,
   ChestInstance,
   FloorDef,
+  FloorTheme,
   GameState,
   GroundLootInstance,
   MonsterDef,
@@ -18,6 +19,7 @@ import { keyOf, parseFloor } from "../engine/grid";
 import { buildFreshDungeonDeck } from "./dungeonDeck";
 import { loadCardDefs, loadDungeonCardDefs, loadMonsterDefs } from "./loadContent";
 import { createMonsterInstance } from "./monsterSpawn";
+import { pickRandomLootCardId } from "./loot";
 
 const ORTHO_NEIGHBORS: Point[] = [
   { x: 1, y: 0 },
@@ -147,38 +149,71 @@ export function pickWeightedDefId(
   return candidates[candidates.length - 1]!;
 }
 
+export function pickFloorTheme(history: Partial<Record<FloorTheme, number>>): FloorTheme {
+  const themes: FloorTheme[] = ["normal", "overgrown", "damp", "brownstone"];
+  const baseWeights: Record<FloorTheme, number> = {
+    normal: 1.5,
+    overgrown: 1.0,
+    damp: 1.0,
+    brownstone: 1.0,
+  };
+  const weights = themes.map((t) => Math.max(0.1, baseWeights[t] - (history[t] ?? 0) * 0.2));
+  const sum = weights.reduce((a, b) => a + b, 0);
+  let r = Math.random() * sum;
+  for (let i = 0; i < themes.length; i++) {
+    r -= weights[i]!;
+    if (r <= 0) return themes[i]!;
+  }
+  return themes[themes.length - 1]!;
+}
+
+function bumpThemeHistory(
+  h: Partial<Record<FloorTheme, number>>,
+  t: FloorTheme,
+): Partial<Record<FloorTheme, number>> {
+  return { ...h, [t]: (h[t] ?? 0) + 1 };
+}
+
 export function pickMonsterId(
   kind: RoomKind,
   monsterDefs: Map<string, MonsterDef>,
   floorDepth: number,
+  floorTheme: FloorTheme,
 ): string {
   if (floorDepth >= 4 && (kind === "normal" || kind === "treasure") && Math.random() < 0.035) {
     return "mimic";
   }
   const rat = floorDepth >= 5 ? "shadow_rodent" : "dune_rat";
+  const ratOrVine = floorTheme === "overgrown" ? "vineshon" : rat;
   switch (kind) {
     case "entrance":
       return "slime";
     case "corridor": {
       const pool: string[] =
-        floorDepth >= 2 ? ["slime", rat, "skeleton_archer"] : ["slime", rat];
+        floorDepth >= 2 ? ["slime", ratOrVine, "skeleton_archer"] : ["slime", ratOrVine];
       if (floorDepth >= 5) pool.push("elite_skeleton");
+      if (floorTheme === "brownstone") pool.push("beetle");
       return pickWeightedDefId(pool, monsterDefs);
     }
     case "normal": {
-      const pool = ["slime", rat, "skeleton", "mystic_core", "rockling"];
+      const pool = ["slime", ratOrVine, "skeleton", "mystic_core", "rockling"];
       if (floorDepth >= 2) pool.push("skeleton_archer");
       if (floorDepth >= 5) pool.push("elite_skeleton");
+      if (floorTheme === "brownstone") pool.push("beetle");
+      if (floorTheme === "overgrown" && Math.random() < 0.08) return "tangleweed_bloom";
       return pickWeightedDefId(pool, monsterDefs);
     }
     case "treasure": {
-      const pool = ["skeleton", "mystic_core", "rockling", "slime", rat];
+      const pool = ["skeleton", "mystic_core", "rockling", "slime", ratOrVine];
       if (floorDepth >= 2) pool.push("skeleton_archer");
       if (floorDepth >= 5) pool.push("elite_skeleton");
+      if (floorTheme === "brownstone") pool.push("beetle");
       return pickWeightedDefId(pool, monsterDefs);
     }
+    case "greenhouse":
+      return Math.random() < 0.35 ? "tangleweed_bloom" : "vineshon";
     case "gauntlet": {
-      const pool = ["skeleton", "mystic_core", "slime", rat, "rockling"];
+      const pool = ["skeleton", "mystic_core", "slime", ratOrVine, "rockling"];
       if (floorDepth >= 2) pool.push("skeleton_archer");
       if (floorDepth >= 5) pool.push("elite_skeleton");
       return pickWeightedDefId(pool, monsterDefs);
@@ -198,6 +233,7 @@ function placePropsByRoom(
   monsterDefs: Map<string, MonsterDef>,
   dangerLevel: number,
   floorDepth: number,
+  floorTheme: FloorTheme,
 ): { monsters: MonsterInstance[]; pots: PotInstance[]; chests: ChestInstance[] } {
   const cellsByRoom = new Map<number, Point[]>();
   for (let y = 0; y < height; y++) {
@@ -218,6 +254,13 @@ function placePropsByRoom(
   let pi = 0;
   let ci = 0;
 
+  const pushMonster = (p: Point, defId: string) => {
+    monsters.push(
+      createMonsterInstance(`monster_${mi++}`, defId, p.x, p.y, monsterDefs, dangerLevel),
+    );
+  };
+  const pickId = (k: RoomKind) => pickMonsterId(k, monsterDefs, floorDepth, floorTheme);
+
   for (const [rid, cells] of cellsByRoom) {
     if (cells.length === 0) continue;
     shuffleInPlace(cells);
@@ -228,13 +271,6 @@ function placePropsByRoom(
       idx += n;
       return out;
     };
-
-    const pushMonster = (p: Point, defId: string) => {
-      monsters.push(
-        createMonsterInstance(`monster_${mi++}`, defId, p.x, p.y, monsterDefs, dangerLevel),
-      );
-    };
-    const pickId = (k: RoomKind) => pickMonsterId(k, monsterDefs, floorDepth);
 
     switch (kind) {
       case "entrance": {
@@ -277,6 +313,16 @@ function placePropsByRoom(
       case "gauntlet":
         // Populated when the player first enters the gauntlet.
         break;
+      case "greenhouse": {
+        const nPot = rollInt(0, 1);
+        for (const p of take(nPot)) pots.push({ id: `pot_${pi++}`, x: p.x, y: p.y });
+        const nMon = rollInt(1, 2);
+        for (let k = 0; k < nMon; k++) {
+          const [p] = take(1);
+          if (p) pushMonster(p, pickId("greenhouse"));
+        }
+        break;
+      }
       default:
         break;
     }
@@ -350,22 +396,40 @@ function placePropsByRoom(
     }
   }
 
+  if (floorTheme === "damp") {
+    const waterByRoom = new Map<number, Point[]>();
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        if (tiles[y][x] !== "water") continue;
+        const rid = roomIds[y][x];
+        if (rid < 0) continue;
+        if (!waterByRoom.has(rid)) waterByRoom.set(rid, []);
+        waterByRoom.get(rid)!.push({ x, y });
+      }
+    }
+    for (const [, ws] of waterByRoom) {
+      if (ws.length === 0 || Math.random() >= 0.45) continue;
+      shuffleInPlace(ws);
+      for (const p of ws) {
+        if (occ.has(keyOf(p))) continue;
+        pushMonster(p, "drosir");
+        occ.add(keyOf(p));
+        break;
+      }
+    }
+  }
+
   return { monsters, pots, chests };
 }
 
 function rollGroundLootPiece(
   cardDefs: Map<string, CardDef>,
+  depth: number,
 ): { kind: "coin"; amount: number } | { kind: "bread" } | { kind: "card"; cardId: string } {
   const r = Math.random();
-  if (r < 0.48) return { kind: "coin", amount: rollInt(1, 3) };
+  if (r < 0.48) return { kind: "coin", amount: 1 };
   if (r < 0.9) return { kind: "bread" };
-  const pool = [...cardDefs.entries()]
-    .filter(
-      ([, d]) => ["Basic", "Common", "Uncommon"].includes(d.rarity) && d.effect.type !== "bonus_chit",
-    )
-    .map(([id]) => id);
-  if (pool.length === 0) return { kind: "bread" };
-  return { kind: "card", cardId: pool[rollInt(0, pool.length - 1)]! };
+  return { kind: "card", cardId: pickRandomLootCardId(cardDefs, depth) };
 }
 
 /** ~50% per room: 1–2 small drops; monsters may stand on loot tiles. */
@@ -379,6 +443,7 @@ function spawnGroundLoot(
   pots: PotInstance[],
   chests: ChestInstance[],
   cardDefs: Map<string, CardDef>,
+  floorDepth: number,
 ): GroundLootInstance[] {
   const cellsByRoom = new Map<number, Point[]>();
   for (let y = 0; y < height; y++) {
@@ -407,9 +472,14 @@ function spawnGroundLoot(
     if (candidates.length === 0) continue;
     shuffleInPlace(candidates);
     const nDrops = Math.random() < 0.82 ? 1 : 2;
+    const rk = rid >= 0 ? roomKinds[rid] : "normal";
     for (let k = 0; k < nDrops && k < candidates.length; k++) {
       const p = candidates[k]!;
-      const piece = rollGroundLootPiece(cardDefs);
+      if (rk === "greenhouse") {
+        out.push({ id: `gloot_${li++}`, x: p.x, y: p.y, kind: "herb" });
+        continue;
+      }
+      const piece = rollGroundLootPiece(cardDefs, floorDepth);
       if (piece.kind === "coin") {
         out.push({ id: `gloot_${li++}`, x: p.x, y: p.y, kind: "coin", amount: piece.amount });
       } else if (piece.kind === "bread") {
@@ -434,7 +504,7 @@ function buildDiscovered(
   if (!fogOfWar) {
     for (let y = 0; y < height; y++) {
       for (let x = 0; x < width; x++) {
-        if (tiles[y][x] === "floor") discovered.add(keyOf({ x, y }));
+        if (tiles[y][x] === "floor" || tiles[y][x] === "water") discovered.add(keyOf({ x, y }));
       }
     }
     return discovered;
@@ -473,6 +543,7 @@ export function createInitialState(floorDef: FloorDef): GameState {
     monsterDefs,
     1,
     1,
+    "normal",
   );
   const cardDefs = loadCardDefs();
   const groundLoot = spawnGroundLoot(
@@ -485,13 +556,14 @@ export function createInitialState(floorDef: FloorDef): GameState {
     pots,
     chests,
     cardDefs,
+    1,
   );
 
   return {
     phase: "player",
     floorId: floorDef.id,
     floorName: floorDef.name,
-    floorTheme: "basic",
+    floorTheme: "normal",
     width,
     height,
     tiles,
@@ -504,6 +576,7 @@ export function createInitialState(floorDef: FloorDef): GameState {
       maxHp: 10,
       gold: 0,
       bread: 0,
+      herb: 0,
       drawPile: buildStartingDeck(),
       discardPile: [],
       hand: [],
@@ -531,9 +604,14 @@ export function createInitialState(floorDef: FloorDef): GameState {
     chests,
     rocks: [],
     groundLoot,
+    bridgeTiles: [],
+    floodingRoomId: null,
+    pendingStalactites: [],
+    tangleweeds: [],
+    themePickHistory: { normal: 1 },
     roomIds,
     roomKinds,
-    dungeonDraw: buildFreshDungeonDeck(1, "basic"),
+    dungeonDraw: buildFreshDungeonDeck(1, "normal"),
     dungeonDiscard: [],
     cardDefs,
     monsterDefs,
@@ -553,6 +631,8 @@ export function createInitialState(floorDef: FloorDef): GameState {
     pendingCollapse: null,
     pendingTargetedCollapse: null,
     lightsOutTurns: 0,
+    chanceMode: "normal",
+    chancePlayerOnly: false,
     log: [
       "Welcome to the dungeon.",
       `${monsters.length} monster(s), ${pots.length} pot(s), ${chests.length} chest(s), ${groundLoot.length} ground loot spot(s).`,
@@ -577,6 +657,7 @@ export function createInitialStateGenerated(gen: GeneratedFloor): GameState {
     monsterDefs,
     gen.spawnDanger,
     1,
+    gen.floorTheme,
   );
   const cardDefs = loadCardDefs();
   const groundLoot = spawnGroundLoot(
@@ -589,13 +670,14 @@ export function createInitialStateGenerated(gen: GeneratedFloor): GameState {
     pots,
     chests,
     cardDefs,
+    1,
   );
 
   return {
     phase: "player",
     floorId: gen.id,
     floorName: "Floor 1",
-    floorTheme: "basic",
+    floorTheme: gen.floorTheme,
     width,
     height,
     tiles,
@@ -608,6 +690,7 @@ export function createInitialStateGenerated(gen: GeneratedFloor): GameState {
       maxHp: 10,
       gold: 0,
       bread: 0,
+      herb: 0,
       drawPile: buildStartingDeck(),
       discardPile: [],
       hand: [],
@@ -635,9 +718,14 @@ export function createInitialStateGenerated(gen: GeneratedFloor): GameState {
     chests,
     rocks: [],
     groundLoot,
+    bridgeTiles: [...gen.bridgeTiles],
+    floodingRoomId: null,
+    pendingStalactites: [],
+    tangleweeds: [],
+    themePickHistory: bumpThemeHistory({}, gen.floorTheme),
     roomIds,
     roomKinds,
-    dungeonDraw: buildFreshDungeonDeck(1, "basic"),
+    dungeonDraw: buildFreshDungeonDeck(1, gen.floorTheme),
     dungeonDiscard: [],
     cardDefs,
     monsterDefs,
@@ -657,6 +745,8 @@ export function createInitialStateGenerated(gen: GeneratedFloor): GameState {
     pendingCollapse: null,
     pendingTargetedCollapse: null,
     lightsOutTurns: 0,
+    chanceMode: "normal",
+    chancePlayerOnly: false,
     log: [
       "Welcome to the dungeon.",
       `${monsters.length} monster(s), ${pots.length} pot(s), ${chests.length} chest(s), ${groundLoot.length} ground loot spot(s).`,
@@ -683,6 +773,7 @@ export function createNextFloorState(prev: GameState, gen: GeneratedFloor): Game
     monsterDefs,
     danger,
     depth,
+    gen.floorTheme,
   );
   const cardDefs = prev.cardDefs;
   let groundLoot = spawnGroundLoot(
@@ -695,6 +786,7 @@ export function createNextFloorState(prev: GameState, gen: GeneratedFloor): Game
     pots,
     chests,
     cardDefs,
+    depth,
   );
   groundLoot = appendGoldSeekerIfSkill(
     prev,
@@ -716,7 +808,7 @@ export function createNextFloorState(prev: GameState, gen: GeneratedFloor): Game
     phase: "player",
     floorId: gen.id,
     floorName: `Floor ${depth}`,
-    floorTheme: prev.floorTheme,
+    floorTheme: gen.floorTheme,
     width,
     height,
     tiles,
@@ -748,9 +840,14 @@ export function createNextFloorState(prev: GameState, gen: GeneratedFloor): Game
     chests,
     rocks: [],
     groundLoot,
+    bridgeTiles: [...gen.bridgeTiles],
+    floodingRoomId: null,
+    pendingStalactites: [],
+    tangleweeds: [],
+    themePickHistory: bumpThemeHistory(prev.themePickHistory, gen.floorTheme),
     roomIds,
     roomKinds,
-    dungeonDraw: buildFreshDungeonDeck(depth, prev.floorTheme),
+    dungeonDraw: buildFreshDungeonDeck(depth, gen.floorTheme),
     dungeonDiscard: [],
     cardDefs,
     monsterDefs,
@@ -770,6 +867,8 @@ export function createNextFloorState(prev: GameState, gen: GeneratedFloor): Game
     pendingCollapse: null,
     pendingTargetedCollapse: null,
     lightsOutTurns: 0,
+    chanceMode: prev.chanceMode,
+    chancePlayerOnly: prev.chancePlayerOnly,
     log: prev.log.slice(-50),
     turn: prev.turn + 1,
   };

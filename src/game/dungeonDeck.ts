@@ -8,17 +8,26 @@ function shuffleInPlace<T>(xs: T[]): void {
   }
 }
 
-function themeCardsFor(theme: string): string[] {
+import type { FloorTheme } from "./types";
+
+function themeCardsFor(theme: FloorTheme | string): string[] {
   switch (theme) {
+    case "normal":
     case "basic":
       return ["the_dust_settles"];
+    case "overgrown":
+      return ["overgrowth"];
+    case "damp":
+      return ["flooding"];
+    case "brownstone":
+      return ["stalactites_fall"];
     default:
-      return themeCardsFor("basic");
+      return themeCardsFor("normal");
   }
 }
 
 /** Card id multiset for the dungeon deck at a given depth and floor theme. */
-export function expandRecipe(depth: number, theme: string): string[] {
+export function expandRecipe(depth: number, theme: FloorTheme | string): string[] {
   const d: string[] = [];
   for (let i = 0; i < 6; i++) d.push("dungeon_still");
   for (let i = 0; i < 2; i++) d.push("noisy_adventurer");
@@ -63,6 +72,6 @@ export function shuffleDeadlierToBottomFour(deck: string[], deadlierId: string):
   return out;
 }
 
-export function buildFreshDungeonDeck(depth: number, theme: string): string[] {
+export function buildFreshDungeonDeck(depth: number, theme: FloorTheme | string): string[] {
   return shuffleDeadlierToBottomFour(expandRecipe(depth, theme), DUNGEON_DEADLIER_ID);
 }

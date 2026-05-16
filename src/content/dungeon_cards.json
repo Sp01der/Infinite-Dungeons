@@ -76,5 +76,23 @@
     "name": "You Are Not Alone",
     "description": "",
     "effect": { "type": "you_are_not_alone" }
+  },
+  {
+    "id": "overgrowth",
+    "name": "Overgrowth",
+    "description": "Greenhouses surge with life.",
+    "effect": { "type": "overgrowth" }
+  },
+  {
+    "id": "flooding",
+    "name": "Flooding",
+    "description": "Water rises in a marked chamber.",
+    "effect": { "type": "flooding" }
+  },
+  {
+    "id": "stalactites_fall",
+    "name": "Stalactites Fall",
+    "description": "The ceiling groans — watch your footing.",
+    "effect": { "type": "stalactites_fall" }
   }
 ]

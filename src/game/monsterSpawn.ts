@@ -68,6 +68,9 @@ export function createMonsterInstance(
       blackShieldActive: false,
     };
   }
+  if (defId === "drosir") {
+    return { ...base, aquatic: true };
+  }
   if (defId === "douvlon" && opts?.douvlonColor && opts?.douvlonPairId) {
     return {
       ...base,

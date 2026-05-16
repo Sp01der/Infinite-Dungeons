@@ -2,7 +2,11 @@ import { Application } from "pixi.js";
 import floorSample from "./content/floor_sample.json";
 import { generateFloor } from "./engine/floorGen";
 import type { FloorDef } from "./game/types";
-import { createInitialState, createInitialStateGenerated } from "./game/initialState";
+import {
+  createInitialState,
+  createInitialStateGenerated,
+  pickFloorTheme,
+} from "./game/initialState";
 import { dispatch } from "./game/reducer";
 import { expToNextLevel } from "./game/progression";
 import {
@@ -13,6 +17,7 @@ import {
   type SkillDef,
 } from "./game/skillDefs";
 import { CARD_TYPE_ORDER, type CardDef, type GameCommand, type GameState } from "./game/types";
+import { lightningBoltSkillDamageBonus } from "./game/skillsRuntime";
 import { loadSpriteStyles } from "./render/assets";
 import { GridView, VIEW_HEIGHT_PX, VIEW_WIDTH_PX } from "./render/gridView";
 
@@ -25,6 +30,7 @@ const hudExp = document.querySelector<HTMLSpanElement>("#hud-exp")!;
 const hudSkillPts = document.querySelector<HTMLSpanElement>("#hud-skill-pts")!;
 const hudGold = document.querySelector<HTMLSpanElement>("#hud-gold")!;
 const hudBread = document.querySelector<HTMLSpanElement>("#hud-bread")!;
+const hudHerb = document.querySelector<HTMLSpanElement>("#hud-herb")!;
 const hudDanger = document.querySelector<HTMLSpanElement>("#hud-danger")!;
 const hudNoise = document.querySelector<HTMLSpanElement>("#hud-noise")!;
 const hudDraw = document.querySelector<HTMLSpanElement>("#hud-draw")!;
@@ -39,6 +45,7 @@ const btnEnd = document.querySelector<HTMLButtonElement>("#btn-end-turn")!;
 const cancelBtn = document.querySelector<HTMLButtonElement>("#btn-cancel")!;
 const unequipBtn = document.querySelector<HTMLButtonElement>("#btn-unequip")!;
 const itemBreadBtn = document.querySelector<HTMLButtonElement>("#item-bread")!;
+const itemHerbBtn = document.querySelector<HTMLButtonElement>("#item-herb")!;
 const inspectDeckBtn = document.querySelector<HTMLButtonElement>("#inspect-deck")!;
 const inspectDiscardBtn = document.querySelector<HTMLButtonElement>("#inspect-discard")!;
 const pileInspector = document.querySelector<HTMLDivElement>("#pile-inspector")!;
@@ -98,7 +105,9 @@ const useSampleFloor =
 
 let state: GameState = useSampleFloor
   ? createInitialState(floorSample as FloorDef)
-  : createInitialStateGenerated(generateFloor({ depth: 1 }));
+  : createInitialStateGenerated(
+      generateFloor({ depth: 1, theme: pickFloorTheme({}) }),
+    );
 let grid: GridView | undefined;
 let mapCameraInitialized = false;
 let lastSyncedFloorId: string | null = null;
@@ -383,7 +392,12 @@ function cellClick(x: number, y: number): void {
     apply({ type: "PEACE_MOVE_TO", x, y });
     return;
   }
-  if (s.phase !== "player" || !s.pending) return;
+  if (s.phase !== "player") return;
+  if (s.pending?.kind === "water_escape") {
+    apply({ type: "CONFIRM_WATER_ESCAPE", destX: x, destY: y });
+    return;
+  }
+  if (!s.pending) return;
   if (s.pending.kind === "enter_blocked_tile") return;
   const monsterTargeting =
     s.pending.kind === "play_melee" ||
@@ -400,6 +414,13 @@ function cellClick(x: number, y: number): void {
     if (mon) {
       apply({ type: "CONFIRM_TARGET_MONSTER", monsterInstanceId: mon.id });
       return;
+    }
+    if (s.pending.kind === "play_melee") {
+      const tw = s.tangleweeds.find((t) => t.hp > 0 && t.x === x && t.y === y);
+      if (tw) {
+        apply({ type: "CONFIRM_TARGET_TANGLEWEED", tangleweedId: tw.id });
+        return;
+      }
     }
     const pot = s.pots.find((p) => p.x === x && p.y === y);
     if (pot) {
@@ -426,6 +447,7 @@ const COMMAND_VARIABLES: Record<string, CommandVariable> = {
   hp: "hp",
   gold: "gold",
   bread: "bread",
+  herb: "herb",
   noise: "noise",
   exp: "exp",
   experience: "exp",
@@ -556,7 +578,31 @@ function runCommandLine(raw: string): string {
     return `Jumped to floor ${depth}.`;
   }
 
-  return "Unknown command. Try Set, Card, Dungeon, Floor, or Summon.";
+  if (verb === "chance") {
+    if (args.length < 1) {
+      return "Usage: Chance [Highest|Lowest|Normal] [Player only: true or false]";
+    }
+    const modeKey = args[0]!.toLowerCase();
+    const modes: Record<string, "highest" | "lowest" | "normal"> = {
+      highest: "highest",
+      lowest: "lowest",
+      normal: "normal",
+    };
+    const mode = modes[modeKey];
+    if (!mode) return `Unknown Chance mode "${args[0]}". Use Highest, Lowest, or Normal.`;
+    let playerOnly = false;
+    if (args.length >= 2) {
+      const b = args[1]!.toLowerCase();
+      if (b !== "true" && b !== "false") {
+        return "Optional second argument must be true or false (player rolls only).";
+      }
+      playerOnly = b === "true";
+    }
+    apply({ type: "DEV_CHANCE", mode, playerOnly });
+    return `Chance set to ${mode}${playerOnly ? " (player rolls only)" : ""}.`;
+  }
+
+  return "Unknown command. Try Set, Card, Dungeon, Floor, Summon, or Chance.";
 }
 
 function openPileInspector(which: "deck" | "discard"): void {
@@ -867,6 +913,7 @@ function renderAll(): void {
   }
   hudGold.textContent = String(state.player.gold);
   hudBread.textContent = String(state.player.bread);
+  hudHerb.textContent = String(state.player.herb);
   hudDanger.textContent = String(state.danger);
   hudNoise.textContent = String(state.noise);
 
@@ -898,6 +945,15 @@ function renderAll(): void {
     state.player.bread <= 0 ||
     state.player.hp >= state.player.maxHp;
 
+  itemHerbBtn.disabled =
+    state.phase !== "player" ||
+    !!state.pending ||
+    choiceModalBlocksPlay(state) ||
+    state.player.herb <= 0 ||
+    state.player.hp >= state.player.maxHp;
+
+  itemHerbBtn.style.display = state.player.herb > 0 ? "" : "none";
+
   btnSkillTree.disabled =
     state.phase === "defeat" ||
     choiceModalBlocksPlay(state) ||
@@ -927,6 +983,9 @@ function renderAll(): void {
       hintEl.textContent =
         "Peace — click to move. Pedestal (sky circle) first; then step the east stair (grey) to descend.";
     }
+  } else if (state.pending?.kind === "water_escape") {
+    hintEl.textContent =
+      "Discard a card to cross — click a highlighted land tile next to the water, or Cancel to stay.";
   } else if (state.pending?.kind === "play_move") {
     hintEl.textContent = "Click a gold-highlighted tile on the map to move (up to 2 steps).";
   } else if (state.pending?.kind === "play_melee") {
@@ -958,7 +1017,9 @@ function renderAll(): void {
   } else if (state.pending?.kind === "play_lightning_bolt") {
     const p = state.pending;
     const hop = p.hitIds.length + 1;
-    hintEl.textContent = `Lightning chain (hit ${hop}) — click a highlighted enemy within ${p.nextDamage} spaces for ${p.nextDamage} damage.`;
+    const cardId = state.player.hand[p.cardHandIndex];
+    const dmgShown = p.nextDamage + lightningBoltSkillDamageBonus(state, cardId);
+    hintEl.textContent = `Lightning chain (hit ${hop}) — click a highlighted enemy within ${p.nextDamage} spaces for ${dmgShown} damage.`;
   } else if (state.pending?.kind === "play_fireball") {
     hintEl.textContent = `Click a highlighted tile within ${state.pending.range} spaces (line of sight) as the blast center.`;
   } else if (state.pending?.kind === "play_card_seeker") {
@@ -1107,9 +1168,14 @@ function renderAll(): void {
   }
 }
 
-cancelBtn.addEventListener("click", () => apply({ type: "CANCEL_PENDING" }));
+cancelBtn.addEventListener("click", () =>
+  state.pending?.kind === "water_escape"
+    ? apply({ type: "CANCEL_WATER_ESCAPE" })
+    : apply({ type: "CANCEL_PENDING" }),
+);
 unequipBtn.addEventListener("click", () => apply({ type: "UNEQUIP" }));
 itemBreadBtn.addEventListener("click", () => apply({ type: "USE_BREAD" }));
+itemHerbBtn.addEventListener("click", () => apply({ type: "USE_HERB" }));
 btnEnd.addEventListener("click", () => apply({ type: "END_TURN" }));
 
 dungeonCardToastDismiss.addEventListener("click", () => {

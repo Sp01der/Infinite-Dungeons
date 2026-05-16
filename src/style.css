@@ -572,6 +572,22 @@ button.pile-inspect:focus-visible {
   cursor: not-allowed;
 }
 
+.item-pill--herb {
+  border-color: #3a6b4a;
+  background: linear-gradient(145deg, #152018, #0f1812);
+  cursor: pointer;
+}
+
+.item-pill--herb:hover:not(:disabled) {
+  border-color: #4a9a62;
+  background: linear-gradient(145deg, #1a281c, #121c14);
+}
+
+.item-pill--herb:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .item-pill-label {
   font-size: 0.68rem;
   text-transform: uppercase;
