@@ -66,7 +66,8 @@ function buildChamberList(nNormal: number, theme: FloorTheme, rng: () => number)
   const list: Chamber[] = [];
   list.push({ kind: "entrance", idx: 0, x: 0, y: 0, w: 0, h: 0 });
   let greenhouseSlot = -1;
-  if (theme === "overgrown" && rng() < 0.25 && nNormal > 0) {
+  // Greenhouse is the clearest Overgrown tell — keep it common enough to notice.
+  if (theme === "overgrown" && rng() < 0.55 && nNormal > 0) {
     greenhouseSlot = rollInt(rng, 0, nNormal - 1);
   }
   for (let i = 0; i < nNormal; i++) {
@@ -813,6 +814,8 @@ function normalChamberCountTarget(depth: number, rng: () => number): number {
   if (depth <= 1) return rollInt(rng, 6, 7);
   if (depth === 2) return 7;
   if (depth === 3) return rollInt(rng, 7, 8);
+  if (depth === 4) return rollInt(rng, 8, 9);
+  if (depth === 5) return 10;
   return rollInt(rng, 8, 9);
 }
 
@@ -820,6 +823,8 @@ function corridorCountTarget(depth: number): { lo: number; hi: number } {
   if (depth <= 1) return { lo: 6, hi: 7 };
   if (depth === 2) return { lo: 7, hi: 7 };
   if (depth === 3) return { lo: 7, hi: 8 };
+  if (depth === 4) return { lo: 8, hi: 9 };
+  if (depth === 5) return { lo: 9, hi: 9 };
   return { lo: 8, hi: 9 };
 }
 

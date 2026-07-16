@@ -47,6 +47,12 @@ export function keyOf(p: Point): string {
   return `${p.x},${p.y}`;
 }
 
+/** Walls block projectiles; floor and water do not. */
+function tileAllowsProjectile(tiles: TileKind[][], p: Point): boolean {
+  const t = tileAt(tiles, p);
+  return t === "floor" || t === "water";
+}
+
 /** Queen ray from `from` to monster; walls and other living monsters block the path to the target. */
 export function magicMissilePathClear(
   tiles: TileKind[][],
@@ -69,12 +75,12 @@ export function magicMissilePathClear(
   let x = px + stepX;
   let y = py + stepY;
   while (x !== tx || y !== ty) {
-    if (tileAt(tiles, { x, y }) !== "floor") return false;
+    if (!tileAllowsProjectile(tiles, { x, y })) return false;
     if (monsters.some((m) => m.hp > 0 && m.x === x && m.y === y)) return false;
     x += stepX;
     y += stepY;
   }
-  return tileAt(tiles, { x: tx, y: ty }) === "floor";
+  return tileAllowsProjectile(tiles, { x: tx, y: ty });
 }
 
 /** Same as magic missile to a monster, but targets an arbitrary floor tile (e.g. pot). Pots block intermediate tiles. */
@@ -99,13 +105,13 @@ export function magicMissilePathClearToPoint(
   let x = px + stepX;
   let y = py + stepY;
   while (x !== tx || y !== ty) {
-    if (tileAt(tiles, { x, y }) !== "floor") return false;
+    if (!tileAllowsProjectile(tiles, { x, y })) return false;
     if (monsters.some((m) => m.hp > 0 && m.x === x && m.y === y)) return false;
     if (pots.some((p) => p.x === x && p.y === y)) return false;
     x += stepX;
     y += stepY;
   }
-  return tileAt(tiles, { x: tx, y: ty }) === "floor";
+  return tileAllowsProjectile(tiles, { x: tx, y: ty });
 }
 
 /** Chebyshev distance (chessboard distance) between two points. */
@@ -115,7 +121,7 @@ export function chebyshev(a: Point, b: Point): number {
 
 /**
  * General line-of-sight check for any angle (e.g. Bow).
- * Steps along the ray using floating-point interpolation; walls block.
+ * Steps along the ray using floating-point interpolation; walls block (water does not).
  * Unlike magicMissilePathClear, other monsters do NOT block this ray.
  */
 export function lineOfSightClear(tiles: TileKind[][], from: Point, to: Point): boolean {
@@ -126,9 +132,9 @@ export function lineOfSightClear(tiles: TileKind[][], from: Point, to: Point): b
   for (let i = 1; i < steps; i++) {
     const x = Math.round(from.x + (dx * i) / steps);
     const y = Math.round(from.y + (dy * i) / steps);
-    if (tileAt(tiles, { x, y }) !== "floor") return false;
+    if (!tileAllowsProjectile(tiles, { x, y })) return false;
   }
-  return tileAt(tiles, to) === "floor";
+  return tileAllowsProjectile(tiles, to);
 }
 
 /** Magic missile from a monster toward the player: straight/diagonal ray; walls and other living monsters block; player tile is the endpoint. */
@@ -154,12 +160,12 @@ export function magicMissilePathClearToPlayer(
   let x = fx + stepX;
   let y = fy + stepY;
   while (x !== px || y !== py) {
-    if (tileAt(tiles, { x, y }) !== "floor") return false;
+    if (!tileAllowsProjectile(tiles, { x, y })) return false;
     if (monsters.some((m) => m.hp > 0 && m.id !== excludeMonsterId && m.x === x && m.y === y)) {
       return false;
     }
     x += stepX;
     y += stepY;
   }
-  return tileAt(tiles, { x: px, y: py }) === "floor";
+  return tileAllowsProjectile(tiles, { x: px, y: py });
 }

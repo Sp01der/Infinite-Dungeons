@@ -165,8 +165,67 @@ function playerOnOpenSegmentBetween(red: Point, blue: Point, p: Point): boolean 
 
 function monsterKillRewards(state: GameState, defId: string): GameState {
   const power = state.monsterDefs.get(defId)?.power ?? 3;
+  // Mimic chest loot is applied in the reducer when the player lands the killing blow.
   const withGold = { ...state, player: { ...state.player, gold: state.player.gold + 2 } };
   return addExp(withGold, power);
+}
+
+function fireBurnDamage(maxHp: number): number {
+  return Math.max(1, Math.floor(maxHp * 0.2));
+}
+
+/** After a monster acts: Fire −1 and 20% max HP damage. */
+function tickMonsterFireAfterTurn(
+  s: GameState,
+  monId: string,
+  hits: HitVisual[],
+): GameState {
+  const m = s.monsters.find((x) => x.id === monId && x.hp > 0);
+  if (!m) return s;
+  const lv = m.fireLevels ?? 0;
+  if (lv <= 0) return s;
+  const def = s.monsterDefs.get(m.defId);
+  const maxHp = monsterMaxHp(def?.hp ?? 4, m.level);
+  const dmg = fireBurnDamage(maxHp);
+  const hp = Math.max(0, m.hp - dmg);
+  hits.push({ gridX: m.x, gridY: m.y, damage: dmg });
+  let monsters = setMonsterHpWithDouvlonSync(s.monsters, monId, hp);
+  monsters = monsters.map((x) => (x.id === monId ? { ...x, fireLevels: lv - 1 } : x));
+  // Keep pair fire levels in sync if shared HP pair
+  const self = monsters.find((x) => x.id === monId);
+  if (self?.douvlonPairId) {
+    monsters = monsters.map((x) =>
+      x.douvlonPairId === self.douvlonPairId ? { ...x, fireLevels: lv - 1 } : x,
+    );
+  }
+  let next: GameState = { ...s, monsters: cullMonstersWithDouvlonPairs(monsters) };
+  const nm = def?.name ?? "Enemy";
+  next = appendLog(next, `Fire burns ${nm} for ${dmg}.`);
+  if (hp <= 0) {
+    next = appendLog(next, `${nm} is consumed by fire.`);
+    next = monsterKillRewards(next, m.defId);
+  }
+  return next;
+}
+
+/** If a tangleweed shares this tile, the creature spends its turn tearing free (weed has 1 HP). */
+function tryBreakFreeOfTangleweed(
+  s: GameState,
+  m: MonsterInstance,
+): { state: GameState; trapped: boolean } {
+  const tw = s.tangleweeds.find((t) => t.hp > 0 && t.x === m.x && t.y === m.y);
+  if (!tw) return { state: s, trapped: false };
+  const nm = s.monsterDefs.get(m.defId)?.name ?? "Monster";
+  return {
+    state: appendLog(
+      {
+        ...s,
+        tangleweeds: s.tangleweeds.filter((t) => t.id !== tw.id),
+      },
+      `${nm} tears free of the tangleweed.`,
+    ),
+    trapped: true,
+  };
 }
 
 function best8Align(s: GameState, m: MonsterInstance, occ: Set<string>): Point | null {
@@ -194,15 +253,20 @@ function damagePlayer(
   raw: number,
   monName: string,
   hits: HitVisual[],
+  fx?: HitVisual["fx"],
 ): { state: GameState; dead: boolean } {
   const dmg = incomingDamageToPlayer(s, raw);
   const px = s.player.x;
   const py = s.player.y;
   const hp = Math.max(0, s.player.hp - dmg);
-  hits.push({ gridX: px, gridY: py, damage: dmg });
+  hits.push({ gridX: px, gridY: py, damage: dmg, fx });
   let next = appendLog(s, `${monName} hits you for ${dmg}.`);
   next = { ...next, player: { ...next.player, hp } };
   return { state: next, dead: hp <= 0 };
+}
+
+function meleeFrom(m: { x: number; y: number }): HitVisual["fx"] {
+  return { kind: "melee_slash", fromX: m.x, fromY: m.y };
 }
 
 function skeletonCanHit(w: SkeletonWeapon, mon: Point, p: Point, movedThisTurn: boolean): boolean {
@@ -268,7 +332,7 @@ function applySlimeLeap(
   );
 
   if (atPlayer) {
-    const r = damagePlayer(next, dmgRaw, monName, hits);
+    const r = damagePlayer(next, dmgRaw, monName, hits, meleeFrom(m));
     next = r.state;
     if (r.dead) return next;
     const kx = target.x + dx;
@@ -356,7 +420,7 @@ function takeSkeletonTurn(
   ): { state: GameState; dead: boolean } | null => {
     if (!skeletonCanHit(w, { x: mon.x, y: mon.y }, P, moved)) return null;
     const raw = skeletonRollDamage(w, bonus);
-    return damagePlayer(state, raw, name, hits);
+    return damagePlayer(state, raw, name, hits, meleeFrom(mon));
   };
 
   let next = s;
@@ -435,7 +499,12 @@ function takeMysticTurn(
     const px = next.player.x;
     const py = next.player.y;
     const hp = Math.max(0, next.player.hp - raw);
-    hits.push({ gridX: px, gridY: py, damage: raw });
+    hits.push({
+      gridX: px,
+      gridY: py,
+      damage: raw,
+      fx: { kind: "magic_missile", fromX: mp.x, fromY: mp.y },
+    });
     next = appendLog(next, `${name} magic missile hits you for ${raw} (ignores defense).`);
     next = { ...next, player: { ...next.player, hp } };
     return { state: next, dead: hp <= 0 };
@@ -467,7 +536,7 @@ function takeDustRatTurn(
   ): { state: GameState; dead: boolean } | null => {
     if (manhattan({ x: mon.x, y: mon.y }, playerPos) !== 1) return null;
     const raw = rollInt(1, 3) + monsterDamageBonus(mon.level);
-    return damagePlayer(state, raw, nm, hits);
+    return damagePlayer(state, raw, nm, hits, meleeFrom(mon));
   };
 
   const tryMove = (state: GameState, mon: MonsterInstance): GameState => {
@@ -549,7 +618,11 @@ function takeSkeletonArcherTurn(
   ) {
     if (cur.bowLoaded) {
       const raw = rollInt(2, 4) + bonus;
-      const d = damagePlayer(next, raw, name, hits);
+      const d = damagePlayer(next, raw, name, hits, {
+        kind: "arrow",
+        fromX: cur.x,
+        fromY: cur.y,
+      });
       if (d.dead) return d;
       next = d.state;
       next = {
@@ -602,7 +675,7 @@ function takeShadowRodentTurn(
   ): { state: GameState; dead: boolean } | null => {
     if (distToPlayer(mon) !== 1) return null;
     const raw = rollInt(2, 4) + bonus;
-    return damagePlayer(state, raw, nm, hits);
+    return damagePlayer(state, raw, nm, hits, meleeFrom(mon));
   };
 
   const tryMove = (state: GameState, mon: MonsterInstance): GameState => {
@@ -683,7 +756,7 @@ function takeEliteSkeletonTurn(
   const wInPlace = bestEliteWeaponToHit({ x: cur.x, y: cur.y }, P, false);
   if (wInPlace) {
     const raw = skeletonRollDamage(wInPlace, bonus);
-    const d = damagePlayer(next, raw, name, hits);
+    const d = damagePlayer(next, raw, name, hits, meleeFrom(cur));
     if (d.dead) return d;
     next = d.state;
     cur = next.monsters.find((x) => x.id === m.id)!;
@@ -714,7 +787,7 @@ function takeEliteSkeletonTurn(
     const wAfterMove = bestEliteWeaponToHit({ x: cur.x, y: cur.y }, P, movedThisTurn);
     if (wAfterMove) {
       const raw = skeletonRollDamage(wAfterMove, bonus);
-      const d = damagePlayer(next, raw, name, hits);
+      const d = damagePlayer(next, raw, name, hits, meleeFrom(cur));
       if (d.dead) return d;
       next = d.state;
       cur = next.monsters.find((x) => x.id === m.id)!;
@@ -753,7 +826,7 @@ function takeMimicTurn(
     if (phase === "attack") {
       if (chebyshev({ x: cur.x, y: cur.y }, P) <= 1) {
         const raw = rollInt(3, 4) + monsterDamageBonus(cur.level);
-        const d = damagePlayer(next, raw, name, hits);
+        const d = damagePlayer(next, raw, name, hits, meleeFrom(cur));
         if (d.dead) return d;
         next = d.state;
       }
@@ -796,7 +869,7 @@ function takeDouvlonPairTurn(
       if (chebyshev({ x: red.x, y: red.y }, P) <= 1) {
         const raw = rollInt(2, 5) + monsterDamageBonus(red.level);
         const nm = next.monsterDefs.get(red.defId)?.name ?? "Douvlon";
-        const d = damagePlayer(next, raw, nm, hits);
+        const d = damagePlayer(next, raw, nm, hits, meleeFrom(red));
         if (d.dead) return d;
         next = d.state;
       }
@@ -837,7 +910,11 @@ function takeDouvlonPairTurn(
     const rp = { x: red.x, y: red.y };
     const bp = { x: blue.x, y: blue.y };
     if (playerOnOpenSegmentBetween(rp, bp, P)) {
-      const d = damagePlayer(next, 5, next.monsterDefs.get(blue.defId)?.name ?? "Douvlon", hits);
+      const d = damagePlayer(next, 5, next.monsterDefs.get(blue.defId)?.name ?? "Douvlon", hits, {
+        kind: "douvlon_orb",
+        fromX: blue.x,
+        fromY: blue.y,
+      });
       if (d.dead) return d;
       next = appendLog(d.state, "The Douvlons' line sears you!");
     }
@@ -938,7 +1015,11 @@ function takeCorruptedShadeTurn(
     const mp: Point = { x: cur.x, y: cur.y };
     if (magicMissilePathClearToPlayer(next.tiles, next.monsters, mp, P, cur.id)) {
       next = appendLog(next, `${name} releases the Dark Bolt!`);
-      const d = damagePlayer(next, rollInt(4, 7), name, hits);
+      const d = damagePlayer(next, rollInt(4, 7), name, hits, {
+        kind: "magic_missile",
+        fromX: cur.x,
+        fromY: cur.y,
+      });
       if (d.dead) return d;
       next = d.state;
       cur = next.monsters.find((x) => x.id === m.id)!;
@@ -1026,7 +1107,7 @@ function takeCorruptedShadeTurn(
       if (isAdjacent()) {
         const raw = next.danger + rollInt(4, 5);
         next = appendLog(next, `${name} slashes with the Blade of Darkness!`);
-        const d = damagePlayer(next, raw, name, hits);
+        const d = damagePlayer(next, raw, name, hits, meleeFrom(cur));
         playCard("shade_blade");
         if (d.dead) return d;
         next = d.state;
@@ -1126,7 +1207,7 @@ function takeVineshonTurn(
   cur = next.monsters.find((x) => x.id === m.id)!;
   if (manhattan({ x: cur.x, y: cur.y }, { x: next.player.x, y: next.player.y }) <= 1) {
     const raw = rollInt(1, 3) + monsterDamageBonus(cur.level);
-    const d = damagePlayer(next, raw, name, hits);
+    const d = damagePlayer(next, raw, name, hits, meleeFrom(cur));
     if (d.dead) return { state: d.state, dead: true };
     next = d.state;
   }
@@ -1135,8 +1216,7 @@ function takeVineshonTurn(
 
 function tileBlockedForTangleweedSpawn(s: GameState, x: number, y: number): boolean {
   if (tileAt(s.tiles, { x, y }) !== "floor") return true;
-  if (s.player.x === x && s.player.y === y) return true;
-  if (s.monsters.some((m) => m.hp > 0 && m.x === x && m.y === y)) return true;
+  // May spawn onto player or monster (they must kill it to escape).
   if (s.rocks.some((r) => r.x === x && r.y === y)) return true;
   if (s.tangleweeds.some((t) => t.hp > 0 && t.x === x && t.y === y)) return true;
   if (s.monsters.some((m) => m.defId === "tangleweed_bloom" && m.hp > 0 && m.x === x && m.y === y))
@@ -1163,11 +1243,18 @@ function takeTangleweedBloomTurn(s: GameState, m: MonsterInstance): GameState {
   if (candidates.length === 0) return s;
   const dest = candidates[rollInt(0, candidates.length - 1)]!;
   const id = `tangle_${s.tangleweeds.length}_${Math.floor(Math.random() * 1e6)}`;
-  return {
+  let next: GameState = {
     ...s,
     tangleweeds: [...s.tangleweeds, { id, x: dest.x, y: dest.y, hp: 1, bloomId }],
-    log: [...s.log.slice(-50), "Tangleweed spreads."],
   };
+  if (s.player.x === dest.x && s.player.y === dest.y) {
+    next = appendLog(next, "Tangleweed wraps around you — kill it to move!");
+  } else if (s.monsters.some((m) => m.hp > 0 && m.x === dest.x && m.y === dest.y)) {
+    next = appendLog(next, "Tangleweed ensnares a creature.");
+  } else {
+    next = appendLog(next, "Tangleweed spreads.");
+  }
+  return next;
 }
 
 function takeDrosirTurn(
@@ -1185,7 +1272,7 @@ function takeDrosirTurn(
     manhattan({ x: cur.x, y: cur.y }, P) === 1;
   const doAttack = (): boolean => {
     const raw = rollInt(2, 3) + monsterDamageBonus(cur.level);
-    const d = damagePlayer(next, raw, name, hits);
+    const d = damagePlayer(next, raw, name, hits, meleeFrom(cur));
     if (d.dead) return true;
     next = d.state;
     cur = next.monsters.find((x) => x.id === m.id)!;
@@ -1236,7 +1323,7 @@ function takeBeetleTurn(
   const flee = cur.hp * 2 <= maxHp;
   const doAttack = (): boolean => {
     const raw = rollInt(2, 4) + monsterDamageBonus(cur.level);
-    const d = damagePlayer(next, raw, name, hits);
+    const d = damagePlayer(next, raw, name, hits, meleeFrom(cur));
     if (d.dead) return true;
     next = d.state;
     cur = next.monsters.find((x) => x.id === m.id)!;
@@ -1262,7 +1349,7 @@ function takeBeetleTurn(
   };
   if (startAdj) {
     if (doAttack()) return { state: { ...next, phase: "defeat" }, dead: true };
-    if (flee) fleeTwo();
+    // Spec: adjacent at turn start → attack, do not flee afterward.
     return { state: next, dead: false };
   }
   if (flee) {
@@ -1339,6 +1426,16 @@ export function runMonsterPhaseWithHooks(
     if (m.hp <= 0 || !m.active) continue;
     let curMon = s.monsters.find((x) => x.id === m.id && x.hp > 0);
     if (!curMon) continue;
+    const monId = curMon.id;
+
+    const free = tryBreakFreeOfTangleweed(s, curMon);
+    if (free.trapped) {
+      s = tickMonsterFireAfterTurn(free.state, monId, hits);
+      continue;
+    }
+    s = free.state;
+    curMon = s.monsters.find((x) => x.id === monId && x.hp > 0);
+    if (!curMon) continue;
 
     if (curMon.defId === "douvlon" && curMon.douvlonPairId) {
       const pid = curMon.douvlonPairId;
@@ -1347,6 +1444,7 @@ export function runMonsterPhaseWithHooks(
       const r = takeDouvlonPairTurn(s, pid, hooks, hits);
       s = r.state;
       if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1355,6 +1453,7 @@ export function runMonsterPhaseWithHooks(
       if (lt != null) {
         s = applySlimeLeap(s, curMon, lt, hooks, hits);
         if (s.player.hp <= 0) return { state: { ...s, phase: "defeat" }, hits };
+        s = tickMonsterFireAfterTurn(s, monId, hits);
         continue;
       }
       const occ0 = movementOcc(s, curMon.id);
@@ -1372,6 +1471,7 @@ export function runMonsterPhaseWithHooks(
         };
         s = appendLog(s, "The slime coils to leap.");
       }
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1379,6 +1479,7 @@ export function runMonsterPhaseWithHooks(
       const r = takeSkeletonTurn(s, curMon, hooks, hits);
       s = r.state;
       if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1386,6 +1487,7 @@ export function runMonsterPhaseWithHooks(
       const r = takeSkeletonArcherTurn(s, curMon, hooks, hits);
       s = r.state;
       if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1393,6 +1495,7 @@ export function runMonsterPhaseWithHooks(
       const r = takeMimicTurn(s, curMon, hooks, hits);
       s = r.state;
       if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1400,6 +1503,7 @@ export function runMonsterPhaseWithHooks(
       const r = takeMysticTurn(s, curMon, hits);
       s = r.state;
       if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1407,11 +1511,13 @@ export function runMonsterPhaseWithHooks(
       const r = takeVineshonTurn(s, curMon, hooks, hits);
       s = r.state;
       if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
     if (curMon.defId === "tangleweed_bloom") {
       s = takeTangleweedBloomTurn(s, curMon);
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1419,6 +1525,7 @@ export function runMonsterPhaseWithHooks(
       const r = takeDrosirTurn(s, curMon, hooks, hits);
       s = r.state;
       if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1426,6 +1533,7 @@ export function runMonsterPhaseWithHooks(
       const r = takeBeetleTurn(s, curMon, hooks, hits);
       s = r.state;
       if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1433,6 +1541,7 @@ export function runMonsterPhaseWithHooks(
       const r = takeDustRatTurn(s, curMon, playerPos, hooks, hits);
       s = r.state;
       if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1440,6 +1549,7 @@ export function runMonsterPhaseWithHooks(
       const r = takeShadowRodentTurn(s, curMon, playerPos, hooks, hits);
       s = r.state;
       if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1447,6 +1557,7 @@ export function runMonsterPhaseWithHooks(
       const r = takeEliteSkeletonTurn(s, curMon, hooks, hits);
       s = r.state;
       if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1454,6 +1565,7 @@ export function runMonsterPhaseWithHooks(
       const r = takeCorruptedShadeTurn(s, curMon, hooks, hits);
       s = r.state;
       if (r.dead) return { state: { ...s, phase: "defeat" }, hits };
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1461,7 +1573,7 @@ export function runMonsterPhaseWithHooks(
       if (manhattan({ x: curMon.x, y: curMon.y }, playerPos) === 1) {
         const raw = rollInt(3, 4) + monsterDamageBonus(curMon.level);
         const nm = s.monsterDefs.get(curMon.defId)?.name ?? "Rockling";
-        const d = damagePlayer(s, raw, nm, hits);
+        const d = damagePlayer(s, raw, nm, hits, meleeFrom(curMon));
         if (d.dead) return { state: { ...d.state, phase: "defeat" }, hits };
         s = d.state;
       } else {
@@ -1469,6 +1581,7 @@ export function runMonsterPhaseWithHooks(
         const step = bestOrthoToward(s, curMon, occ);
         if (step) s = moveMonsterTo(s, curMon, step, hooks);
       }
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1476,9 +1589,10 @@ export function runMonsterPhaseWithHooks(
     if (manhattan(mp, playerPos) === 1) {
       const def = s.monsterDefs.get(curMon.defId);
       const raw = rollInt(def?.damage ?? 2, def?.damage ?? 2) + monsterDamageBonus(curMon.level);
-      const d = damagePlayer(s, raw, def?.name ?? "Monster", hits);
+      const d = damagePlayer(s, raw, def?.name ?? "Monster", hits, meleeFrom(curMon));
       if (d.dead) return { state: { ...d.state, phase: "defeat" }, hits };
       s = d.state;
+      s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
     }
 
@@ -1502,6 +1616,7 @@ export function runMonsterPhaseWithHooks(
     if (best) {
       s = moveMonsterTo(s, curMon, best, hooks);
     }
+    s = tickMonsterFireAfterTurn(s, monId, hits);
   }
 
   s = cullDisconnectedTangleweeds(s);

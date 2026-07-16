@@ -11,6 +11,9 @@
       <header class="top-bar">
         <div class="top-bar-main">
           <h1 class="game-title">The Infinite Dungeon</h1>
+          <button type="button" id="btn-graphics-toggle" class="command-open-btn" title="Toggle pixel art / box sprites">
+            Pixel art
+          </button>
           <button type="button" id="btn-command-window" class="command-open-btn" title="Open command window">
             Commands
           </button>
@@ -199,9 +202,14 @@
         </form>
         <p id="command-feedback" class="command-feedback" aria-live="polite"></p>
         <div class="command-help">
-          <p><code>Set [variable] [number]</code> — level, danger, max hp, hp, gold, bread, noise, exp, skill points</p>
+          <p><code>Set [variable] [number]</code> — level, danger, max hp, hp, gold, bread, herb, noise, exp, skill points</p>
           <p><code>Card [card name] [add|remove]</code> — adds to discard or removes one copy</p>
           <p><code>Dungeon [card name]</code> — places a dungeon card on top</p>
+          <p><code>Floor [n]</code> — jump to floor n (new layout, danger = n)</p>
+          <p><code>Theme [Normal|Overgrown|Damp|Brownstone]</code> — regenerate this floor with that theme</p>
+          <p><code>Summon [monster] [level?]</code> — spawn adjacent</p>
+          <p><code>Graphics [pixel|boxes]</code> — pixel art on, or solid box sprites for testing</p>
+          <p><code>Chance [Highest|Lowest|Normal] [true|false?]</code> — bias rolls (optional player-only)</p>
         </div>
       </div>
     </div>

@@ -355,10 +355,25 @@ export interface GameState {
 }
 
 /** One combat hit for UI (flash + floating damage number at grid cell). */
+export type AttackFxKind =
+  | "magic_missile"
+  | "arrow"
+  | "fireball"
+  | "douvlon_orb"
+  | "melee_slash";
+
+export interface AttackFx {
+  kind: AttackFxKind;
+  fromX: number;
+  fromY: number;
+}
+
 export interface HitVisual {
   gridX: number;
   gridY: number;
   damage: number;
+  /** Optional attack animation from attacker → this cell. */
+  fx?: AttackFx;
 }
 
 export type DispatchResult = { state: GameState; hits: HitVisual[] };
@@ -383,6 +398,7 @@ export type GameCommand =
   | { type: "DEV_CARD"; cardId: string; action: "add" | "remove" }
   | { type: "DEV_DUNGEON_TOP"; cardId: string }
   | { type: "DEV_GOTO_FLOOR"; depth: number }
+  | { type: "DEV_SET_THEME"; theme: FloorTheme }
   | { type: "DEV_SUMMON"; defId: string; level: number }
   | { type: "DEV_CHANCE"; mode: ChanceMode; playerOnly: boolean }
   | { type: "REQUEST_PLAY_CARD"; handIndex: number }
@@ -397,7 +413,7 @@ export type GameCommand =
   | { type: "CANCEL_PENDING" }
   | { type: "USE_BREAD" }
   | { type: "USE_HERB" }
-  | { type: "CONFIRM_WATER_ESCAPE"; destX: number; destY: number }
+  | { type: "CONFIRM_WATER_ESCAPE"; destX: number; destY: number; handIndex: number }
   | { type: "CANCEL_WATER_ESCAPE" }
   | { type: "END_TURN" }
   | { type: "RESOLVE_CHEST_OFFER"; pickIndex: number | null }

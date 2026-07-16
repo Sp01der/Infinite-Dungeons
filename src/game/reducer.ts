@@ -10,12 +10,10 @@ import {
   tileAt,
 } from "../engine/grid";
 import { extendReachableWithBlockedDestinations, manhattan, reachableOrthogonal } from "../engine/movement";
-import { generateFloor } from "../engine/floorGen";
 import { buildFreshDungeonDeck, DUNGEON_DEADLIER_ID } from "./dungeonDeck";
 import {
   appendGoldSeekerBonusCoin,
   createNextFloorState,
-  pickFloorTheme,
   pickMonsterId,
   pickWeightedDefId,
 } from "./initialState";
@@ -51,7 +49,9 @@ import {
 } from "./skillsRuntime";
 import { getSkillDef } from "./skillDefs";
 import type {
+  AttackFxKind,
   DispatchResult,
+  FloorTheme,
   GameCommand,
   GameState,
   GroundLootInstance,
@@ -271,9 +271,7 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
 
   if (cmd.type === "DEV_GOTO_FLOOR") {
     const targetDepth = Math.max(1, Math.trunc(cmd.depth));
-    const theme = pickFloorTheme(state.themePickHistory);
-    const gen = generateFloor({ depth: targetDepth, theme });
-    let next = createNextFloorState(state, gen);
+    let next = createNextFloorState(state, { depth: targetDepth });
     next = reshufflePlayerDeck(next);
     next = ensureEquippedOnDeckTop(next);
     const drawN = playerDrawCountPerTurn(next);
@@ -286,13 +284,93 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
     return noHits({ ...next, phase: "player", pending: null });
   }
 
+  if (cmd.type === "DEV_SET_THEME") {
+    let next = createNextFloorState(state, {
+      depth: state.depth,
+      theme: cmd.theme,
+      danger: state.danger,
+    });
+    next = reshufflePlayerDeck(next);
+    next = ensureEquippedOnDeckTop(next);
+    const drawN = playerDrawCountPerTurn(next);
+    next = drawFromPlayerDeck(next, drawN);
+    next = applyPerTurnSkillResourcesAfterDraw(next);
+    next = revealAtPlayer(next);
+    next = collectAdjacentLoot(next);
+    next = log(
+      next,
+      `Command: regenerated floor ${next.depth} as ${cmd.theme} (danger ${next.danger}).`,
+    );
+    next = log(next, `— Turn ${next.turn} — You draw ${drawN} cards.`);
+    return noHits({ ...next, phase: "player", pending: null });
+  }
+
   return noHits(state);
 }
 
 function applyMonsterKillRewards(state: GameState, defId: string): GameState {
-  const power = state.monsterDefs.get(defId)?.power ?? 3;
-  const withGold = { ...state, player: { ...state.player, gold: state.player.gold + 2 } };
-  return addExp(withGold, power);
+  let next = state;
+  if (defId === "mimic") {
+    next = applyMimicDeathLoot(next);
+  } else {
+    next = { ...next, player: { ...next.player, gold: next.player.gold + 2 } };
+  }
+  const power = next.monsterDefs.get(defId)?.power ?? 3;
+  return addExp(next, power);
+}
+
+/** Mimics spill chest-table loot when slain. */
+function applyMimicDeathLoot(state: GameState): GameState {
+  let next = log(state, "The Mimic spills its hoard!");
+  const loot = rollChestLoot();
+  switch (loot.kind) {
+    case "coins":
+      return log(
+        {
+          ...next,
+          player: { ...next.player, gold: next.player.gold + loot.amount },
+        },
+        `Mimic loot: +${loot.amount} gold.`,
+      );
+    case "bread":
+      return log(
+        {
+          ...next,
+          player: { ...next.player, bread: next.player.bread + 1 },
+        },
+        "Mimic loot: a loaf of bread.",
+      );
+    case "cardChoice": {
+      const cards = pickChestOfferCards(next.cardDefs, loot.tier, next.depth);
+      return log(
+        { ...next, chestOffer: { cards } },
+        "Mimic loot: inscribed cards — take one, or leave them all.",
+      );
+    }
+  }
+}
+
+function fireBurnDamage(maxHp: number): number {
+  return Math.max(1, Math.floor(maxHp * 0.2));
+}
+
+/** After the player's turn: Fire level −1 and 20% max HP damage. */
+function tickPlayerFire(s: GameState): GameState {
+  const lv = s.player.fireLevels ?? 0;
+  if (lv <= 0) return s;
+  const dmg = fireBurnDamage(s.player.maxHp);
+  const hp = Math.max(0, s.player.hp - dmg);
+  let next: GameState = {
+    ...s,
+    player: { ...s.player, hp, fireLevels: lv - 1 },
+  };
+  next = log(next, `Fire burns you for ${dmg} (${lv - 1} left).`);
+  if (hp <= 0) return { ...next, phase: "defeat" };
+  return next;
+}
+
+function playerEntangled(s: GameState): boolean {
+  return s.tangleweeds.some((tw) => tw.hp > 0 && tw.x === s.player.x && tw.y === s.player.y);
 }
 
 function tryKnockMonsterFromPlayer(s: GameState, mon: MonsterInstance): GameState {
@@ -419,6 +497,18 @@ function noHits(s: GameState): DispatchResult {
 
 function withHits(s: GameState, hits: HitVisual[]): DispatchResult {
   return { state: s, hits };
+}
+
+function playerAttackFx(s: GameState, kind: AttackFxKind): HitVisual["fx"] {
+  return { kind, fromX: s.player.x, fromY: s.player.y };
+}
+
+function hitAt(s: GameState, x: number, y: number, damage: number, kind: AttackFxKind): HitVisual {
+  return { gridX: x, gridY: y, damage, fx: playerAttackFx(s, kind) };
+}
+
+function meleeHitAt(s: GameState, x: number, y: number, damage: number): HitVisual {
+  return hitAt(s, x, y, damage, "melee_slash");
 }
 
 function occupiedByMonsters(state: GameState): Set<string> {
@@ -727,7 +817,7 @@ function tileBlockedForDeepSpawn(s: GameState, x: number, y: number): boolean {
 
 function spawnMonstersFromDeep(s: GameState): { state: GameState; lines: string[] } {
   const lines: string[] = [];
-  const attempts = 1 + s.depth;
+  const attempts = 2 + s.depth;
   const px = s.player.x;
   const py = s.player.y;
   const playerRid = s.roomIds[py]?.[px] ?? -1;
@@ -800,7 +890,7 @@ function applyFallingRocksCard(s: GameState): { state: GameState; hits: HitVisua
 
   for (let wave = 0; wave < next.depth; wave++) {
     for (const rid of roomList) {
-      if (Math.random() >= 1 / 8) continue;
+      if (Math.random() >= 1 / 6) continue;
       const cells: Point[] = [];
       for (let y = 0; y < next.height; y++) {
         for (let x = 0; x < next.width; x++) {
@@ -945,7 +1035,12 @@ function gauntletPowerPartitions(totalPower: number, maxMonsters: number, depth:
   return res;
 }
 
-function defIdForGauntletPower(p: number, depth: number, monsterDefs: Map<string, MonsterDef>): string {
+function defIdForGauntletPower(
+  p: number,
+  depth: number,
+  monsterDefs: Map<string, MonsterDef>,
+  theme: FloorTheme,
+): string {
   if (p === 8) return "elite_skeleton";
   if (p === 5) return "rockling";
   if (p === 4) {
@@ -953,7 +1048,9 @@ function defIdForGauntletPower(p: number, depth: number, monsterDefs: Map<string
     return pickWeightedDefId(["skeleton", "mystic_core"], monsterDefs);
   }
   if (depth >= 5) return "slime";
-  return pickWeightedDefId(["slime", "dune_rat"], monsterDefs);
+  // Overgrown: no Dust Rats — Vineshons take their place.
+  const lowTier = theme === "overgrown" ? ["slime", "vineshon"] : ["slime", "dune_rat"];
+  return pickWeightedDefId(lowTier, monsterDefs);
 }
 
 function collectGauntletSpawnCells(
@@ -998,7 +1095,7 @@ function spawnGauntletWave(s: GameState): GameState {
     return log(s, "Gauntlet spawn failed — not enough space.");
   }
   const powers = options[Math.floor(Math.random() * options.length)]!;
-  const roster = powers.map((p) => defIdForGauntletPower(p, s.depth, s.monsterDefs));
+  const roster = powers.map((p) => defIdForGauntletPower(p, s.depth, s.monsterDefs, s.floorTheme));
   shuffleInPlace(roster);
   shuffleInPlace(candidates);
   let serial = nextMonsterSerial(s.monsters);
@@ -1725,7 +1822,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         working.monsterDefs,
         working.danger,
       );
-      summary = "You are not alone.";
+      summary = "";
       const st = log(
         {
           ...working,
@@ -1829,7 +1926,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         }
         if (cells.length === 0) continue;
         shuffleInPlace(cells);
-        const n = rollInt(1, working.depth);
+        const n = rollInt(1, Math.max(1, working.depth));
         for (let i = 0; i < n && i < cells.length; i++) marks.push(cells[i]!);
       }
       summary = "Weak points in the ceiling — stalactites fall next turn.";
@@ -1930,6 +2027,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
     cmd.type === "DEV_CARD" ||
     cmd.type === "DEV_DUNGEON_TOP" ||
     cmd.type === "DEV_GOTO_FLOOR" ||
+    cmd.type === "DEV_SET_THEME" ||
     cmd.type === "DEV_SUMMON" ||
     cmd.type === "DEV_CHANCE"
   ) {
@@ -1959,9 +2057,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         return noHits(log(state, "The descent waits — finish at the pedestal first."));
       }
       if (onStairDown && state.pedestalUsed) {
-        const theme = pickFloorTheme(state.themePickHistory);
-        const gen = generateFloor({ depth: state.depth + 1, theme });
-        let next = createNextFloorState(state, gen);
+        let next = createNextFloorState(state);
         next = reshufflePlayerDeck(next);
         next = ensureEquippedOnDeckTop(next);
         const drawN = playerDrawCountPerTurn(next);
@@ -2459,6 +2555,15 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       if (!state.pending) return noHits(state);
       const dest = { x: cmd.x, y: cmd.y };
       const from = { x: state.player.x, y: state.player.y };
+
+      const moveKinds =
+        state.pending.kind === "play_move" ||
+        state.pending.kind === "discard_move1" ||
+        state.pending.kind === "move_token_step" ||
+        state.pending.kind === "play_card_seeker";
+      if (moveKinds && playerEntangled(state)) {
+        return noHits(log(state, "Tangleweed holds you — kill it before you can move."));
+      }
 
       if (state.pending.kind === "play_move") {
         const p = state.pending;
@@ -3023,10 +3128,40 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           for (let dx = -1; dx <= 1; dx++) {
             const tx = dest.x + dx;
             const ty = dest.y + dy;
-            if (tileAt(s.tiles, { x: tx, y: ty }) !== "floor") continue;
-            // Break any pot in this blast cell
+            const cell = { x: tx, y: ty };
+            const t = tileAt(s.tiles, cell);
+            if (t !== "floor" && t !== "water") continue;
             if (s.pots.some((pot) => pot.x === tx && pot.y === ty)) {
               s = breakPotFromAttack(s, tx, ty);
+            }
+            for (const tw of s.tangleweeds.filter((w) => w.hp > 0 && w.x === tx && w.y === ty)) {
+              const hp = Math.max(0, tw.hp - dmg);
+              s = {
+                ...s,
+                tangleweeds: s.tangleweeds.map((w) => (w.id === tw.id ? { ...w, hp } : w)),
+              };
+              hits.push(hitAt(s, tx, ty, dmg, "fireball"));
+              if (hp <= 0) s = log(s, "Tangleweed burned away.");
+            }
+            if (s.player.x === tx && s.player.y === ty) {
+              const pdmg = incomingDamageToPlayer(s, dmg);
+              const php = Math.max(0, s.player.hp - pdmg);
+              s = {
+                ...s,
+                player: {
+                  ...s.player,
+                  hp: php,
+                  fireLevels: (s.player.fireLevels ?? 0) + fireLvls,
+                },
+              };
+              hits.push(hitAt(s, tx, ty, pdmg, "fireball"));
+              s = log(s, `You are caught in the fireball — ${pdmg} damage and Fire ${fireLvls}!`);
+              if (php <= 0) {
+                return withHits(
+                  { ...s, phase: "defeat" },
+                  hits,
+                );
+              }
             }
             const monstersHere = s.monsters.filter((m) => m.hp > 0 && m.x === tx && m.y === ty);
             for (const target of monstersHere) {
@@ -3035,7 +3170,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
               const hp = Math.max(0, target.hp - finalDmg);
               s = { ...s, monsters: patchMonsterHp(s.monsters, target.id, hp) };
               s = { ...s, monsters: applyFireToMonster(s.monsters, target.id, fireLvls) };
-              hits.push({ gridX: tx, gridY: ty, damage: finalDmg });
+              hits.push(hitAt(s, tx, ty, finalDmg, "fireball"));
               if (hp <= 0) {
                 s = log(s, `${defM?.name ?? "Enemy"} consumed by fire!`);
                 s = applyMonsterKillRewards(s, target.defId);
@@ -3190,7 +3325,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const cur = s.monsters.find((m) => m.id === mon.id && m.hp > 0);
           if (cur) s = tryKnockMonsterFromPlayer(s, cur);
         }
-        return withHits(s, [{ gridX: mon.x, gridY: mon.y, damage: dmg }]);
+        return withHits(s, [meleeHitAt(s, mon.x, mon.y, dmg)]);
       }
 
       if (state.pending.kind === "play_spear") {
@@ -3222,7 +3357,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const dmg = applyDefense(raw, monsterDefenseForIncoming(target, mdef));
           const hp = Math.max(0, target.hp - dmg);
           s = { ...s, monsters: patchMonsterHp(s.monsters, target.id, hp) };
-          hits.push({ gridX: target.x, gridY: target.y, damage: dmg });
+          hits.push(meleeHitAt(s, target.x, target.y, dmg));
           if (hp <= 0) {
             s = log(s, `${mdef?.name ?? "Enemy"} defeated.`);
             s = applyMonsterKillRewards(s, target.defId);
@@ -3276,7 +3411,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         }
         s = drawFromPlayerDeck(s, 1);
         s = log(s, "You draw a card.");
-        return withHits(s, [{ gridX: mon.x, gridY: mon.y, damage: dmg }]);
+        return withHits(s, [meleeHitAt(s, mon.x, mon.y, dmg)]);
       }
 
       if (state.pending.kind === "play_axe") {
@@ -3316,7 +3451,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const cur = s.monsters.find((m) => m.id === mon.id && m.hp > 0);
           if (cur) s = tryKnockMonsterFromPlayer(s, cur);
         }
-        return withHits(s, [{ gridX: mon.x, gridY: mon.y, damage: dmg }]);
+        return withHits(s, [meleeHitAt(s, mon.x, mon.y, dmg)]);
       }
 
       if (state.pending.kind === "play_magic_missile") {
@@ -3345,7 +3480,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
           s = applyMonsterKillRewards(s, mon.defId);
         }
-        return withHits(s, [{ gridX: mon.x, gridY: mon.y, damage: dmg }]);
+        return withHits(s, [hitAt(s, mon.x, mon.y, dmg, "magic_missile")]);
       }
 
       if (state.pending.kind === "discard_punch") {
@@ -3363,7 +3498,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const dmg = applyDefense(raw, defVal);
           const hp = Math.max(0, cur.hp - dmg);
           s = { ...s, monsters: patchMonsterHp(s.monsters, mon.id, hp) };
-          hits.push({ gridX: cur.x, gridY: cur.y, damage: dmg });
+          hits.push(meleeHitAt(s, cur.x, cur.y, dmg));
           dmgParts.push(dmg);
           if (hp <= 0) {
             s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
@@ -3398,24 +3533,45 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         if (!cardId) return noHits(state);
         hand.splice(p.cardHandIndex, 1);
         const discardPile = [...state.player.discardPile, cardId];
-        const raw = weaponAttackRollRaw(state, cardId, p.minDamage, p.maxDamage);
         const defM = state.monsterDefs.get(mon.defId);
-        const dmg = applyDefense(raw, monsterDefenseForIncoming(mon, defM));
-        const hp = Math.max(0, mon.hp - dmg);
+        const defVal = monsterDefenseForIncoming(mon, defM);
+        const strikes = state.player.doublePunchThisTurn ? 2 : 1;
         let s: GameState = {
           ...state,
           player: { ...state.player, hand, discardPile },
-          monsters: patchMonsterHp(state.monsters, mon.id, hp),
           pending: null,
         };
-        s = log(s, `Knockback Punch — ${dmg} damage.`);
-        if (hp <= 0) {
-          s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
-          s = applyMonsterKillRewards(s, mon.defId);
-        } else {
-          s = tryKnockMonsterFromPlayerN(s, mon.id, p.knockback);
+        const hits: HitVisual[] = [];
+        const dmgParts: number[] = [];
+        let lastAliveId: string | null = mon.id;
+        for (let i = 0; i < strikes; i++) {
+          const cur = s.monsters.find((m) => m.id === mon.id && m.hp > 0);
+          if (!cur) {
+            lastAliveId = null;
+            break;
+          }
+          const raw = weaponAttackRollRaw(s, cardId, p.minDamage, p.maxDamage);
+          const dmg = applyDefense(raw, defVal);
+          const hp = Math.max(0, cur.hp - dmg);
+          s = { ...s, monsters: patchMonsterHp(s.monsters, mon.id, hp) };
+          hits.push(meleeHitAt(s, cur.x, cur.y, dmg));
+          dmgParts.push(dmg);
+          if (hp <= 0) {
+            s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
+            s = applyMonsterKillRewards(s, mon.defId);
+            lastAliveId = null;
+            break;
+          }
         }
-        return withHits(s, [{ gridX: mon.x, gridY: mon.y, damage: dmg }]);
+        if (strikes === 2 && dmgParts.length === 2) {
+          s = log(s, `Knockback Punch (Flurry) — ${dmgParts[0]} and ${dmgParts[1]} damage.`);
+        } else {
+          s = log(s, `Knockback Punch — ${dmgParts[0]!} damage.`);
+        }
+        if (lastAliveId) {
+          s = tryKnockMonsterFromPlayerN(s, lastAliveId, p.knockback);
+        }
+        return withHits(s, hits);
       }
 
       if (state.pending.kind === "play_bow_attack") {
@@ -3446,7 +3602,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
           s = applyMonsterKillRewards(s, mon.defId);
         }
-        return withHits(s, [{ gridX: mon.x, gridY: mon.y, damage: dmg }]);
+        return withHits(s, [hitAt(s, mon.x, mon.y, dmg, "arrow")]);
       }
 
       if (state.pending.kind === "play_lightning_bolt") {
@@ -3510,7 +3666,14 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
             s = log(s, `Lightning chains — choose next target within ${nextDamage} for ${nextDmgShown} damage.`);
           }
         }
-        return withHits(s, [{ gridX: mon.x, gridY: mon.y, damage: dmg }]);
+        return withHits(s, [
+          {
+            gridX: mon.x,
+            gridY: mon.y,
+            damage: dmg,
+            fx: { kind: "magic_missile", fromX: lastHit.x, fromY: lastHit.y },
+          },
+        ]);
       }
 
       return noHits(state);
@@ -3538,7 +3701,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         };
         s = log(s, "You shatter the pot with your strike.");
         s = breakPotFromAttack(s, pot.x, pot.y);
-        return withHits(s, [{ gridX: pot.x, gridY: pot.y, damage: 1 }]);
+        return withHits(s, [meleeHitAt(s, pot.x, pot.y, 1)]);
       }
 
       if (state.pending.kind === "play_spear") {
@@ -3560,7 +3723,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         };
         s = log(s, "Your spear splinters the pot.");
         s = breakPotFromAttack(s, pot.x, pot.y);
-        return withHits(s, [{ gridX: pot.x, gridY: pot.y, damage: 1 }]);
+        return withHits(s, [meleeHitAt(s, pot.x, pot.y, 1)]);
       }
 
       if (state.pending.kind === "play_knife") {
@@ -3580,7 +3743,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         s = breakPotFromAttack(s, pot.x, pot.y);
         s = drawFromPlayerDeck(s, 1);
         s = log(s, "You draw a card.");
-        return withHits(s, [{ gridX: pot.x, gridY: pot.y, damage: 1 }]);
+        return withHits(s, [meleeHitAt(s, pot.x, pot.y, 1)]);
       }
 
       if (state.pending.kind === "play_axe") {
@@ -3603,7 +3766,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         };
         s = log(s, "The axe smashes the pot — your next move will fail.");
         s = breakPotFromAttack(s, pot.x, pot.y);
-        return withHits(s, [{ gridX: pot.x, gridY: pot.y, damage: 1 }]);
+        return withHits(s, [meleeHitAt(s, pot.x, pot.y, 1)]);
       }
 
       if (state.pending.kind === "play_magic_missile") {
@@ -3632,7 +3795,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         };
         s = log(s, "Magic Missile shatters the pot.");
         s = breakPotFromAttack(s, pot.x, pot.y);
-        return withHits(s, [{ gridX: pot.x, gridY: pot.y, damage: 1 }]);
+        return withHits(s, [hitAt(s, pot.x, pot.y, 1, "magic_missile")]);
       }
 
       if (state.pending.kind === "discard_punch") {
@@ -3640,7 +3803,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         let s: GameState = { ...state, pending: null };
         s = log(s, "You punch the pot apart.");
         s = breakPotFromAttack(s, pot.x, pot.y);
-        return withHits(s, [{ gridX: pot.x, gridY: pot.y, damage: 1 }]);
+        return withHits(s, [meleeHitAt(s, pot.x, pot.y, 1)]);
       }
 
       return noHits(state);
@@ -3707,8 +3870,13 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       if (state.player.hand.length === 0) {
         return noHits(log(state, "You need a card to discard to escape the water."));
       }
+      const handIndex = cmd.handIndex;
+      if (handIndex < 0 || handIndex >= state.player.hand.length) {
+        return noHits(log(state, "Choose a hand card to discard, then click land."));
+      }
       const hand = [...state.player.hand];
-      const cardId = hand.shift()!;
+      const [cardId] = hand.splice(handIndex, 1);
+      if (!cardId) return noHits(state);
       let s: GameState = {
         ...state,
         player: {
@@ -3731,30 +3899,59 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
     }
 
     case "CONFIRM_TARGET_TANGLEWEED": {
-      if (!state.pending || state.pending.kind !== "play_melee") return noHits(state);
+      if (!state.pending) return noHits(state);
       const tw = state.tangleweeds.find((x) => x.id === cmd.tangleweedId && x.hp > 0);
       if (!tw) return noHits(state);
-      if (manhattan({ x: state.player.x, y: state.player.y }, tw) !== 1) return noHits(state);
-      const pv = state.pending;
-      const hand = [...state.player.hand];
-      const cardId = hand[pv.cardHandIndex];
-      if (!cardId) return noHits(state);
-      hand.splice(pv.cardHandIndex, 1);
-      const discardPile = [...state.player.discardPile, cardId];
-      const raw = weaponAttackRollRaw(state, cardId, pv.minDamage, pv.maxDamage);
-      const dmg = raw;
-      const hp = Math.max(0, tw.hp - dmg);
-      const tangleweeds = state.tangleweeds.map((x) => (x.id === tw.id ? { ...x, hp } : x));
-      let s = log(
-        {
-          ...state,
-          player: { ...state.player, hand, discardPile },
-          tangleweeds,
-          pending: null,
-        },
-        hp <= 0 ? "You clear the tangleweed." : `You cut the tangleweed for ${dmg} damage.`,
-      );
-      return withHits(s, [{ gridX: tw.x, gridY: tw.y, damage: dmg }]);
+      if (manhattan({ x: state.player.x, y: state.player.y }, tw) > 1) return noHits(state);
+
+      if (state.pending.kind === "play_melee") {
+        const pv = state.pending;
+        const hand = [...state.player.hand];
+        const cardId = hand[pv.cardHandIndex];
+        if (!cardId) return noHits(state);
+        hand.splice(pv.cardHandIndex, 1);
+        const discardPile = [...state.player.discardPile, cardId];
+        const raw = weaponAttackRollRaw(state, cardId, pv.minDamage, pv.maxDamage);
+        const dmg = raw;
+        const hp = Math.max(0, tw.hp - dmg);
+        const tangleweeds = state.tangleweeds.map((x) => (x.id === tw.id ? { ...x, hp } : x));
+        let s = log(
+          {
+            ...state,
+            player: { ...state.player, hand, discardPile },
+            tangleweeds,
+            pending: null,
+          },
+          hp <= 0 ? "You clear the tangleweed." : `You cut the tangleweed for ${dmg} damage.`,
+        );
+        return withHits(s, [meleeHitAt(s, tw.x, tw.y, dmg)]);
+      }
+
+      if (state.pending.kind === "discard_punch") {
+        const strikes = state.player.doublePunchThisTurn ? 2 : 1;
+        let s: GameState = { ...state, pending: null };
+        const hits: HitVisual[] = [];
+        let cleared = false;
+        for (let i = 0; i < strikes; i++) {
+          const cur = s.tangleweeds.find((x) => x.id === tw.id && x.hp > 0);
+          if (!cur) break;
+          const raw = rollInt(1, 2) + attackStrengthBonus(s) + heavyPunchBonus(s);
+          const hp = Math.max(0, cur.hp - raw);
+          s = {
+            ...s,
+            tangleweeds: s.tangleweeds.map((x) => (x.id === tw.id ? { ...x, hp } : x)),
+          };
+          hits.push(meleeHitAt(s, cur.x, cur.y, raw));
+          if (hp <= 0) {
+            cleared = true;
+            break;
+          }
+        }
+        s = log(s, cleared ? "You punch through the tangleweed." : "You punch the tangleweed.");
+        return withHits(s, hits);
+      }
+
+      return noHits(state);
     }
 
     case "USE_MOVE_TOKEN": {
@@ -3795,6 +3992,8 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
 
       let s = discardHand(state);
       s = ensureEquippedOnDeckTop(s);
+      s = tickPlayerFire(s);
+      if (s.phase === "defeat") return noHits(s);
       let dungeonHits: HitVisual[] = [];
       pushRollChanceContext(s, "world");
       try {

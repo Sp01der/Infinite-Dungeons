@@ -1,12 +1,7 @@
 import { Application } from "pixi.js";
 import floorSample from "./content/floor_sample.json";
-import { generateFloor } from "./engine/floorGen";
 import type { FloorDef } from "./game/types";
-import {
-  createInitialState,
-  createInitialStateGenerated,
-  pickFloorTheme,
-} from "./game/initialState";
+import { createInitialState, createInitialStateGenerated } from "./game/initialState";
 import { dispatch } from "./game/reducer";
 import { expToNextLevel } from "./game/progression";
 import {
@@ -16,9 +11,10 @@ import {
   SKILL_DEFS,
   type SkillDef,
 } from "./game/skillDefs";
-import { CARD_TYPE_ORDER, type CardDef, type GameCommand, type GameState } from "./game/types";
+import { CARD_TYPE_ORDER, type CardDef, type FloorTheme, type GameCommand, type GameState } from "./game/types";
 import { lightningBoltSkillDamageBonus } from "./game/skillsRuntime";
 import { loadSpriteStyles } from "./render/assets";
+import { loadAttackFxFrames } from "./render/attackFx";
 import { GridView, VIEW_HEIGHT_PX, VIEW_WIDTH_PX } from "./render/gridView";
 
 const viewport = document.querySelector<HTMLDivElement>("#game-viewport")!;
@@ -92,6 +88,7 @@ const deckBuilderTypeGrid = document.querySelector<HTMLDivElement>("#deck-builde
 const deckBuilderCards = document.querySelector<HTMLDivElement>("#deck-builder-cards")!;
 const deckBuilderSkip = document.querySelector<HTMLButtonElement>("#deck-builder-skip")!;
 const commandWindowBtn = document.querySelector<HTMLButtonElement>("#btn-command-window")!;
+const graphicsToggleBtn = document.querySelector<HTMLButtonElement>("#btn-graphics-toggle")!;
 const commandWindow = document.querySelector<HTMLDivElement>("#command-window")!;
 const commandWindowBackdrop = document.querySelector<HTMLDivElement>("#command-window-backdrop")!;
 const commandWindowClose = document.querySelector<HTMLButtonElement>("#command-window-close")!;
@@ -105,12 +102,44 @@ const useSampleFloor =
 
 let state: GameState = useSampleFloor
   ? createInitialState(floorSample as FloorDef)
-  : createInitialStateGenerated(
-      generateFloor({ depth: 1, theme: pickFloorTheme({}) }),
-    );
+  : createInitialStateGenerated(1);
 let grid: GridView | undefined;
 let mapCameraInitialized = false;
 let lastSyncedFloorId: string | null = null;
+/** Hand index chosen to discard when escaping water (then click land). */
+let waterEscapeHandIndex: number | null = null;
+
+const PIXEL_ART_STORAGE_KEY = "infinite-dungeon-pixel-art";
+
+function readStoredPixelArtPreference(): boolean {
+  try {
+    const v = localStorage.getItem(PIXEL_ART_STORAGE_KEY);
+    if (v === "0" || v === "false" || v === "boxes") return false;
+    if (v === "1" || v === "true" || v === "pixel") return true;
+  } catch {
+    /* ignore */
+  }
+  return true;
+}
+
+function syncGraphicsToggleButton(): void {
+  const on = grid?.getPixelArtEnabled() ?? readStoredPixelArtPreference();
+  graphicsToggleBtn.textContent = on ? "Pixel art" : "Boxes";
+  graphicsToggleBtn.title = on
+    ? "Using pixel art — click for solid box sprites"
+    : "Using box sprites — click for pixel art";
+  graphicsToggleBtn.setAttribute("aria-pressed", on ? "true" : "false");
+}
+
+function setPixelArtEnabled(enabled: boolean): void {
+  try {
+    localStorage.setItem(PIXEL_ART_STORAGE_KEY, enabled ? "pixel" : "boxes");
+  } catch {
+    /* ignore */
+  }
+  grid?.setPixelArtEnabled(enabled);
+  syncGraphicsToggleButton();
+}
 
 function choiceModalBlocksPlay(s: GameState): boolean {
   return (
@@ -394,7 +423,14 @@ function cellClick(x: number, y: number): void {
   }
   if (s.phase !== "player") return;
   if (s.pending?.kind === "water_escape") {
-    apply({ type: "CONFIRM_WATER_ESCAPE", destX: x, destY: y });
+    if (waterEscapeHandIndex === null) return;
+    apply({
+      type: "CONFIRM_WATER_ESCAPE",
+      destX: x,
+      destY: y,
+      handIndex: waterEscapeHandIndex,
+    });
+    waterEscapeHandIndex = null;
     return;
   }
   if (!s.pending) return;
@@ -415,7 +451,7 @@ function cellClick(x: number, y: number): void {
       apply({ type: "CONFIRM_TARGET_MONSTER", monsterInstanceId: mon.id });
       return;
     }
-    if (s.pending.kind === "play_melee") {
+    if (s.pending.kind === "play_melee" || s.pending.kind === "discard_punch") {
       const tw = s.tangleweeds.find((t) => t.hp > 0 && t.x === x && t.y === y);
       if (tw) {
         apply({ type: "CONFIRM_TARGET_TANGLEWEED", tangleweedId: tw.id });
@@ -578,6 +614,39 @@ function runCommandLine(raw: string): string {
     return `Jumped to floor ${depth}.`;
   }
 
+  if (verb === "theme") {
+    if (args.length < 1) {
+      return "Usage: Theme [Normal|Overgrown|Damp|Brownstone]";
+    }
+    const key = normalizeLookupName(args.join(" "));
+    const themes: Record<string, FloorTheme> = {
+      normal: "normal",
+      overgrown: "overgrown",
+      damp: "damp",
+      brownstone: "brownstone",
+      "brownstone tunnels": "brownstone",
+      tunnels: "brownstone",
+    };
+    const theme = themes[key];
+    if (!theme) return `Unknown theme "${args.join(" ")}". Use Normal, Overgrown, Damp, or Brownstone.`;
+    apply({ type: "DEV_SET_THEME", theme });
+    return `Regenerated this floor as ${theme}.`;
+  }
+
+  if (verb === "graphics") {
+    if (args.length < 1) return "Usage: Graphics [pixel|boxes]";
+    const mode = args[0]!.toLowerCase();
+    if (mode === "pixel" || mode === "art" || mode === "on") {
+      setPixelArtEnabled(true);
+      return "Graphics: pixel art on.";
+    }
+    if (mode === "boxes" || mode === "box" || mode === "off") {
+      setPixelArtEnabled(false);
+      return "Graphics: box sprites on.";
+    }
+    return `Unknown graphics mode "${args[0]}". Use pixel or boxes.`;
+  }
+
   if (verb === "chance") {
     if (args.length < 1) {
       return "Usage: Chance [Highest|Lowest|Normal] [Player only: true or false]";
@@ -602,7 +671,7 @@ function runCommandLine(raw: string): string {
     return `Chance set to ${mode}${playerOnly ? " (player rolls only)" : ""}.`;
   }
 
-  return "Unknown command. Try Set, Card, Dungeon, Floor, Summon, or Chance.";
+  return "Unknown command. Try Set, Card, Dungeon, Floor, Theme, Graphics, Summon, or Chance.";
 }
 
 function openPileInspector(which: "deck" | "discard"): void {
@@ -890,6 +959,7 @@ function renderLog(): void {
 
 function renderAll(): void {
   if (!grid) return;
+  if (state.pending?.kind !== "water_escape") waterEscapeHandIndex = null;
   if (lastSyncedFloorId !== state.floorId) {
     lastSyncedFloorId = state.floorId;
     mapCameraInitialized = false;
@@ -920,11 +990,14 @@ function renderAll(): void {
   if (state.dungeonCardReveal) {
     dungeonCardToast.hidden = false;
     dungeonCardToastTitle.textContent = state.dungeonCardReveal.title;
-    dungeonCardToastSummary.textContent = state.dungeonCardReveal.summary;
+    const sum = state.dungeonCardReveal.summary;
+    dungeonCardToastSummary.textContent = sum;
+    dungeonCardToastSummary.hidden = !sum;
   } else {
     dungeonCardToast.hidden = true;
     dungeonCardToastTitle.textContent = "";
     dungeonCardToastSummary.textContent = "";
+    dungeonCardToastSummary.hidden = false;
   }
   hudDraw.textContent = String(state.player.drawPile.length);
   hudDiscard.textContent = String(state.player.discardPile.length);
@@ -985,7 +1058,9 @@ function renderAll(): void {
     }
   } else if (state.pending?.kind === "water_escape") {
     hintEl.textContent =
-      "Discard a card to cross — click a highlighted land tile next to the water, or Cancel to stay.";
+      waterEscapeHandIndex === null
+        ? "Water! Click Discard on a hand card, then click adjacent land — or Cancel to stay put."
+        : "Card ready — click a highlighted land tile next to the water.";
   } else if (state.pending?.kind === "play_move") {
     hintEl.textContent = "Click a gold-highlighted tile on the map to move (up to 2 steps).";
   } else if (state.pending?.kind === "play_melee") {
@@ -1077,6 +1152,7 @@ function renderAll(): void {
     actions.className = "card-actions";
 
     const enterBlocked = state.pending?.kind === "enter_blocked_tile";
+    const waterEscape = state.pending?.kind === "water_escape";
     const resume =
       state.pending?.kind === "enter_blocked_tile" ? state.pending.resume : null;
     const forbidIdx =
@@ -1085,7 +1161,7 @@ function renderAll(): void {
         : -1;
     const disabled =
       state.phase !== "player" ||
-      (!!state.pending && !enterBlocked) ||
+      (!!state.pending && !enterBlocked && !waterEscape) ||
       choiceModalBlocksPlay(state);
     const isBonus = def?.effect.type === "bonus_chit";
 
@@ -1107,13 +1183,24 @@ function renderAll(): void {
           enterBlocked
             ? apply({ type: "CONFIRM_ENTER_BLOCKED", handIndex: idx })
             : apply({ type: "REQUEST_PLAY_CARD", handIndex: idx }),
-        isBonus || (enterBlocked && idx === forbidIdx),
+        isBonus || waterEscape || (enterBlocked && idx === forbidIdx),
       ),
     );
 
     const discardRow = document.createElement("div");
     discardRow.className = "discard-row";
-    if (!enterBlocked) {
+    if (waterEscape) {
+      discardRow.appendChild(
+        mkBtn(
+          waterEscapeHandIndex === idx ? "Selected ✓" : "Discard to escape",
+          waterEscapeHandIndex === idx ? "primary" : "",
+          () => {
+            waterEscapeHandIndex = idx;
+            renderAll();
+          },
+        ),
+      );
+    } else if (!enterBlocked) {
       discardRow.appendChild(
         mkBtn("Move +1", "", () =>
           apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "move1" }),
@@ -1137,7 +1224,7 @@ function renderAll(): void {
         "Equip",
         "",
         () => apply({ type: "REQUEST_EQUIP", handIndex: idx }),
-        !!state.player.equipped || isBonus || enterBlocked,
+        !!state.player.equipped || isBonus || enterBlocked || waterEscape,
       ),
     );
 
@@ -1168,11 +1255,11 @@ function renderAll(): void {
   }
 }
 
-cancelBtn.addEventListener("click", () =>
-  state.pending?.kind === "water_escape"
-    ? apply({ type: "CANCEL_WATER_ESCAPE" })
-    : apply({ type: "CANCEL_PENDING" }),
-);
+cancelBtn.addEventListener("click", () => {
+  waterEscapeHandIndex = null;
+  if (state.pending?.kind === "water_escape") apply({ type: "CANCEL_WATER_ESCAPE" });
+  else apply({ type: "CANCEL_PENDING" });
+});
 unequipBtn.addEventListener("click", () => apply({ type: "UNEQUIP" }));
 itemBreadBtn.addEventListener("click", () => apply({ type: "USE_BREAD" }));
 itemHerbBtn.addEventListener("click", () => apply({ type: "USE_HERB" }));
@@ -1248,6 +1335,10 @@ skillTreeBackdrop.addEventListener("click", () => closeSkillTreeModal());
 skillTreeClose.addEventListener("click", () => closeSkillTreeModal());
 
 commandWindowBtn.addEventListener("click", () => openCommandWindow());
+graphicsToggleBtn.addEventListener("click", () => {
+  const next = !(grid?.getPixelArtEnabled() ?? true);
+  setPixelArtEnabled(next);
+});
 commandWindowBackdrop.addEventListener("click", () => closeCommandWindow());
 commandWindowClose.addEventListener("click", () => closeCommandWindow());
 commandForm.addEventListener("submit", (e) => {
@@ -1322,7 +1413,11 @@ async function bootstrap(): Promise<void> {
   viewport.appendChild(loading);
 
   const styles = await loadSpriteStyles("/assets/manifest.json");
+  const attackFx = await loadAttackFxFrames();
   grid = new GridView(styles, cellClick);
+  grid.setAttackFxFrames(attackFx);
+  grid.setPixelArtEnabled(readStoredPixelArtPreference());
+  syncGraphicsToggleButton();
 
   await app.init({
     width: VIEW_WIDTH_PX,

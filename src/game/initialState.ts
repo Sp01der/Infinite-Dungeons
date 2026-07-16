@@ -14,7 +14,7 @@ import type {
 } from "./types";
 import { rollInt } from "../engine/combat";
 import { addRoomsToDiscovered, collectRoomIdsAdjacentToPlayer } from "../engine/discovery";
-import type { GeneratedFloor } from "../engine/floorGen";
+import { generateFloor } from "../engine/floorGen";
 import { keyOf, parseFloor } from "../engine/grid";
 import { buildFreshDungeonDeck } from "./dungeonDeck";
 import { loadCardDefs, loadDungeonCardDefs, loadMonsterDefs } from "./loadContent";
@@ -149,7 +149,24 @@ export function pickWeightedDefId(
   return candidates[candidates.length - 1]!;
 }
 
-export function pickFloorTheme(history: Partial<Record<FloorTheme, number>>): FloorTheme {
+export function themeDisplayName(theme: FloorTheme): string {
+  switch (theme) {
+    case "overgrown":
+      return "Overgrown";
+    case "damp":
+      return "Damp";
+    case "brownstone":
+      return "Brownstone Tunnels";
+    default:
+      return "Normal";
+  }
+}
+
+export function pickFloorTheme(
+  history: Partial<Record<FloorTheme, number>>,
+  depth: number,
+): FloorTheme {
+  if (depth > 5) return "normal";
   const themes: FloorTheme[] = ["normal", "overgrown", "damp", "brownstone"];
   const baseWeights: Record<FloorTheme, number> = {
     normal: 1.5,
@@ -314,8 +331,7 @@ function placePropsByRoom(
         // Populated when the player first enters the gauntlet.
         break;
       case "greenhouse": {
-        const nPot = rollInt(0, 1);
-        for (const p of take(nPot)) pots.push({ id: `pot_${pi++}`, x: p.x, y: p.y });
+        // Only blooms / Vineshons — no pots. Ground loot is always Healing Herb.
         const nMon = rollInt(1, 2);
         for (let k = 0; k < nMon; k++) {
           const [p] = take(1);
@@ -608,7 +624,7 @@ export function createInitialState(floorDef: FloorDef): GameState {
     floodingRoomId: null,
     pendingStalactites: [],
     tangleweeds: [],
-    themePickHistory: { normal: 1 },
+    themePickHistory: {},
     roomIds,
     roomKinds,
     dungeonDraw: buildFreshDungeonDeck(1, "normal"),
@@ -642,7 +658,9 @@ export function createInitialState(floorDef: FloorDef): GameState {
 }
 
 /** Procedurally generated multi-room floor (fog on by default). */
-export function createInitialStateGenerated(gen: GeneratedFloor): GameState {
+export function createInitialStateGenerated(depth = 1): GameState {
+  const theme = pickFloorTheme({}, depth);
+  const gen = generateFloor({ depth, theme });
   const monsterDefs = loadMonsterDefs();
   const { width, height, tiles, playerStart, roomIds, roomKinds } = gen;
   const fogOfWar = true;
@@ -676,7 +694,7 @@ export function createInitialStateGenerated(gen: GeneratedFloor): GameState {
   return {
     phase: "player",
     floorId: gen.id,
-    floorName: "Floor 1",
+    floorName: `Floor 1 · ${themeDisplayName(gen.floorTheme)}`,
     floorTheme: gen.floorTheme,
     width,
     height,
@@ -749,6 +767,7 @@ export function createInitialStateGenerated(gen: GeneratedFloor): GameState {
     chancePlayerOnly: false,
     log: [
       "Welcome to the dungeon.",
+      `Theme: ${themeDisplayName(gen.floorTheme)}.`,
       `${monsters.length} monster(s), ${pots.length} pot(s), ${chests.length} chest(s), ${groundLoot.length} ground loot spot(s).`,
     ],
     turn: 0,
@@ -756,9 +775,15 @@ export function createInitialStateGenerated(gen: GeneratedFloor): GameState {
 }
 
 /** New procedural floor after descending stairs: keeps player stats & full deck, new layout & props. */
-export function createNextFloorState(prev: GameState, gen: GeneratedFloor): GameState {
-  const depth = prev.depth + 1;
-  const danger = prev.danger + 1;
+export function createNextFloorState(
+  prev: GameState,
+  opts?: { depth?: number; theme?: FloorTheme; danger?: number },
+): GameState {
+  const depth = opts?.depth ?? prev.depth + 1;
+  const danger =
+    opts?.danger ?? (opts?.depth != null ? Math.max(1, opts.depth) : prev.danger + 1);
+  const theme = opts?.theme ?? pickFloorTheme(prev.themePickHistory, depth);
+  const gen = generateFloor({ depth, theme });
   const monsterDefs = prev.monsterDefs;
   const { width, height, tiles, playerStart, roomIds, roomKinds } = gen;
   const fogOfWar = true;
@@ -807,7 +832,7 @@ export function createNextFloorState(prev: GameState, gen: GeneratedFloor): Game
   return {
     phase: "player",
     floorId: gen.id,
-    floorName: `Floor ${depth}`,
+    floorName: `Floor ${depth} · ${themeDisplayName(gen.floorTheme)}`,
     floorTheme: gen.floorTheme,
     width,
     height,
@@ -869,7 +894,11 @@ export function createNextFloorState(prev: GameState, gen: GeneratedFloor): Game
     lightsOutTurns: 0,
     chanceMode: prev.chanceMode,
     chancePlayerOnly: prev.chancePlayerOnly,
-    log: prev.log.slice(-50),
+    log: [
+      ...prev.log.slice(-48),
+      `You descend to Floor ${depth} · ${themeDisplayName(gen.floorTheme)}.`,
+      `${monsters.length} monster(s), ${pots.length} pot(s), ${chests.length} chest(s), ${groundLoot.length} ground loot spot(s).`,
+    ],
     turn: prev.turn + 1,
   };
 }

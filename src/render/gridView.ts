@@ -22,6 +22,12 @@ import type {
   SkeletonWeapon,
 } from "../game/types";
 import type { SpriteStyle } from "./assets";
+import type { AttackFxFrames } from "./attackFx";
+import {
+  meleeSlashFrameIndex,
+  pickMeleeSlashTexture,
+  pickProjectileTexture,
+} from "./attackFx";
 
 /** Logical tile size in pixels (smaller than original 48 for a wider view). */
 export const TILE = 40;
@@ -34,6 +40,10 @@ export const VIEW_HEIGHT_PX = VIEW_ROWS * TILE;
 
 const HIT_ANIM_MS = 520;
 const HIT_FLASH_MS = 280;
+const PROJECTILE_TRAVEL_MS = 240;
+const MELEE_SLASH_MS = 216;
+const FIREBALL_LINGER_MS = 100;
+const FX_SPRITE_SCALE = 2;
 
 /** Thickness of “heavy” wall rim along discovered floor (highlights door gaps). */
 const WALL_RIM_THICK = Math.max(5, Math.round(TILE * 0.16));
@@ -57,8 +67,17 @@ export class GridView extends Container {
   private styles: Map<string, SpriteStyle>;
   private onCellClick: (x: number, y: number) => void;
   private latestState: GameState | null = null;
-  private hitAnims: { gx: number; gy: number; damage: number; t0: number }[] = [];
+  private hitAnims: {
+    gx: number;
+    gy: number;
+    damage: number;
+    t0: number;
+    fx?: HitVisual["fx"];
+  }[] = [];
   private fxTickerAdded = false;
+  private attackFxFrames: AttackFxFrames | null = null;
+  /** When true, use pixel-art textures where available; otherwise solid tint boxes. */
+  private usePixelArt = true;
 
   private viewportWidth = VIEW_WIDTH_PX;
   private viewportHeight = VIEW_HEIGHT_PX;
@@ -113,6 +132,21 @@ export class GridView extends Container {
     this.viewportWidth = widthPx;
     this.viewportHeight = heightPx;
     this.interactionCanvas = canvas;
+  }
+
+  getPixelArtEnabled(): boolean {
+    return this.usePixelArt;
+  }
+
+  /** Toggle pixel-art textures vs solid color boxes. Re-syncs if a state is loaded. */
+  setPixelArtEnabled(enabled: boolean): void {
+    if (this.usePixelArt === enabled) return;
+    this.usePixelArt = enabled;
+    if (this.latestState) this.sync(this.latestState);
+  }
+
+  setAttackFxFrames(frames: AttackFxFrames | null): void {
+    this.attackFxFrames = frames;
   }
 
   centerOnPlayer(state: GameState): void {
@@ -195,11 +229,17 @@ export class GridView extends Container {
     this.onCellClick(x, y);
   };
 
-  /** Red flash + floating damage number at grid cells (player or monster). */
+  /** Attack FX (when pixel art on) + red flash + floating damage number. */
   playHits(hits: HitVisual[]): void {
     const base = performance.now();
     hits.forEach((h, i) => {
-      this.hitAnims.push({ gx: h.gridX, gy: h.gridY, damage: h.damage, t0: base + i * 55 });
+      this.hitAnims.push({
+        gx: h.gridX,
+        gy: h.gridY,
+        damage: h.damage,
+        t0: base + i * 55,
+        fx: h.fx,
+      });
     });
     if (!this.fxTickerAdded) {
       Ticker.shared.add(this.updateFx, this);
@@ -207,10 +247,29 @@ export class GridView extends Container {
     }
   }
 
+  private fxTravelMs(fx: HitVisual["fx"] | undefined): number {
+    if (!fx || !this.usePixelArt || !this.attackFxFrames) return 0;
+    return fx.kind === "melee_slash" ? MELEE_SLASH_MS : PROJECTILE_TRAVEL_MS;
+  }
+
+  private makeFxSprite(texture: Texture, cx: number, cy: number, rotation: number): Sprite {
+    const spr = new Sprite(texture);
+    spr.anchor.set(0.5, 0.5);
+    spr.x = cx;
+    spr.y = cy;
+    spr.rotation = rotation;
+    spr.scale.set(FX_SPRITE_SCALE);
+    return spr;
+  }
+
   private updateFx = (): void => {
     const now = performance.now();
-    this.hitAnims = this.hitAnims.filter((a) => now - a.t0 < HIT_ANIM_MS);
     this.fxLayer.removeChildren();
+
+    this.hitAnims = this.hitAnims.filter((a) => {
+      const elapsed = now - a.t0;
+      return elapsed < this.fxTravelMs(a.fx) + HIT_ANIM_MS;
+    });
 
     if (this.hitAnims.length === 0) {
       Ticker.shared.remove(this.updateFx, this);
@@ -219,19 +278,70 @@ export class GridView extends Container {
     }
 
     const fs = Math.round(14 * (TILE / 40));
+    const frames = this.attackFxFrames;
+    const showFx = this.usePixelArt && frames;
 
     for (const a of this.hitAnims) {
       const elapsed = now - a.t0;
-      if (elapsed < HIT_FLASH_MS) {
+      const fx = a.fx;
+      let damageStart = 0;
+
+      if (fx && showFx) {
+        const fromCx = fx.fromX * TILE + TILE / 2;
+        const fromCy = fx.fromY * TILE + TILE / 2;
+        const toCx = a.gx * TILE + TILE / 2;
+        const toCy = a.gy * TILE + TILE / 2;
+        const dx = a.gx - fx.fromX;
+        const dy = a.gy - fx.fromY;
+
+        if (fx.kind === "melee_slash") {
+          if (elapsed < MELEE_SLASH_MS) {
+            const fi = meleeSlashFrameIndex(elapsed);
+            const { texture, rotation } = pickMeleeSlashTexture(
+              frames,
+              fx.fromX,
+              fx.fromY,
+              a.gx,
+              a.gy,
+              fi,
+            );
+            this.fxLayer.addChild(this.makeFxSprite(texture, toCx, toCy, rotation));
+          }
+          damageStart = MELEE_SLASH_MS;
+        } else {
+          if (elapsed < PROJECTILE_TRAVEL_MS) {
+            const t = elapsed / PROJECTILE_TRAVEL_MS;
+            const px = fromCx + (toCx - fromCx) * t;
+            const py = fromCy + (toCy - fromCy) * t;
+            const { texture, rotation } = pickProjectileTexture(frames, fx.kind, dx, dy);
+            this.fxLayer.addChild(this.makeFxSprite(texture, px, py, rotation));
+          } else if (
+            fx.kind === "fireball" &&
+            elapsed < PROJECTILE_TRAVEL_MS + FIREBALL_LINGER_MS
+          ) {
+            const { texture, rotation } = pickProjectileTexture(frames, fx.kind, dx, dy);
+            const spr = this.makeFxSprite(texture, toCx, toCy, rotation);
+            const linger = (elapsed - PROJECTILE_TRAVEL_MS) / FIREBALL_LINGER_MS;
+            spr.alpha = 1 - linger;
+            this.fxLayer.addChild(spr);
+          }
+          damageStart = PROJECTILE_TRAVEL_MS;
+        }
+      }
+
+      const dmgElapsed = elapsed - damageStart;
+      if (dmgElapsed < 0) continue;
+
+      if (dmgElapsed < HIT_FLASH_MS) {
         const flash = new Graphics();
-        const alpha = 0.55 * (1 - elapsed / HIT_FLASH_MS);
+        const alpha = 0.55 * (1 - dmgElapsed / HIT_FLASH_MS);
         flash
           .rect(a.gx * TILE, a.gy * TILE, TILE, TILE)
           .fill({ color: 0xff2020, alpha });
         this.fxLayer.addChild(flash);
       }
 
-      const rise = (elapsed / 1000) * TILE * 1.1;
+      const rise = (dmgElapsed / 1000) * TILE * 1.1;
       const lbl = new Text({
         text: String(a.damage),
         style: {
@@ -245,7 +355,7 @@ export class GridView extends Container {
       lbl.anchor.set(0.5, 1);
       lbl.x = a.gx * TILE + TILE / 2;
       lbl.y = a.gy * TILE + TILE * 0.32 - rise;
-      lbl.alpha = Math.max(0, 1 - elapsed / HIT_ANIM_MS);
+      lbl.alpha = Math.max(0, 1 - dmgElapsed / HIT_ANIM_MS);
       this.fxLayer.addChild(lbl);
     }
   };
@@ -441,8 +551,8 @@ export class GridView extends Container {
       const x1 = (cx + 1) * TILE - pad;
       const y1 = (cy + 1) * TILE - pad;
       const g = new Graphics();
-      g.moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 3, color: 0xf1c40f, alpha: 0.9 });
-      g.moveTo(x1, y0).lineTo(x0, y1).stroke({ width: 3, color: 0xf1c40f, alpha: 0.9 });
+      g.moveTo(x0, y0).lineTo(x1, y1).stroke({ width: 3, color: 0x9a9a9a, alpha: 0.95 });
+      g.moveTo(x1, y0).lineTo(x0, y1).stroke({ width: 3, color: 0x9a9a9a, alpha: 0.95 });
       this.collapseMarkerLayer.addChild(g);
     };
     for (const st of state.pendingStalactites) {
@@ -454,13 +564,7 @@ export class GridView extends Container {
 
     for (const pot of state.pots) {
       if (state.fogOfWar && !state.discovered.has(keyOf(pot))) continue;
-      const spr = this.makeSprite("pot");
-      const potInset = Math.max(4, Math.round(6 * (TILE / 48)));
-      spr.x = pot.x * TILE + potInset / 2;
-      spr.y = pot.y * TILE + potInset / 2;
-      spr.width = TILE - potInset;
-      spr.height = TILE - potInset;
-      this.potLayer.addChild(spr);
+      this.potLayer.addChild(this.makePlacedSprite("pot", pot.x, pot.y));
     }
 
     for (const rk of state.rocks) {
@@ -522,11 +626,7 @@ export class GridView extends Container {
       }
     }
 
-    const pSpr = this.makeSprite("player");
-    pSpr.x = state.player.x * TILE + inset / 2;
-    pSpr.y = state.player.y * TILE + inset / 2;
-    pSpr.width = TILE - inset;
-    pSpr.height = TILE - inset;
+    const pSpr = this.makePlacedSprite("player", state.player.x, state.player.y);
     this.entityLayer.addChild(pSpr);
     this.entityLayer.addChild(
       this.makeEntityLabel("You", state.player.x * TILE, state.player.y * TILE, 0xffffff),
@@ -548,13 +648,11 @@ export class GridView extends Container {
       if (state.fogOfWar && !state.discovered.has(keyOf(m))) continue;
       const def = state.monsterDefs.get(m.defId);
       const mimicChest = m.defId === "mimic" && m.mimicAsleep;
-      const spr = this.makeSprite(
+      const spr = this.makePlacedSprite(
         mimicChest ? "chest" : def?.spriteId ?? "enemy_slime",
+        m.x,
+        m.y,
       );
-      spr.x = m.x * TILE + inset / 2;
-      spr.y = m.y * TILE + inset / 2;
-      spr.width = TILE - inset;
-      spr.height = TILE - inset;
       if (m.defId === "douvlon") {
         const tint = m.douvlonColor === "blue" ? 0x5dade2 : 0xe74c3c;
         spr.tint = tint;
@@ -636,12 +734,12 @@ export class GridView extends Container {
       };
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
-          const ch = Math.max(Math.abs(x - px), Math.abs(y - py));
-          if (ch <= 1) continue;
+          const man = manhattan({ x, y }, { x: px, y: py });
+          if (man <= 1) continue;
           const dim = new Graphics();
           dim.rect(x * TILE, y * TILE, TILE, TILE).fill({ color: 0x000000, alpha: 1 });
           this.darknessLayer.addChild(dim);
-          if (manhattan({ x, y }, { x: px, y: py }) === 2 && entityHintAt(x, y)) {
+          if (man === 2 && entityHintAt(x, y)) {
             const dot = new Graphics();
             const cx = x * TILE + TILE * 0.22;
             const cy = y * TILE + TILE * 0.22;
@@ -783,7 +881,13 @@ export class GridView extends Container {
     if (rkind === "greenhouse") return "floor_greenhouse";
     const alt = (x + y) % 2 === 0;
     const th = state.floorTheme;
-    if (th === "overgrown") return alt ? "floor_overgrown" : "floor_overgrown_alt";
+    if (th === "overgrown") {
+      // ~10% of tiles get the green tint (stable per tile so redraws don't flicker).
+      const h = Math.imul(x + 1, 374761) ^ Math.imul(y + 1, 668265) ^ 0x9e3779b9;
+      const tinted = (h >>> 0) % 10 === 0;
+      if (tinted) return alt ? "floor_overgrown" : "floor_overgrown_alt";
+      return alt ? "floor" : "floor_alt";
+    }
     if (th === "brownstone") return alt ? "floor_brownstone" : "floor_brownstone_alt";
     return alt ? "floor" : "floor_alt";
   }
@@ -964,6 +1068,13 @@ export class GridView extends Container {
           adj.add(keyOf(t));
         }
       }
+      // Same-tile tangleweed (spawned on you) can be attacked in place.
+      if (
+        state.tangleweeds.some((tw) => tw.hp > 0 && tw.x === from.x && tw.y === from.y) &&
+        (pending.kind === "play_melee" || pending.kind === "discard_punch")
+      ) {
+        adj.add(keyOf(from));
+      }
       return adj;
     }
 
@@ -1071,15 +1182,41 @@ export class GridView extends Container {
     const spr = new Sprite(Texture.WHITE);
     spr.width = TILE;
     spr.height = TILE;
-    if (style.kind === "texture") {
+    const preferTexture = this.usePixelArt && style.kind === "texture";
+    if (preferTexture) {
       spr.texture = style.texture;
       spr.tint = 0xffffff;
+      if (style.alpha !== undefined) spr.alpha = style.alpha;
     } else {
       spr.texture = Texture.WHITE;
-      spr.tint = style.tint;
-      if (style.alpha !== undefined) {
-        spr.alpha = style.alpha;
-      }
+      const tint =
+        style.kind === "texture" ? style.fallbackTint : style.tint;
+      spr.tint = tint;
+      if (style.alpha !== undefined) spr.alpha = style.alpha;
+    }
+    return spr;
+  }
+
+  /** Place a sprite in a tile: pixel art at 2× native size (capped to the tile), boxes with a slight inset. */
+  private makePlacedSprite(id: string, tileX: number, tileY: number): Sprite {
+    const style = this.styles.get(id);
+    const spr = this.makeSprite(id);
+    const pixel = this.usePixelArt && style?.kind === "texture";
+    if (pixel) {
+      const native = Math.max(style.texture.width, style.texture.height);
+      // 16×16 → 32px; 20×20 → 40px (fills the tile, larger than smaller sprites).
+      const size = Math.min(TILE, native * 2);
+      const pad = (TILE - size) / 2;
+      spr.x = tileX * TILE + pad;
+      spr.y = tileY * TILE + pad;
+      spr.width = size;
+      spr.height = size;
+    } else {
+      const inset = Math.round(4 * (TILE / 40));
+      spr.x = tileX * TILE + inset / 2;
+      spr.y = tileY * TILE + inset / 2;
+      spr.width = TILE - inset;
+      spr.height = TILE - inset;
     }
     return spr;
   }
