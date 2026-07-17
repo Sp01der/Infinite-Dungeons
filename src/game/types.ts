@@ -372,6 +372,8 @@ export interface HitVisual {
   gridX: number;
   gridY: number;
   damage: number;
+  /** False for an animation anchor that should not show a hit flash or damage number. */
+  showDamage?: boolean;
   /** Optional attack animation from attacker → this cell. */
   fx?: AttackFx;
 }

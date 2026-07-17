@@ -42,7 +42,8 @@ const HIT_ANIM_MS = 520;
 const HIT_FLASH_MS = 280;
 const PROJECTILE_TRAVEL_MS = 240;
 const MELEE_SLASH_MS = 216;
-const FIREBALL_LINGER_MS = 100;
+const FIREBALL_EXPLOSION_FRAME_MS = 100;
+const FIREBALL_EXPLOSION_MS = 700;
 const FX_SPRITE_SCALE = 2;
 
 /** Thickness of “heavy” wall rim along discovered floor (highlights door gaps). */
@@ -71,6 +72,7 @@ export class GridView extends Container {
     gx: number;
     gy: number;
     damage: number;
+    showDamage: boolean;
     t0: number;
     fx?: HitVisual["fx"];
   }[] = [];
@@ -232,12 +234,15 @@ export class GridView extends Container {
   /** Attack FX (when pixel art on) + red flash + floating damage number. */
   playHits(hits: HitVisual[]): void {
     const base = performance.now();
+    const fireballAnchor = hits.find((h) => h.fx?.kind === "fireball");
     hits.forEach((h, i) => {
       this.hitAnims.push({
         gx: h.gridX,
         gy: h.gridY,
         damage: h.damage,
-        t0: base + i * 55,
+        showDamage: h.showDamage !== false,
+        // A fireball's blast damage lands together, after its one projectile arrives.
+        t0: base + (fireballAnchor && h !== fireballAnchor ? PROJECTILE_TRAVEL_MS : i * 55),
         fx: h.fx,
       });
     });
@@ -252,6 +257,12 @@ export class GridView extends Container {
     return fx.kind === "melee_slash" ? MELEE_SLASH_MS : PROJECTILE_TRAVEL_MS;
   }
 
+  private fxDurationMs(fx: HitVisual["fx"] | undefined): number {
+    if (!fx || !this.usePixelArt || !this.attackFxFrames) return 0;
+    if (fx.kind === "fireball") return PROJECTILE_TRAVEL_MS + FIREBALL_EXPLOSION_MS;
+    return this.fxTravelMs(fx);
+  }
+
   private makeFxSprite(texture: Texture, cx: number, cy: number, rotation: number): Sprite {
     const spr = new Sprite(texture);
     spr.anchor.set(0.5, 0.5);
@@ -262,13 +273,25 @@ export class GridView extends Container {
     return spr;
   }
 
+  private makeFireOverlay(gx: number, gy: number, levels: number): Sprite | null {
+    if (!this.usePixelArt || !this.attackFxFrames || levels <= 0) return null;
+    const index = Math.min(5, Math.max(1, Math.trunc(levels))) - 1;
+    const spr = new Sprite(this.attackFxFrames.fireOverlays[index]!);
+    spr.x = gx * TILE;
+    spr.y = gy * TILE;
+    spr.width = TILE;
+    spr.height = TILE;
+    spr.eventMode = "none";
+    return spr;
+  }
+
   private updateFx = (): void => {
     const now = performance.now();
     this.fxLayer.removeChildren();
 
     this.hitAnims = this.hitAnims.filter((a) => {
       const elapsed = now - a.t0;
-      return elapsed < this.fxTravelMs(a.fx) + HIT_ANIM_MS;
+      return elapsed < Math.max(this.fxDurationMs(a.fx), this.fxTravelMs(a.fx) + HIT_ANIM_MS);
     });
 
     if (this.hitAnims.length === 0) {
@@ -315,20 +338,28 @@ export class GridView extends Container {
             const py = fromCy + (toCy - fromCy) * t;
             const { texture, rotation } = pickProjectileTexture(frames, fx.kind, dx, dy);
             this.fxLayer.addChild(this.makeFxSprite(texture, px, py, rotation));
-          } else if (
-            fx.kind === "fireball" &&
-            elapsed < PROJECTILE_TRAVEL_MS + FIREBALL_LINGER_MS
-          ) {
-            const { texture, rotation } = pickProjectileTexture(frames, fx.kind, dx, dy);
-            const spr = this.makeFxSprite(texture, toCx, toCy, rotation);
-            const linger = (elapsed - PROJECTILE_TRAVEL_MS) / FIREBALL_LINGER_MS;
-            spr.alpha = 1 - linger;
+          } else if (fx.kind === "fireball" && elapsed < PROJECTILE_TRAVEL_MS + FIREBALL_EXPLOSION_MS) {
+            const explosionElapsed = elapsed - PROJECTILE_TRAVEL_MS;
+            const frameIndex = Math.min(
+              frames.fireballExplosion.length - 1,
+              Math.floor(explosionElapsed / FIREBALL_EXPLOSION_FRAME_MS),
+            );
+            const spr = this.makeFxSprite(
+              frames.fireballExplosion[frameIndex]!,
+              toCx,
+              toCy,
+              0,
+            );
+            // The 48×48 animation represents the full 3×3 blast around its center tile.
+            spr.width = TILE * 3;
+            spr.height = TILE * 3;
             this.fxLayer.addChild(spr);
           }
           damageStart = PROJECTILE_TRAVEL_MS;
         }
       }
 
+      if (!a.showDamage) continue;
       const dmgElapsed = elapsed - damageStart;
       if (dmgElapsed < 0) continue;
 
@@ -628,6 +659,12 @@ export class GridView extends Container {
 
     const pSpr = this.makePlacedSprite("player", state.player.x, state.player.y);
     this.entityLayer.addChild(pSpr);
+    const playerFire = this.makeFireOverlay(
+      state.player.x,
+      state.player.y,
+      state.player.fireLevels ?? 0,
+    );
+    if (playerFire) this.entityLayer.addChild(playerFire);
     this.entityLayer.addChild(
       this.makeEntityLabel("You", state.player.x * TILE, state.player.y * TILE, 0xffffff),
     );
@@ -658,6 +695,8 @@ export class GridView extends Container {
         spr.tint = tint;
       }
       this.entityLayer.addChild(spr);
+      const monsterFire = this.makeFireOverlay(m.x, m.y, m.fireLevels ?? 0);
+      if (monsterFire) this.entityLayer.addChild(monsterFire);
       if (m.defId === "slime" && m.leapTarget != null) {
         const r = Math.max(3, Math.round(TILE * 0.11));
         const cx = m.x * TILE + Math.max(2, inset / 3) + r;

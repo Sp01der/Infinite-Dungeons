@@ -8,25 +8,56 @@ export type AttackFxFrames = {
   arrowDiag: Texture;
   douvlonOrb: Texture;
   fireball: Texture;
+  fireballExplosion: Texture[];
+  fireOverlays: [Texture, Texture, Texture, Texture, Texture];
   meleeSlash: [Texture, Texture, Texture];
 };
 
 const CELL = 16;
+const EXPLOSION_FRAME_SIZE = 48;
+const EXPLOSION_FRAME_COUNT = 7;
 
 function cellRect(col: number, row: number): Rectangle {
   return new Rectangle(col * CELL, row * CELL, CELL, CELL);
 }
 
-/** Load `/assets/attack_fx.png` (3×3 of 16×16) into named frame textures. */
+/** Load the attack and elemental-status sheets into named frame textures. */
 export async function loadAttackFxFrames(url = "/assets/attack_fx.png"): Promise<AttackFxFrames> {
-  const sheet = await Assets.load<Texture>({
-    src: url,
-    data: { scaleMode: "nearest" },
-  });
+  const [sheet, explosionSheet, statusSheet] = await Promise.all([
+    Assets.load<Texture>({
+      src: url,
+      data: { scaleMode: "nearest" },
+    }),
+    Assets.load<Texture>({
+      src: "/assets/fireball_explosion.png",
+      data: { scaleMode: "nearest" },
+    }),
+    Assets.load<Texture>({
+      src: "/assets/elemental_status.png",
+      data: { scaleMode: "nearest" },
+    }),
+  ]);
   if (sheet.source) sheet.source.scaleMode = "nearest";
+  if (explosionSheet.source) explosionSheet.source.scaleMode = "nearest";
+  if (statusSheet.source) statusSheet.source.scaleMode = "nearest";
 
   const frame = (col: number, row: number): Texture =>
     new Texture({ source: sheet.source, frame: cellRect(col, row) });
+  const statusFrame = (col: number, row: number): Texture =>
+    new Texture({ source: statusSheet.source, frame: cellRect(col, row) });
+  const explosionFrames = Array.from(
+    { length: EXPLOSION_FRAME_COUNT },
+    (_, col) =>
+      new Texture({
+        source: explosionSheet.source,
+        frame: new Rectangle(
+          col * EXPLOSION_FRAME_SIZE,
+          0,
+          EXPLOSION_FRAME_SIZE,
+          EXPLOSION_FRAME_SIZE,
+        ),
+      }),
+  );
 
   return {
     // Row 0
@@ -37,6 +68,15 @@ export async function loadAttackFxFrames(url = "/assets/attack_fx.png"): Promise
     douvlonOrb: frame(0, 1),
     fireball: frame(1, 1),
     arrowDiag: frame(2, 1),
+    fireballExplosion: explosionFrames,
+    // Fire levels 1–5: top row, then middle-left and middle.
+    fireOverlays: [
+      statusFrame(0, 0),
+      statusFrame(1, 0),
+      statusFrame(2, 0),
+      statusFrame(0, 1),
+      statusFrame(1, 1),
+    ],
     // Row 2 — melee slash L→R
     meleeSlash: [frame(0, 2), frame(1, 2), frame(2, 2)],
   };

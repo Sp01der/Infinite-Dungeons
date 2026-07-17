@@ -275,7 +275,7 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
     next = reshufflePlayerDeck(next);
     next = ensureEquippedOnDeckTop(next);
     const drawN = playerDrawCountPerTurn(next);
-    next = drawFromPlayerDeck(next, drawN);
+    next = drawFromPlayerDeck(next, drawN, true);
     next = applyPerTurnSkillResourcesAfterDraw(next);
     next = revealAtPlayer(next);
     next = collectAdjacentLoot(next);
@@ -293,7 +293,7 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
     next = reshufflePlayerDeck(next);
     next = ensureEquippedOnDeckTop(next);
     const drawN = playerDrawCountPerTurn(next);
-    next = drawFromPlayerDeck(next, drawN);
+    next = drawFromPlayerDeck(next, drawN, true);
     next = applyPerTurnSkillResourcesAfterDraw(next);
     next = revealAtPlayer(next);
     next = collectAdjacentLoot(next);
@@ -1316,7 +1316,16 @@ function openChestAsPlayer(s: GameState, x: number, y: number): GameState {
   }
 }
 
-function drawFromPlayerDeck(state: GameState, n: number): GameState {
+/**
+ * Draw cards, normally skipping the equipped card so draw effects cannot
+ * return it after it has been played this turn. Fresh-hand draws explicitly
+ * opt in after placing the equipped card on top of the pile.
+ */
+function drawFromPlayerDeck(
+  state: GameState,
+  n: number,
+  allowEquipped = false,
+): GameState {
   let s = state;
   let hand = [...s.player.hand];
   for (let i = 0; i < n; i++) {
@@ -1329,10 +1338,35 @@ function drawFromPlayerDeck(state: GameState, n: number): GameState {
         player: { ...s.player, drawPile: nextDraw, discardPile: [], hand },
       };
     }
-    if (s.player.drawPile.length === 0) break;
-    const [top, ...rest] = s.player.drawPile;
-    hand = [...hand, top];
-    s = { ...s, player: { ...s.player, drawPile: rest, hand } };
+
+    const equipped = allowEquipped ? null : s.player.equipped;
+    let drawIndex = equipped
+      ? s.player.drawPile.findIndex((id) => id !== equipped)
+      : 0;
+
+    // The equipped card may be the only card left in draw. Shuffle discard
+    // behind it so another eligible card can still be drawn.
+    if (drawIndex < 0 && s.player.discardPile.length > 0) {
+      const shuffledDiscard = [...s.player.discardPile];
+      shuffleInPlace(shuffledDiscard);
+      s = {
+        ...s,
+        player: {
+          ...s.player,
+          drawPile: [...s.player.drawPile, ...shuffledDiscard],
+          discardPile: [],
+          hand,
+        },
+      };
+      drawIndex = s.player.drawPile.findIndex((id) => id !== equipped);
+    }
+
+    if (drawIndex < 0 || s.player.drawPile.length === 0) break;
+    const drawPile = [...s.player.drawPile];
+    const [drawn] = drawPile.splice(drawIndex, 1);
+    if (!drawn) break;
+    hand = [...hand, drawn];
+    s = { ...s, player: { ...s.player, drawPile, hand } };
   }
   return s;
 }
@@ -2005,7 +2039,7 @@ function beginNextPlayerTurn(s: GameState): GameState {
   }
   next = ensureEquippedOnDeckTop(next);
   const drawN = playerDrawCountPerTurn(next);
-  next = drawFromPlayerDeck(next, drawN);
+  next = drawFromPlayerDeck(next, drawN, true);
   next = applyPerTurnSkillResourcesAfterDraw(next);
   next = revealAtPlayer(next);
   next = collectAdjacentLoot(next);
@@ -2061,7 +2095,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         next = reshufflePlayerDeck(next);
         next = ensureEquippedOnDeckTop(next);
         const drawN = playerDrawCountPerTurn(next);
-        next = drawFromPlayerDeck(next, drawN);
+        next = drawFromPlayerDeck(next, drawN, true);
         next = applyPerTurnSkillResourcesAfterDraw(next);
         next = revealAtPlayer(next);
         next = collectAdjacentLoot(next);
@@ -2181,7 +2215,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       if (state.turn > 0) return noHits(state);
       let s = ensureEquippedOnDeckTop({ ...state, turn: 1 });
       const n = playerDrawCountPerTurn(s);
-      s = drawFromPlayerDeck(s, n);
+      s = drawFromPlayerDeck(s, n, true);
       s = {
         ...s,
         player: {
@@ -3119,7 +3153,15 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         hand.splice(p.cardHandIndex, 1);
         const discardPile = [...state.player.discardPile, cardId];
 
-        const hits: HitVisual[] = [];
+        const hits: HitVisual[] = [
+          {
+            gridX: dest.x,
+            gridY: dest.y,
+            damage: 0,
+            showDamage: false,
+            fx: playerAttackFx(state, "fireball"),
+          },
+        ];
         let s: GameState = { ...state, player: { ...state.player, hand, discardPile }, pending: null };
         const dmg = magicAttackRollRaw(s, cardId, p.minDamage, p.maxDamage);
         const fireLvls = rollInt(p.minFire, p.maxFire);
@@ -3140,7 +3182,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
                 ...s,
                 tangleweeds: s.tangleweeds.map((w) => (w.id === tw.id ? { ...w, hp } : w)),
               };
-              hits.push(hitAt(s, tx, ty, dmg, "fireball"));
+              hits.push({ gridX: tx, gridY: ty, damage: dmg });
               if (hp <= 0) s = log(s, "Tangleweed burned away.");
             }
             if (s.player.x === tx && s.player.y === ty) {
@@ -3154,7 +3196,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
                   fireLevels: (s.player.fireLevels ?? 0) + fireLvls,
                 },
               };
-              hits.push(hitAt(s, tx, ty, pdmg, "fireball"));
+              hits.push({ gridX: tx, gridY: ty, damage: pdmg });
               s = log(s, `You are caught in the fireball — ${pdmg} damage and Fire ${fireLvls}!`);
               if (php <= 0) {
                 return withHits(
@@ -3170,7 +3212,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
               const hp = Math.max(0, target.hp - finalDmg);
               s = { ...s, monsters: patchMonsterHp(s.monsters, target.id, hp) };
               s = { ...s, monsters: applyFireToMonster(s.monsters, target.id, fireLvls) };
-              hits.push(hitAt(s, tx, ty, finalDmg, "fireball"));
+              hits.push({ gridX: tx, gridY: ty, damage: finalDmg });
               if (hp <= 0) {
                 s = log(s, `${defM?.name ?? "Enemy"} consumed by fire!`);
                 s = applyMonsterKillRewards(s, target.defId);
@@ -3815,8 +3857,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       if (state.player.hp >= state.player.maxHp) {
         return noHits(log(state, "You're not hungry."));
       }
-      let heal = Math.floor(state.player.maxHp * 0.2);
-      if (heal < 1) heal = 1;
+      let heal = 2;
       heal += breadHealBonus(state);
       heal = Math.min(heal, state.player.maxHp - state.player.hp);
       return noHits(
