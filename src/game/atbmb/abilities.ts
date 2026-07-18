@@ -1,4 +1,4 @@
-import { keyOf, magicMissilePathClearToPlayer, lineOfSightClear, tileAt } from "../../engine/grid";
+import { magicMissilePathClearToPlayer, lineOfSightClear } from "../../engine/grid";
 import { monsterDamageBonus, rollInt } from "../../engine/combat";
 import { manhattan } from "../../engine/movement";
 import type {
@@ -16,18 +16,9 @@ import type {
   Point,
 } from "../types";
 import { inAttackRange } from "./conditions";
-import { dirsForMoveStyle } from "./dirs";
 import { skeletonWeaponCanHit, skeletonWeaponRollDamage } from "./skeletonWeapon";
-import {
-  collectFavoredTiles,
-  collectNonDislikedTiles,
-  collectPrefTiles,
-  distByMetric,
-  isDislikedTile,
-  nearestManhattan,
-  resolveTilePrefs,
-  scoreTile,
-} from "./tilePrefs";
+import { pickPathStep } from "./planPath";
+import { resolveTilePrefs } from "./tilePrefs";
 
 /** Host adapters supplied by monsterAi so ATBMB stays free of phase/anim coupling. */
 export type AtbmbHost = {
@@ -167,84 +158,17 @@ function pickStepTowardScore(
   moveUsesRemaining: number,
   waterOnly = false,
 ): Point | null {
-  const occ = host.occupancy(s, m.id);
-  const dirs = dirsForMoveStyle(ai.moveStyle);
-  const tileOk = (p: Point) => {
-    if (!host.tilePassable(s, m, p)) return false;
-    if (waterOnly && tileAt(s.tiles, p) !== "water") return false;
-    return true;
-  };
-  // Goals never include disliked tiles.
-  const passableGoal = (p: Point) => tileOk(p) && !isDislikedTile(s, m, p, prefs);
-  const favored = collectFavoredTiles(s, m, prefs, passableGoal, occ);
-  const secondary = collectPrefTiles(s, m, prefs?.secondary, prefs, passableGoal, occ);
-  const safeTiles = collectNonDislikedTiles(s, m, prefs, passableGoal, occ);
-  const player: Point = { x: s.player.x, y: s.player.y };
-  const from: Point = { x: m.x, y: m.y };
-  const onDisliked = isDislikedTile(s, m, from, prefs);
-
-  let goalTargets = favored;
-  if (seek === "favored" && prefs?.secondary?.length) {
-    const favDist = nearestManhattan(from, favored);
-    if (favDist > moveUsesRemaining) {
-      const secDist = nearestManhattan(from, secondary);
-      if (secondary.length && secDist <= moveUsesRemaining) {
-        goalTargets = secondary;
-      }
-    }
-  } else if (seek === "secondary") {
-    goalTargets = secondary;
-  }
-
-  const scoreNeighbor = (np: Point): number => {
-    switch (seek) {
-      case "toward_player":
-        return -distByMetric(np, player, ai.moveStyle === "any8" ? "chebyshev" : "manhattan");
-      case "away_from_player":
-        return distByMetric(np, player, ai.moveStyle === "any8" ? "chebyshev" : "manhattan");
-      case "away_from_bad":
-        if (safeTiles.length) return -nearestManhattan(np, safeTiles);
-        return distByMetric(np, player, ai.moveStyle === "any8" ? "chebyshev" : "manhattan");
-      case "secondary":
-        return scoreTile(s, m, np, { ...prefs, favored: prefs?.secondary }, secondary);
-      case "tertiary":
-        return scoreTile(s, m, np, { ...prefs, favored: prefs?.tertiary }, []);
-      case "favored":
-      default:
-        return scoreTile(
-          s,
-          m,
-          np,
-          goalTargets === secondary ? { ...prefs, favored: prefs?.secondary } : prefs,
-          goalTargets,
-        );
-    }
-  };
-
-  const pickAmong = (allowDisliked: boolean): Point | null => {
-    let best: Point | null = null;
-    let bestScore = -Infinity;
-    for (const o of dirs) {
-      const np = { x: m.x + o.x, y: m.y + o.y };
-      if (occ.has(keyOf(np)) || !tileOk(np)) continue;
-      const destDisliked = isDislikedTile(s, m, np, prefs);
-      if (destDisliked && !allowDisliked) continue;
-      // From a safe tile, disliked destinations stay hard-blocked.
-      if (destDisliked && !onDisliked) continue;
-      const score = scoreNeighbor(np);
-      if (score > bestScore) {
-        bestScore = score;
-        best = np;
-      }
-    }
-    return best;
-  };
-
-  // Prefer any non-disliked step; only step onto disliked when already stuck on one.
-  const preferred = pickAmong(false);
-  if (preferred) return preferred;
-  if (onDisliked) return pickAmong(true);
-  return null;
+  return pickPathStep(
+    s,
+    m,
+    ai,
+    prefs,
+    seek,
+    { tilePassable: host.tilePassable, occupancy: host.occupancy },
+    moveUsesRemaining,
+    waterOnly,
+    Math.random,
+  );
 }
 
 export function tryExecuteAction(

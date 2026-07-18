@@ -12,7 +12,9 @@ import {
   type SkillDef,
 } from "./game/skillDefs";
 import { CARD_TYPE_ORDER, type AtbmbTilePref, type AtbmbWhen, type CardDef, type FloorTheme, type GameCommand, type GameState, type ShiftyGemId, type TurnAnimEvent } from "./game/types";
-import { hasAtbmb, inAttackRange, isOnBadTile, isOnFavoredTile, resolveTilePrefs } from "./game/atbmb";
+import { hasAtbmb, inAttackRange, isOnBadTile, isOnFavoredTile, planAtbmbPath, resolveTilePrefs, stablePathRng, whenMatches } from "./game/atbmb";
+import { monsterTilePassable, movementOcc } from "./game/monsterAi";
+import type { AtbmbMoveSeek } from "./game/types";
 import { lightningBoltSkillDamageBonus } from "./game/skillsRuntime";
 import { merchantDialogueOpen, merchantShopOpen, merchantUiBlocks } from "./game/merchantRuntime";
 import { loadSpriteStyles } from "./render/assets";
@@ -1120,6 +1122,53 @@ function renderMonsterBrain(): void {
     monsterBrainBody.appendChild(formatPrefList("Favored tiles", prefs.favored));
     monsterBrainBody.appendChild(formatPrefList("Secondary tiles", prefs.secondary));
     monsterBrainBody.appendChild(formatPrefList("Disliked tiles", prefs.bad));
+
+    let seek: AtbmbMoveSeek = "favored";
+    let waterOnly = false;
+    let foundMove = false;
+    if (stateDef) {
+      for (const rule of stateDef.decide) {
+        if (!whenMatches(state, mon, rule.when, prefs, stateDef.attackRange)) continue;
+        for (const action of rule.actions) {
+          const ab = ai.abilities.find((a) => a.id === action.ability);
+          if (!ab || (ab.kind !== "move" && ab.kind !== "swim")) continue;
+          seek = action.seek ?? "favored";
+          waterOnly = ab.kind === "swim";
+          foundMove = true;
+          break;
+        }
+        if (foundMove) break;
+      }
+    }
+    const plan = planAtbmbPath(
+      state,
+      mon,
+      ai,
+      prefs,
+      seek,
+      { tilePassable: monsterTilePassable, occupancy: movementOcc },
+      { moveUsesRemaining: 2, waterOnly, rng: stablePathRng },
+    );
+    const pathSec = document.createElement("div");
+    pathSec.className = "monster-brain-section";
+    const pathH = document.createElement("h3");
+    pathH.textContent = "Planned path";
+    pathSec.appendChild(pathH);
+    const pathP = document.createElement("p");
+    pathP.className = "monster-brain-muted";
+    if (!foundMove) {
+      pathP.textContent = "No move/swim action in the current decision tree.";
+    } else if (!plan || plan.path.length < 2) {
+      pathP.textContent =
+        plan?.path.length === 1
+          ? `Already at goal (${plan.goal.x}, ${plan.goal.y}) · seek: ${seek}`
+          : `No path · seek: ${seek}`;
+    } else {
+      const steps = plan.path.length - 1;
+      pathP.textContent = `${steps} step${steps === 1 ? "" : "s"} → (${plan.goal.x}, ${plan.goal.y}) · seek: ${seek}`;
+    }
+    pathSec.appendChild(pathP);
+    monsterBrainBody.appendChild(pathSec);
   }
 
   if (ai.maxActionsPerTurn !== undefined) {

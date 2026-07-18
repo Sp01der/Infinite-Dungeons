@@ -20,7 +20,9 @@ import type {
   PendingIntent,
   RoomKind,
 } from "../game/types";
-import { tileMatchesAnyPref, resolveTilePrefs } from "../game/atbmb";
+import { tileMatchesAnyPref, resolveTilePrefs, planAtbmbPath, stablePathRng, whenMatches } from "../game/atbmb";
+import { monsterTilePassable, movementOcc } from "../game/monsterAi";
+import type { AtbmbMoveSeek } from "../game/types";
 import type { SpriteStyle } from "./assets";
 import type { AttackFxFrames } from "./attackFx";
 import {
@@ -1129,7 +1131,6 @@ export class GridView extends Container {
     const favored = prefs.favored;
     const secondary = prefs.secondary;
     const bad = prefs.bad;
-    if (!favored?.length && !secondary?.length && !bad?.length) return;
 
     for (let y = 0; y < state.height; y++) {
       for (let x = 0; x < state.width; x++) {
@@ -1144,6 +1145,54 @@ export class GridView extends Container {
           .rect(x * TILE, y * TILE, TILE, TILE)
           .fill({ color, alpha: 0.38 });
       }
+    }
+
+    // Shortest path the monster would take for its next move/swim seek.
+    let seek: AtbmbMoveSeek = "favored";
+    let waterOnly = false;
+    let foundMove = false;
+    if (stateDef) {
+      for (const rule of stateDef.decide) {
+        if (!whenMatches(state, mon, rule.when, prefs, stateDef.attackRange)) continue;
+        for (const action of rule.actions) {
+          const ab = ai.abilities.find((a) => a.id === action.ability);
+          if (!ab || (ab.kind !== "move" && ab.kind !== "swim")) continue;
+          seek = action.seek ?? "favored";
+          waterOnly = ab.kind === "swim";
+          foundMove = true;
+          break;
+        }
+        if (foundMove) break;
+      }
+    }
+
+    const plan = planAtbmbPath(
+      state,
+      mon,
+      ai,
+      prefs,
+      seek,
+      { tilePassable: monsterTilePassable, occupancy: movementOcc },
+      { moveUsesRemaining: 2, waterOnly, rng: stablePathRng },
+    );
+    if (!plan || plan.path.length < 2) return;
+
+    for (let i = 1; i < plan.path.length; i++) {
+      const p = plan.path[i]!;
+      if (state.fogOfWar && !state.discovered.has(keyOf(p))) continue;
+      const isGoal = i === plan.path.length - 1;
+      this.brainHighlightLayer
+        .rect(p.x * TILE, p.y * TILE, TILE, TILE)
+        .fill({ color: isGoal ? 0x3498db : 0x5dade2, alpha: isGoal ? 0.55 : 0.42 });
+    }
+    this.brainHighlightLayer.setStrokeStyle({ width: 3, color: 0x1a5276, alpha: 0.95 });
+    for (let i = 0; i < plan.path.length - 1; i++) {
+      const a = plan.path[i]!;
+      const b = plan.path[i + 1]!;
+      this.brainHighlightLayer
+        .moveTo(a.x * TILE + TILE / 2, a.y * TILE + TILE / 2)
+        .lineTo(b.x * TILE + TILE / 2, b.y * TILE + TILE / 2)
+        .stroke();
     }
   }
 

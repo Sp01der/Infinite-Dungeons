@@ -1112,6 +1112,11 @@ button.pile-inspect:focus-visible {
   color: #fff;
 }
 
+.monster-brain-swatch.is-path {
+  background: #3498db;
+  color: #fff;
+}
+
 .monster-brain-body {
   display: flex;
   flex-direction: column;

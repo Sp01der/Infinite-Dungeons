@@ -93,7 +93,7 @@ export function monsterTilePassable(s: GameState, m: MonsterInstance, p: Point):
   return false;
 }
 
-function movementOcc(s: GameState, excludeMonsterId: string): Set<string> {
+export function movementOcc(s: GameState, excludeMonsterId: string): Set<string> {
   const occ = new Set<string>();
   for (const m of s.monsters) {
     if (m.hp <= 0 || m.id === excludeMonsterId) continue;

@@ -19,6 +19,13 @@ export {
 } from "./tilePrefs";
 export { cardinalDirToward } from "./abilities";
 export { inAttackRange, whenMatches } from "./conditions";
+export {
+  planAtbmbPath,
+  pickPathStep,
+  stablePathRng,
+  type AtbmbPathContext,
+} from "./planPath";
+export type { ShortestPathResult } from "./pathfind";
 
 function applyStateId(
   s: GameState,
