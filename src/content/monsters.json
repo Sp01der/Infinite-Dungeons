@@ -7,7 +7,64 @@
     "defense": 0,
     "damage": 2,
     "power": 2,
-    "description": "Oozes closer, then can leap along a line for a crushing slam."
+    "description": "Oozes closer, then can leap along a line for a crushing slam.",
+    "ai": {
+      "initialState": "basic",
+      "moveStyle": "ortho",
+      "abilities": [
+        {
+          "id": "ooze",
+          "kind": "move",
+          "params": { "steps": 1 }
+        },
+        {
+          "id": "prepare_leap",
+          "kind": "prepare_leap",
+          "params": { "nextState": "leap" }
+        },
+        {
+          "id": "leap",
+          "kind": "leap",
+          "params": {
+            "steps": 2,
+            "minDamage": 2,
+            "maxDamage": 4,
+            "knockback": 1
+          }
+        }
+      ],
+      "states": [
+        {
+          "id": "basic",
+          "tilePrefs": {
+            "favored": [{ "kind": "plus_from_player", "min": 1, "max": 2 }],
+            "bad": []
+          },
+          "decide": [
+            {
+              "id": "approach_favored",
+              "when": { "onFavoredTile": false },
+              "actions": [{ "ability": "ooze", "seek": "favored" }]
+            },
+            {
+              "id": "coil",
+              "when": { "onFavoredTile": true },
+              "actions": [{ "ability": "prepare_leap" }]
+            }
+          ]
+        },
+        {
+          "id": "leap",
+          "decide": [
+            {
+              "id": "slam",
+              "actions": [{ "ability": "leap" }]
+            }
+          ],
+          "nextState": "basic"
+        }
+      ]
+    }
   },
   {
     "id": "dune_rat",
@@ -17,7 +74,50 @@
     "defense": 0,
     "damage": 2,
     "power": 2,
-    "description": "Scurries and bites in passing."
+    "description": "Scurries and bites in passing.",
+    "ai": {
+      "initialState": "basic",
+      "moveStyle": "ortho",
+      "abilities": [
+        {
+          "id": "scurry",
+          "kind": "move",
+          "params": { "steps": 1 }
+        },
+        {
+          "id": "bite",
+          "kind": "melee",
+          "params": {
+            "minDamage": 1,
+            "maxDamage": 3,
+            "rangeMetric": "manhattan",
+            "rangeMax": 1
+          }
+        }
+      ],
+      "states": [
+        {
+          "id": "basic",
+          "attackRange": { "metric": "manhattan", "max": 1 },
+          "tilePrefs": {
+            "favored": [{ "kind": "adjacent_to_player", "metric": "manhattan" }],
+            "bad": []
+          },
+          "decide": [
+            {
+              "id": "approach_favored",
+              "when": { "onFavoredTile": false },
+              "actions": [{ "ability": "scurry", "seek": "favored" }]
+            },
+            {
+              "id": "attack",
+              "when": { "inAttackRange": true },
+              "actions": [{ "ability": "bite" }]
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "id": "skeleton",
@@ -27,7 +127,96 @@
     "defense": 0,
     "damage": 3,
     "power": 4,
-    "description": "Rattling bones armed with a random weapon."
+    "description": "Rattling bones armed with a random weapon.",
+    "ai": {
+      "initialState": "attack",
+      "turnStartState": "attack",
+      "moveStyle": "ortho",
+      "abilities": [
+        {
+          "id": "step",
+          "kind": "move",
+          "uses": 2,
+          "params": { "steps": 1 }
+        },
+        {
+          "id": "strike",
+          "kind": "weapon_melee",
+          "params": { "nextState": "retreat", "continueInNewState": true }
+        }
+      ],
+      "states": [
+        {
+          "id": "attack",
+          "tilePrefs": {
+            "bad": [
+              { "kind": "slime_leap_path" },
+              { "kind": "pending_collapse" },
+              { "kind": "pending_targeted_collapse" },
+              { "kind": "flooding_room" }
+            ]
+          },
+          "weaponTilePrefs": {
+            "sword": {
+              "favored": [{ "kind": "adjacent_to_player", "metric": "manhattan" }]
+            },
+            "spear": {
+              "favored": [{ "kind": "plus_from_player", "min": 2, "max": 2 }],
+              "secondary": [{ "kind": "adjacent_to_player", "metric": "manhattan" }]
+            },
+            "axe": {
+              "favored": [{ "kind": "adjacent_to_player", "metric": "manhattan" }]
+            },
+            "scimitar": {
+              "favored": [{ "kind": "diagonal_adjacent_to_player" }]
+            }
+          },
+          "decide": [
+            {
+              "id": "approach",
+              "when": { "onFavoredTile": false },
+              "actions": [
+                { "ability": "step", "seek": "favored" },
+                { "ability": "step", "seek": "favored" }
+              ]
+            },
+            {
+              "id": "strike",
+              "when": { "onFavoredTile": true, "canWeaponMelee": true },
+              "actions": [{ "ability": "strike" }]
+            }
+          ]
+        },
+        {
+          "id": "retreat",
+          "tilePrefs": {
+            "bad": [
+              { "kind": "slime_leap_path" },
+              { "kind": "pending_collapse" },
+              { "kind": "pending_targeted_collapse" },
+              { "kind": "flooding_room" },
+              { "kind": "adjacent_to_player", "metric": "manhattan" }
+            ]
+          },
+          "weaponTilePrefs": {
+            "scimitar": {
+              "bad": [{ "kind": "adjacent_to_player", "metric": "manhattan" }]
+            }
+          },
+          "decide": [
+            {
+              "id": "back_off",
+              "when": { "onBadTile": true },
+              "actions": [
+                { "ability": "step", "seek": "away_from_player" },
+                { "ability": "step", "seek": "away_from_player" }
+              ]
+            }
+          ],
+          "nextState": "attack"
+        }
+      ]
+    }
   },
   {
     "id": "skeleton_archer",
@@ -37,7 +226,125 @@
     "defense": 0,
     "damage": 3,
     "power": 5,
-    "description": "Keeps distance with a bow — loads, then fires in straight lines."
+    "description": "Keeps distance with a bow — loads, then fires in straight lines.",
+    "ai": {
+      "initialState": "basic",
+      "moveStyle": "ortho",
+      "oneAbilityKindPerTurn": true,
+      "abilities": [
+        {
+          "id": "step",
+          "kind": "move",
+          "uses": 2,
+          "params": { "steps": 1 }
+        },
+        {
+          "id": "load",
+          "kind": "load_bow",
+          "params": { "nextState": "aiming" }
+        },
+        {
+          "id": "fire",
+          "kind": "fire_arrow",
+          "params": {
+            "minDamage": 2,
+            "maxDamage": 4,
+            "rangeMetric": "chebyshev",
+            "rangeMin": 1,
+            "rangeMax": 8,
+            "nextState": "basic"
+          }
+        }
+      ],
+      "states": [
+        {
+          "id": "basic",
+          "attackRange": { "metric": "chebyshev", "min": 1, "max": 8 },
+          "tilePrefs": {
+            "favored": [
+              {
+                "kind": "los_in_radius_from_player",
+                "metric": "chebyshev",
+                "max": 8,
+                "minManhattan": 2
+              }
+            ],
+            "bad": [
+              { "kind": "distance_to_player", "metric": "chebyshev", "min": 1, "max": 2 },
+              { "kind": "pending_collapse" },
+              { "kind": "pending_targeted_collapse" },
+              { "kind": "flooding_room" }
+            ]
+          },
+          "decide": [
+            {
+              "id": "leave_bad",
+              "when": { "onBadTile": true },
+              "actions": [
+                { "ability": "step", "seek": "away_from_bad" },
+                { "ability": "step", "seek": "away_from_bad" }
+              ]
+            },
+            {
+              "id": "align",
+              "when": { "onFavoredTile": false },
+              "actions": [
+                { "ability": "step", "seek": "favored" },
+                { "ability": "step", "seek": "favored" }
+              ]
+            },
+            {
+              "id": "load",
+              "when": { "onFavoredTile": true },
+              "actions": [{ "ability": "load" }]
+            }
+          ]
+        },
+        {
+          "id": "aiming",
+          "attackRange": { "metric": "chebyshev", "min": 1, "max": 8 },
+          "tilePrefs": {
+            "favored": [
+              {
+                "kind": "los_in_radius_from_player",
+                "metric": "chebyshev",
+                "max": 8,
+                "minManhattan": 2
+              }
+            ],
+            "bad": [
+              { "kind": "adjacent_to_player", "metric": "manhattan" },
+              { "kind": "pending_collapse" },
+              { "kind": "pending_targeted_collapse" },
+              { "kind": "flooding_room" }
+            ]
+          },
+          "decide": [
+            {
+              "id": "leave_bad",
+              "when": { "onBadTile": true },
+              "actions": [
+                { "ability": "step", "seek": "away_from_bad" },
+                { "ability": "step", "seek": "away_from_bad" }
+              ]
+            },
+            {
+              "id": "align",
+              "when": { "onFavoredTile": false },
+              "actions": [
+                { "ability": "step", "seek": "favored" },
+                { "ability": "step", "seek": "favored" }
+              ]
+            },
+            {
+              "id": "fire",
+              "when": { "onFavoredTile": true, "clearLosToPlayer": true },
+              "actions": [{ "ability": "fire" }]
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "id": "mimic",
@@ -47,7 +354,68 @@
     "defense": 0,
     "damage": 4,
     "power": 3,
-    "description": "Disguised as a chest until disturbed."
+    "description": "Disguised as a chest until disturbed.",
+    "ai": {
+      "initialState": "asleep",
+      "moveStyle": "ortho",
+      "abilities": [
+        {
+          "id": "skitter",
+          "kind": "move",
+          "uses": 2,
+          "params": { "steps": 1 }
+        },
+        {
+          "id": "bite",
+          "kind": "melee",
+          "params": {
+            "minDamage": 3,
+            "maxDamage": 4,
+            "rangeMetric": "manhattan",
+            "rangeMax": 1
+          }
+        },
+        {
+          "id": "disguise",
+          "kind": "disguise",
+          "params": { "nextState": "asleep" }
+        }
+      ],
+      "states": [
+        {
+          "id": "asleep",
+          "decide": []
+        },
+        {
+          "id": "awake",
+          "attackRange": { "metric": "manhattan", "max": 1 },
+          "tilePrefs": {
+            "favored": [{ "kind": "adjacent_to_player", "metric": "manhattan" }],
+            "bad": []
+          },
+          "decide": [
+            {
+              "id": "hide",
+              "when": { "inUndiscoveredNonCorridorRoom": true },
+              "actions": [{ "ability": "disguise" }]
+            },
+            {
+              "id": "approach",
+              "when": { "onFavoredTile": false },
+              "actions": [
+                { "ability": "skitter", "seek": "favored" },
+                { "ability": "skitter", "seek": "favored" }
+              ]
+            },
+            {
+              "id": "attack",
+              "when": { "onFavoredTile": true, "inAttackRange": true },
+              "actions": [{ "ability": "bite" }]
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "id": "douvlon",
@@ -67,7 +435,56 @@
     "defense": 0,
     "damage": 3,
     "power": 4,
-    "description": "A floating crystal that strikes at range or slips away."
+    "description": "A floating crystal that strikes at range or slips away.",
+    "ai": {
+      "initialState": "basic",
+      "moveStyle": "any8",
+      "maxActionsPerTurn": 1,
+      "abilities": [
+        {
+          "id": "drift",
+          "kind": "move",
+          "params": { "steps": 1 }
+        },
+        {
+          "id": "magic_missile",
+          "kind": "ranged_queen",
+          "params": { "minDamage": 1, "maxDamage": 6 }
+        }
+      ],
+      "states": [
+        {
+          "id": "basic",
+          "tilePrefs": {
+            "favored": [
+              {
+                "kind": "queen_line_from_player",
+                "requireClear": true,
+                "minChebyshev": 2
+              }
+            ],
+            "bad": [{ "kind": "adjacent_to_player", "metric": "chebyshev" }]
+          },
+          "decide": [
+            {
+              "id": "flee_adjacent",
+              "when": { "onBadTile": true },
+              "actions": [{ "ability": "drift", "seek": "favored" }]
+            },
+            {
+              "id": "align",
+              "when": { "onFavoredTile": false },
+              "actions": [{ "ability": "drift", "seek": "favored" }]
+            },
+            {
+              "id": "shoot",
+              "when": { "onFavoredTile": true, "clearQueenRayToPlayer": true },
+              "actions": [{ "ability": "magic_missile" }]
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "id": "rockling",
@@ -77,7 +494,51 @@
     "defense": 0,
     "damage": 3,
     "power": 5,
-    "description": "A stony brute with a tough hide."
+    "description": "A stony brute with a tough hide.",
+    "ai": {
+      "initialState": "basic",
+      "moveStyle": "ortho",
+      "maxActionsPerTurn": 1,
+      "abilities": [
+        {
+          "id": "trundle",
+          "kind": "move",
+          "params": { "steps": 1 }
+        },
+        {
+          "id": "smash",
+          "kind": "melee",
+          "params": {
+            "minDamage": 3,
+            "maxDamage": 4,
+            "rangeMetric": "manhattan",
+            "rangeMax": 1
+          }
+        }
+      ],
+      "states": [
+        {
+          "id": "basic",
+          "attackRange": { "metric": "manhattan", "max": 1 },
+          "tilePrefs": {
+            "favored": [{ "kind": "adjacent_to_player", "metric": "manhattan" }],
+            "bad": []
+          },
+          "decide": [
+            {
+              "id": "approach",
+              "when": { "onFavoredTile": false },
+              "actions": [{ "ability": "trundle", "seek": "favored" }]
+            },
+            {
+              "id": "attack",
+              "when": { "onFavoredTile": true, "inAttackRange": true },
+              "actions": [{ "ability": "smash" }]
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "id": "shadow_rodent",
@@ -87,7 +548,54 @@
     "defense": 0,
     "damage": 3,
     "power": 4,
-    "description": "Moves twice and bites hard — attack and movement in any order."
+    "description": "Moves twice and bites hard — attack and movement in any order.",
+    "ai": {
+      "initialState": "basic",
+      "moveStyle": "ortho",
+      "abilities": [
+        {
+          "id": "scurry",
+          "kind": "move",
+          "uses": 2,
+          "params": { "steps": 1 }
+        },
+        {
+          "id": "bite",
+          "kind": "melee",
+          "params": {
+            "minDamage": 2,
+            "maxDamage": 4,
+            "rangeMetric": "manhattan",
+            "rangeMax": 1
+          }
+        }
+      ],
+      "states": [
+        {
+          "id": "basic",
+          "attackRange": { "metric": "manhattan", "max": 1 },
+          "tilePrefs": {
+            "favored": [{ "kind": "adjacent_to_player", "metric": "manhattan" }],
+            "bad": []
+          },
+          "decide": [
+            {
+              "id": "approach_favored",
+              "when": { "onFavoredTile": false },
+              "actions": [
+                { "ability": "scurry", "seek": "favored" },
+                { "ability": "scurry", "seek": "favored" }
+              ]
+            },
+            {
+              "id": "attack",
+              "when": { "inAttackRange": true },
+              "actions": [{ "ability": "bite" }]
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "id": "corrupted_shade",
@@ -117,7 +625,79 @@
     "defense": 0,
     "damage": 2,
     "power": 2,
-    "description": "Vine whip pulls prey close, then lashes for light damage."
+    "description": "Vine whip pulls prey close, then lashes for light damage.",
+    "ai": {
+      "initialState": "distant",
+      "moveStyle": "ortho",
+      "stateByPlayerDistance": {
+        "closeMax": 2,
+        "closeState": "close",
+        "distantState": "distant"
+      },
+      "abilities": [
+        {
+          "id": "creep",
+          "kind": "move",
+          "params": { "steps": 1 }
+        },
+        {
+          "id": "lash",
+          "kind": "melee",
+          "params": {
+            "minDamage": 1,
+            "maxDamage": 3,
+            "rangeMetric": "manhattan",
+            "rangeMax": 1
+          }
+        },
+        {
+          "id": "vine_whip",
+          "kind": "vine_whip",
+          "params": { "rangeMax": 4 }
+        }
+      ],
+      "states": [
+        {
+          "id": "distant",
+          "tilePrefs": {
+            "favored": [{ "kind": "vine_whip_range_to_player", "maxManhattan": 4 }],
+            "bad": [{ "kind": "adjacent_to_fire" }]
+          },
+          "decide": [
+            {
+              "id": "approach_whip",
+              "when": { "onFavoredTile": false },
+              "actions": [{ "ability": "creep", "seek": "favored" }]
+            },
+            {
+              "id": "whip",
+              "when": { "onFavoredTile": true },
+              "actions": [{ "ability": "vine_whip" }]
+            }
+          ]
+        },
+        {
+          "id": "close",
+          "attackRange": { "metric": "manhattan", "max": 1 },
+          "tilePrefs": {
+            "favored": [{ "kind": "adjacent_to_player", "metric": "manhattan" }],
+            "bad": [{ "kind": "adjacent_to_fire" }]
+          },
+          "decide": [
+            {
+              "id": "approach_melee",
+              "when": { "onFavoredTile": false },
+              "actions": [{ "ability": "creep", "seek": "favored" }]
+            },
+            {
+              "id": "attack",
+              "when": { "onFavoredTile": true, "inAttackRange": true },
+              "actions": [{ "ability": "lash" }]
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "id": "tangleweed_bloom",
@@ -137,7 +717,67 @@
     "defense": 0,
     "damage": 2,
     "power": 2,
-    "description": "Aquatic predator — glides through water to strike."
+    "description": "Aquatic predator — glides through water to strike.",
+    "ai": {
+      "initialState": "in_water",
+      "moveStyle": "ortho",
+      "stateByTerrain": {
+        "waterState": "in_water",
+        "dryState": "out_of_water"
+      },
+      "abilities": [
+        {
+          "id": "swim",
+          "kind": "swim",
+          "params": { "steps": 3 }
+        },
+        {
+          "id": "bite",
+          "kind": "melee",
+          "params": {
+            "minDamage": 2,
+            "maxDamage": 3,
+            "rangeMetric": "manhattan",
+            "rangeMax": 1
+          }
+        }
+      ],
+      "states": [
+        {
+          "id": "in_water",
+          "attackRange": { "metric": "manhattan", "max": 1 },
+          "tilePrefs": {
+            "favored": [{ "kind": "adjacent_to_player", "metric": "manhattan" }],
+            "bad": [{ "kind": "not_water" }]
+          },
+          "decide": [
+            {
+              "id": "approach",
+              "when": { "onFavoredTile": false },
+              "actions": [{ "ability": "swim", "seek": "favored" }]
+            },
+            {
+              "id": "attack",
+              "when": { "onFavoredTile": true, "inAttackRange": true },
+              "actions": [{ "ability": "bite" }]
+            }
+          ]
+        },
+        {
+          "id": "out_of_water",
+          "tilePrefs": {
+            "favored": [{ "kind": "water" }],
+            "bad": []
+          },
+          "decide": [
+            {
+              "id": "reach_water",
+              "actions": [{ "ability": "swim", "seek": "favored" }]
+            }
+          ]
+        }
+      ]
+    }
   },
   {
     "id": "beetle",
@@ -147,6 +787,85 @@
     "defense": 1,
     "damage": 3,
     "power": 3,
-    "description": "Chitinous skitterer that flees when badly hurt."
+    "description": "Chitinous skitterer that flees when badly hurt.",
+    "ai": {
+      "initialState": "attacking",
+      "moveStyle": "ortho",
+      "stateByHpFraction": {
+        "fleeingAtOrBelow": 0.5,
+        "attackingState": "attacking",
+        "fleeingState": "fleeing"
+      },
+      "abilities": [
+        {
+          "id": "scuttle",
+          "kind": "move",
+          "uses": 2,
+          "params": { "steps": 1 }
+        },
+        {
+          "id": "bite",
+          "kind": "melee",
+          "params": {
+            "minDamage": 2,
+            "maxDamage": 4,
+            "rangeMetric": "manhattan",
+            "rangeMax": 1
+          }
+        }
+      ],
+      "states": [
+        {
+          "id": "attacking",
+          "attackRange": { "metric": "manhattan", "max": 1 },
+          "tilePrefs": {
+            "favored": [{ "kind": "adjacent_to_player", "metric": "manhattan" }],
+            "bad": []
+          },
+          "decide": [
+            {
+              "id": "approach",
+              "when": { "onFavoredTile": false },
+              "actions": [
+                { "ability": "scuttle", "seek": "favored" },
+                { "ability": "scuttle", "seek": "favored" }
+              ]
+            },
+            {
+              "id": "attack",
+              "when": { "onFavoredTile": true, "inAttackRange": true },
+              "actions": [{ "ability": "bite" }]
+            }
+          ]
+        },
+        {
+          "id": "fleeing",
+          "attackRange": { "metric": "manhattan", "max": 1 },
+          "tilePrefs": {
+            "favored": [
+              { "kind": "distance_to_player", "metric": "manhattan", "min": 11, "max": 99 }
+            ],
+            "bad": [
+              { "kind": "distance_to_player", "metric": "manhattan", "min": 0, "max": 9 }
+            ]
+          },
+          "decide": [
+            {
+              "id": "desperate_bite",
+              "when": { "inAttackRange": true },
+              "actions": [{ "ability": "bite" }]
+            },
+            {
+              "id": "flee",
+              "when": { "onBadTile": true },
+              "actions": [
+                { "ability": "scuttle", "seek": "favored" },
+                { "ability": "scuttle", "seek": "favored" }
+              ]
+            }
+          ]
+        }
+      ]
+    }
   }
 ]

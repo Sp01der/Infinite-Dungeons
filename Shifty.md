@@ -1,0 +1,1 @@
+Shifty is the first merchant in the Infinite Dungeon game. He is a friendly but 

@@ -11,8 +11,10 @@ import {
   SKILL_DEFS,
   type SkillDef,
 } from "./game/skillDefs";
-import { CARD_TYPE_ORDER, type CardDef, type FloorTheme, type GameCommand, type GameState } from "./game/types";
+import { CARD_TYPE_ORDER, type AtbmbTilePref, type AtbmbWhen, type CardDef, type FloorTheme, type GameCommand, type GameState, type ShiftyGemId, type TurnAnimEvent } from "./game/types";
+import { hasAtbmb, inAttackRange, isOnBadTile, isOnFavoredTile, resolveTilePrefs } from "./game/atbmb";
 import { lightningBoltSkillDamageBonus } from "./game/skillsRuntime";
+import { merchantDialogueOpen, merchantShopOpen, merchantUiBlocks } from "./game/merchantRuntime";
 import { loadSpriteStyles } from "./render/assets";
 import { loadAttackFxFrames } from "./render/attackFx";
 import { GridView, VIEW_HEIGHT_PX, VIEW_WIDTH_PX } from "./render/gridView";
@@ -42,13 +44,33 @@ const cancelBtn = document.querySelector<HTMLButtonElement>("#btn-cancel")!;
 const unequipBtn = document.querySelector<HTMLButtonElement>("#btn-unequip")!;
 const itemBreadBtn = document.querySelector<HTMLButtonElement>("#item-bread")!;
 const itemHerbBtn = document.querySelector<HTMLButtonElement>("#item-herb")!;
+const gemBtns: { id: ShiftyGemId; btn: HTMLButtonElement; hud: HTMLSpanElement }[] = (
+  ["strength", "speed", "luck", "cards", "healing"] as const
+).map((id) => ({
+  id,
+  btn: document.querySelector<HTMLButtonElement>(`#item-gem-${id}`)!,
+  hud: document.querySelector<HTMLSpanElement>(`#hud-gem-${id}`)!,
+}));
+const shiftyDialogueEl = document.querySelector<HTMLDivElement>("#shifty-dialogue")!;
+const shiftyDialogueText = document.querySelector<HTMLParagraphElement>("#shifty-dialogue-text")!;
+const shiftyDialogueChoices = document.querySelector<HTMLDivElement>("#shifty-dialogue-choices")!;
+const shiftyShopEl = document.querySelector<HTMLDivElement>("#shifty-shop")!;
+const shiftyShopBackdrop = document.querySelector<HTMLDivElement>("#shifty-shop-backdrop")!;
+const shiftyShopListings = document.querySelector<HTMLDivElement>("#shifty-shop-listings")!;
+const shiftyShopLeave = document.querySelector<HTMLButtonElement>("#shifty-shop-leave")!;
 const inspectDeckBtn = document.querySelector<HTMLButtonElement>("#inspect-deck")!;
 const inspectDiscardBtn = document.querySelector<HTMLButtonElement>("#inspect-discard")!;
 const pileInspector = document.querySelector<HTMLDivElement>("#pile-inspector")!;
 const pileInspectorBackdrop = document.querySelector<HTMLDivElement>("#pile-inspector-backdrop")!;
 const pileInspectorClose = document.querySelector<HTMLButtonElement>("#pile-inspector-close")!;
 const pileInspectorTitle = document.querySelector<HTMLHeadingElement>("#pile-inspector-title")!;
+const pileInspectorNote = document.querySelector<HTMLParagraphElement>("#pile-inspector-note")!;
 const pileInspectorBody = document.querySelector<HTMLDivElement>("#pile-inspector-body")!;
+const monsterBrainEl = document.querySelector<HTMLElement>("#monster-brain")!;
+const monsterBrainTitle = document.querySelector<HTMLHeadingElement>("#monster-brain-title")!;
+const monsterBrainSubtitle = document.querySelector<HTMLParagraphElement>("#monster-brain-subtitle")!;
+const monsterBrainBody = document.querySelector<HTMLDivElement>("#monster-brain-body")!;
+const monsterBrainClose = document.querySelector<HTMLButtonElement>("#monster-brain-close")!;
 const chestOfferEl = document.querySelector<HTMLDivElement>("#chest-offer")!;
 const chestOfferBackdrop = document.querySelector<HTMLDivElement>("#chest-offer-backdrop")!;
 const chestOfferCards = document.querySelector<HTMLDivElement>("#chest-offer-cards")!;
@@ -87,6 +109,10 @@ const deckBuilderNote = document.querySelector<HTMLParagraphElement>("#deck-buil
 const deckBuilderTypeGrid = document.querySelector<HTMLDivElement>("#deck-builder-type-grid")!;
 const deckBuilderCards = document.querySelector<HTMLDivElement>("#deck-builder-cards")!;
 const deckBuilderSkip = document.querySelector<HTMLButtonElement>("#deck-builder-skip")!;
+const dualWieldOfferEl = document.querySelector<HTMLDivElement>("#dual-wield-offer")!;
+const dualWieldBackdrop = document.querySelector<HTMLDivElement>("#dual-wield-backdrop")!;
+const dualWieldCards = document.querySelector<HTMLDivElement>("#dual-wield-cards")!;
+const dualWieldCancel = document.querySelector<HTMLButtonElement>("#dual-wield-cancel")!;
 const commandWindowBtn = document.querySelector<HTMLButtonElement>("#btn-command-window")!;
 const graphicsToggleBtn = document.querySelector<HTMLButtonElement>("#btn-graphics-toggle")!;
 const commandWindow = document.querySelector<HTMLDivElement>("#command-window")!;
@@ -108,6 +134,10 @@ let mapCameraInitialized = false;
 let lastSyncedFloorId: string | null = null;
 /** Hand index chosen to discard when escaping water (then click land). */
 let waterEscapeHandIndex: number | null = null;
+/** Editor: monster instance whose ATBMB brain is open. */
+let brainInspectMonsterId: string | null = null;
+/** True while move/attack presentation is playing — blocks further commands. */
+let animating = false;
 
 const PIXEL_ART_STORAGE_KEY = "infinite-dungeon-pixel-art";
 
@@ -147,7 +177,9 @@ function choiceModalBlocksPlay(s: GameState): boolean {
     (s.cardPickupOffer?.queue.length ?? 0) > 0 ||
     !!s.pedestalOffer ||
     s.deckDestroyPending ||
-    !!s.deckBuilderOffer
+    !!s.deckBuilderOffer ||
+    s.dualWieldStage?.step === "choose_discard_attack" ||
+    merchantUiBlocks(s)
   );
 }
 
@@ -343,7 +375,7 @@ function renderTurnTokens(): void {
     b.type = "button";
     b.className = "turn-token turn-token--kb";
     b.textContent = `Knockback ×${state.player.knockbackTokens}`;
-    b.title = "Spend to prime your next weapon attack to push the enemy back.";
+    b.title = "Spend to add 1 space of knockback to your next Melee attack. Spend more to stack.";
     b.disabled = state.phase !== "player" || !!state.pending || blocked;
     b.addEventListener("click", () => apply({ type: "USE_KNOCKBACK_TOKEN" }));
     turnTokensEl.appendChild(b);
@@ -351,7 +383,7 @@ function renderTurnTokens(): void {
   if (state.player.knockbackPrimed) {
     const span = document.createElement("span");
     span.className = "turn-token-primed";
-    span.textContent = "KB ready";
+    span.textContent = `KB +${state.player.knockbackPrimed}`;
     turnTokensEl.appendChild(span);
   }
 }
@@ -386,6 +418,22 @@ function cardChrome(cardId: string): { icon: string; accent: string } {
       return { icon: "✧", accent: "#b565d8" };
     case "card_seeker":
       return { icon: "🃏", accent: "#e6a23c" };
+    case "mace_smash":
+      return { icon: "✹", accent: "#8f6b45" };
+    case "weariness":
+      return { icon: "…", accent: "#6b7280" };
+    case "poisoned_blade":
+      return { icon: "☠", accent: "#5c9b45" };
+    case "loot_and_scoot":
+      return { icon: "●", accent: "#d4a72c" };
+    case "dual_wield":
+      return { icon: "⚔", accent: "#a66dd4" };
+    case "flying_kick":
+      return { icon: "➜", accent: "#d07145" };
+    case "great_sword":
+      return { icon: "†", accent: "#e6a23c" };
+    case "potion_of_harming":
+      return { icon: "⚗", accent: "#a0522d" };
     default:
       return { icon: "?", accent: "#888888" };
   }
@@ -408,16 +456,127 @@ function createCardTypesElement(def: CardDef | undefined): HTMLDivElement | null
 }
 
 function apply(cmd: GameCommand): void {
-  const { state: next, hits } = dispatch(state, cmd);
-  state = next;
-  if (hits.length > 0) grid?.playHits(hits);
-  renderAll();
+  if (animating) return;
+  const prev = state;
+  const { state: next, anims } = dispatch(state, cmd);
+  if (anims.length === 0 || !grid) {
+    state = next;
+    renderAll();
+    return;
+  }
+  void playTurnAnims(prev, next, anims);
+}
+
+async function playTurnAnims(
+  prev: GameState,
+  finalState: GameState,
+  anims: TurnAnimEvent[],
+): Promise<void> {
+  if (!grid) {
+    state = finalState;
+    renderAll();
+    return;
+  }
+  animating = true;
+  grid.setPresentationLocked(true);
+  let display = prev;
+  // Keep logical `state` on the pre-action snapshot so HUD/HP stay deferred.
+  // Grid starts at pre-action positions; beats update presentation as they finish.
+  grid.sync(display);
+  renderHudFrom(display);
+
+  try {
+    for (const ev of anims) {
+      if (ev.kind === "move") {
+        await grid.playMove(ev.entityId, ev.fromX, ev.fromY, ev.toX, ev.toY);
+        display = applyMoveToDisplay(display, ev);
+      } else if (ev.kind === "simultaneous") {
+        const vineHit = ev.hits.find((h) => h.fx?.kind === "vine_whip");
+        const vineMove = vineHit && ev.moves.length === 1 ? ev.moves[0] : null;
+        if (vineHit && vineMove) {
+          await grid.playVineWhipPull(vineHit, vineMove);
+        } else {
+          const movePromises = ev.moves.map((mv) =>
+            grid!.playMove(mv.entityId, mv.fromX, mv.fromY, mv.toX, mv.toY),
+          );
+          const hitPromise =
+            ev.hits.length > 0 ? grid.playHitsAsync(ev.hits) : Promise.resolve();
+          await Promise.all([...movePromises, hitPromise]);
+        }
+        for (const mv of ev.moves) {
+          display = applyMoveToDisplay(display, { kind: "move", ...mv });
+        }
+        display = ev.stateAfter;
+        grid.sync(display);
+        renderHudFrom(display);
+      } else {
+        await grid.playHitsAsync(ev.hits);
+        display = ev.stateAfter;
+        grid.sync(display);
+        renderHudFrom(display);
+      }
+    }
+  } finally {
+    grid.setPresentationLocked(false);
+    state = finalState;
+    animating = false;
+    renderAll();
+  }
+}
+
+function applyMoveToDisplay(s: GameState, ev: Extract<TurnAnimEvent, { kind: "move" }>): GameState {
+  if (ev.entityId === "player") {
+    return {
+      ...s,
+      player: { ...s.player, x: ev.toX, y: ev.toY },
+    };
+  }
+  return {
+    ...s,
+    monsters: s.monsters.map((m) =>
+      m.id === ev.entityId ? { ...m, x: ev.toX, y: ev.toY } : m,
+    ),
+  };
+}
+
+/** Lightweight HUD refresh used mid-animation (HP / phase / log). */
+function renderHudFrom(s: GameState): void {
+  hudPhase.textContent =
+    s.phase === "defeat" ? "Defeat" : s.phase === "peace" ? "Peace" : "Your turn";
+  hudHp.textContent = `${s.player.hp} / ${s.player.maxHp}`;
+  renderLogFrom(s);
+}
+
+function renderLogFrom(s: GameState): void {
+  logEl.replaceChildren();
+  const lines = s.log.slice(-12);
+  for (const line of lines) {
+    const p = document.createElement("p");
+    p.textContent = line;
+    logEl.appendChild(p);
+  }
+  logEl.scrollTop = logEl.scrollHeight;
 }
 
 function cellClick(x: number, y: number): void {
+  if (animating) return;
   const s = state;
   if (choiceModalBlocksPlay(s)) return;
   if (s.phase === "peace") {
+    const mer = s.stairFeatures?.merchant;
+    if (
+      s.merchantState &&
+      mer &&
+      mer.x === x &&
+      mer.y === y
+    ) {
+      const pr = s.roomIds[s.player.y]?.[s.player.x] ?? -1;
+      const mr = s.roomIds[mer.y]?.[mer.x] ?? -1;
+      if (pr >= 0 && pr === mr) {
+        apply({ type: "TALK_TO_MERCHANT" });
+        return;
+      }
+    }
     apply({ type: "PEACE_MOVE_TO", x, y });
     return;
   }
@@ -433,38 +592,27 @@ function cellClick(x: number, y: number): void {
     waterEscapeHandIndex = null;
     return;
   }
-  if (!s.pending) return;
-  if (s.pending.kind === "enter_blocked_tile") return;
-  const monsterTargeting =
-    s.pending.kind === "play_melee" ||
-    s.pending.kind === "discard_punch" ||
-    s.pending.kind === "play_spear" ||
-    s.pending.kind === "play_knife" ||
-    s.pending.kind === "play_axe" ||
-    s.pending.kind === "play_magic_missile" ||
-    s.pending.kind === "play_knockback_punch" ||
-    s.pending.kind === "play_bow_attack" ||
-    s.pending.kind === "play_lightning_bolt";
-  if (monsterTargeting) {
-    const mon = s.monsters.find((m) => m.hp > 0 && m.x === x && m.y === y);
-    if (mon) {
-      apply({ type: "CONFIRM_TARGET_MONSTER", monsterInstanceId: mon.id });
-      return;
-    }
-    if (s.pending.kind === "play_melee" || s.pending.kind === "discard_punch") {
-      const tw = s.tangleweeds.find((t) => t.hp > 0 && t.x === x && t.y === y);
-      if (tw) {
-        apply({ type: "CONFIRM_TARGET_TANGLEWEED", tangleweedId: tw.id });
+  if (!s.pending) {
+    if (s.editorMode) {
+      const mon = s.monsters.find((m) => m.hp > 0 && m.x === x && m.y === y);
+      if (mon) {
+        openMonsterBrain(mon.id);
         return;
       }
+      if (brainInspectMonsterId) {
+        closeMonsterBrain();
+        renderAll();
+      }
     }
-    const pot = s.pots.find((p) => p.x === x && p.y === y);
-    if (pot) {
-      apply({ type: "CONFIRM_TARGET_POT", potId: pot.id });
-      return;
-    }
+    return;
   }
+  if (s.pending.kind === "enter_blocked_tile") return;
   apply({ type: "CONFIRM_TARGET_TILE", x, y });
+}
+
+function cellSecondary(x: number, y: number): void {
+  if (!state.editorMode) return;
+  apply({ type: "DEV_EDITOR_CELL_ACTION", x, y });
 }
 
 function countIds(ids: readonly string[]): Map<string, number> {
@@ -583,6 +731,18 @@ function runCommandLine(raw: string): string {
     return `${action === "add" ? "Added" : "Removed"} ${state.cardDefs.get(cardId)?.name ?? cardId}.`;
   }
 
+  if (verb === "deck") {
+    if (args.length !== 1) return "Usage: Deck [clear|reshuffle|reset]";
+    const action = args[0]!.toLowerCase();
+    if (action !== "clear" && action !== "reshuffle" && action !== "reset") {
+      return `Unknown deck action "${args[0]}". Use clear, reshuffle, or reset.`;
+    }
+    apply({ type: "DEV_DECK", action });
+    if (action === "clear") return "Cleared your deck.";
+    if (action === "reset") return "Replaced your deck with a new starting deck.";
+    return "Reshuffled your deck.";
+  }
+
   if (verb === "dungeon") {
     if (args.length < 1) return "Usage: Dungeon [card name]";
     const cardName = args.join(" ");
@@ -671,14 +831,56 @@ function runCommandLine(raw: string): string {
     return `Chance set to ${mode}${playerOnly ? " (player rolls only)" : ""}.`;
   }
 
-  return "Unknown command. Try Set, Card, Dungeon, Floor, Theme, Graphics, Summon, or Chance.";
+  if (verb === "editor") {
+    if (args.length !== 1) return "Usage: Editor [true|false]";
+    const value = args[0]!.toLowerCase();
+    if (value !== "true" && value !== "false") {
+      return `Unknown Editor value "${args[0]}". Use true or false.`;
+    }
+    const enabled = value === "true";
+    apply({ type: "DEV_EDITOR", enabled });
+    return `Editor mode ${enabled ? "enabled" : "disabled"}.`;
+  }
+
+  return "Unknown command. Try Set, Card, Deck, Dungeon, Floor, Theme, Graphics, Summon, Chance, or Editor.";
 }
 
-function openPileInspector(which: "deck" | "discard"): void {
+function openPileInspector(which: "deck" | "discard" | "dungeon"): void {
   if (choiceModalBlocksPlay(state)) return;
+  if (which === "dungeon" && !state.editorMode) return;
+  pileInspectorBody.replaceChildren();
+
+  if (which === "dungeon") {
+    pileInspectorTitle.textContent = "Dungeon deck";
+    pileInspectorNote.textContent = "Top to bottom — card #1 is next.";
+    if (state.dungeonDraw.length === 0) {
+      const p = document.createElement("p");
+      p.className = "pile-inspector-empty";
+      p.textContent = "Empty.";
+      pileInspectorBody.appendChild(p);
+    } else {
+      state.dungeonDraw.forEach((id, index) => {
+        const row = document.createElement("div");
+        row.className = "pile-row";
+        const name = document.createElement("span");
+        name.className = "pile-row-name";
+        name.textContent = state.dungeonCardDefs.get(id)?.name ?? id;
+        const position = document.createElement("span");
+        position.className = "pile-row-count";
+        position.textContent = index === 0 ? "#1 · next" : `#${index + 1}`;
+        row.appendChild(name);
+        row.appendChild(position);
+        pileInspectorBody.appendChild(row);
+      });
+    }
+    pileInspector.classList.add("is-open");
+    pileInspector.setAttribute("aria-hidden", "false");
+    return;
+  }
+
   const pile = which === "deck" ? state.player.drawPile : state.player.discardPile;
   pileInspectorTitle.textContent = which === "deck" ? "Your deck" : "Discard pile";
-  pileInspectorBody.replaceChildren();
+  pileInspectorNote.textContent = "Counts only — order is hidden.";
   const counts = countIds(pile);
   if (counts.size === 0) {
     const p = document.createElement("p");
@@ -712,6 +914,284 @@ function openPileInspector(which: "deck" | "discard"): void {
 function closePileInspector(): void {
   pileInspector.classList.remove("is-open");
   pileInspector.setAttribute("aria-hidden", "true");
+}
+
+function formatTilePref(pref: AtbmbTilePref): string {
+  switch (pref.kind) {
+    case "adjacent_to_player":
+      return `Adjacent to player (${pref.metric})`;
+    case "distance_to_player":
+      return `Distance to player ${pref.min}–${pref.max} (${pref.metric})`;
+    case "plus_from_player":
+      return `Cardinal + from player (${pref.min}–${pref.max})`;
+    case "queen_line_from_player": {
+      const clear = pref.requireClear === false ? "any path" : "clear path";
+      const minC = pref.minChebyshev ?? 1;
+      const maxParts: string[] = [`≥${minC}`];
+      if (pref.maxChebyshev !== undefined) maxParts.push(`≤${pref.maxChebyshev} Chebyshev`);
+      if (pref.maxManhattan !== undefined) maxParts.push(`≤${pref.maxManhattan} Manhattan`);
+      return `Queen-line from player (${maxParts.join(", ")}, ${clear})`;
+    }
+    case "los_in_radius_from_player": {
+      const min = pref.min ?? 1;
+      const parts = [`${min}–${pref.max} ${pref.metric}`, "LOS"];
+      if (pref.minManhattan !== undefined) parts.push(`Manhattan ≥${pref.minManhattan}`);
+      return `Radius from player (${parts.join(", ")})`;
+    }
+    case "vine_whip_range_to_player":
+      return `Vine whip range (Manhattan ≤${pref.maxManhattan ?? 4}, queen LOS)`;
+    case "adjacent_to_fire":
+      return "Adjacent to burning creature";
+    case "diagonal_adjacent_to_player":
+      return "Diagonally adjacent to player";
+    case "slime_leap_path":
+      return "Slime leap path";
+    case "pending_collapse":
+      return "Pending collapse";
+    case "pending_targeted_collapse":
+      return "Targeted collapse";
+    case "flooding_room":
+      return "Flooding room";
+    case "water":
+      return "Water";
+    case "floor":
+      return "Floor";
+    case "not_water":
+      return "Not water";
+    case "same_room_as_player":
+      return "Same room as player";
+    case "clear_queen_ray_to_player":
+      return "Clear queen-ray to player";
+    case "harming_cloud":
+      return "Harming cloud";
+    default:
+      return "Unknown pref";
+  }
+}
+
+function formatWhen(when: AtbmbWhen | undefined): string {
+  if (!when) return "Always";
+  const parts: string[] = [];
+  if (when.onFavoredTile === true) parts.push("on favored tile");
+  if (when.onFavoredTile === false) parts.push("not on favored tile");
+  if (when.onBadTile === true) parts.push("on disliked tile");
+  if (when.onBadTile === false) parts.push("not on disliked tile");
+  if (when.inAttackRange === true) parts.push("in attack range");
+  if (when.inAttackRange === false) parts.push("not in attack range");
+  if (when.clearQueenRayToPlayer === true) parts.push("clear queen-ray");
+  if (when.clearQueenRayToPlayer === false) parts.push("no clear queen-ray");
+  if (when.clearLosToPlayer === true) parts.push("clear LOS");
+  if (when.clearLosToPlayer === false) parts.push("no clear LOS");
+  if (when.canWeaponMelee === true) parts.push("can weapon-melee");
+  if (when.canWeaponMelee === false) parts.push("cannot weapon-melee");
+  if (when.inUndiscoveredNonCorridorRoom === true) parts.push("undiscovered room");
+  if (when.inUndiscoveredNonCorridorRoom === false) parts.push("not undiscovered room");
+  if (when.hpFractionBelow !== undefined) parts.push(`HP < ${Math.round(when.hpFractionBelow * 100)}%`);
+  if (when.hpFractionAbove !== undefined) parts.push(`HP > ${Math.round(when.hpFractionAbove * 100)}%`);
+  if (when.flagTrue) parts.push(`flag ${when.flagTrue}`);
+  if (when.flagFalse) parts.push(`flag !${when.flagFalse}`);
+  return parts.length ? parts.join(", ") : "Always";
+}
+
+function formatPrefList(label: string, prefs: AtbmbTilePref[] | undefined): HTMLElement {
+  const section = document.createElement("div");
+  section.className = "monster-brain-section";
+  const h = document.createElement("h3");
+  h.textContent = label;
+  section.appendChild(h);
+  if (!prefs?.length) {
+    const p = document.createElement("p");
+    p.className = "monster-brain-muted";
+    p.textContent = "None";
+    section.appendChild(p);
+    return section;
+  }
+  const ul = document.createElement("ul");
+  for (const pref of prefs) {
+    const li = document.createElement("li");
+    li.textContent = formatTilePref(pref);
+    ul.appendChild(li);
+  }
+  section.appendChild(ul);
+  return section;
+}
+
+function closeMonsterBrain(): void {
+  brainInspectMonsterId = null;
+  monsterBrainEl.hidden = true;
+  monsterBrainEl.setAttribute("aria-hidden", "true");
+  grid?.setBrainInspectMonsterId(null);
+}
+
+function openMonsterBrain(monsterId: string): void {
+  brainInspectMonsterId = monsterId;
+  renderAll();
+}
+
+function renderMonsterBrain(): void {
+  if (!brainInspectMonsterId || !state.editorMode) {
+    brainInspectMonsterId = null;
+    monsterBrainEl.hidden = true;
+    monsterBrainEl.setAttribute("aria-hidden", "true");
+    grid?.setBrainInspectMonsterId(null);
+    return;
+  }
+  const mon = state.monsters.find((m) => m.id === brainInspectMonsterId && m.hp > 0);
+  if (!mon) {
+    brainInspectMonsterId = null;
+    monsterBrainEl.hidden = true;
+    monsterBrainEl.setAttribute("aria-hidden", "true");
+    grid?.setBrainInspectMonsterId(null);
+    return;
+  }
+
+  grid?.setBrainInspectMonsterId(mon.id);
+
+  const def = state.monsterDefs.get(mon.defId);
+  const name = def?.name ?? mon.defId;
+  monsterBrainTitle.textContent = name;
+  monsterBrainSubtitle.textContent = `${mon.defId} · HP ${mon.hp} · Lv ${mon.level}`;
+  monsterBrainBody.replaceChildren();
+
+  const ai = def?.ai;
+  if (!hasAtbmb(ai)) {
+    const section = document.createElement("div");
+    section.className = "monster-brain-section";
+    const h = document.createElement("h3");
+    h.textContent = "AI";
+    const p = document.createElement("p");
+    p.className = "monster-brain-muted";
+    p.textContent = "Legacy scripted AI — no ATBMB profile.";
+    section.appendChild(h);
+    section.appendChild(p);
+    monsterBrainBody.appendChild(section);
+    monsterBrainEl.hidden = false;
+    monsterBrainEl.setAttribute("aria-hidden", "false");
+    return;
+  }
+
+  const stateId = mon.aiStateId ?? ai.initialState;
+  const stateDef = ai.states.find((st) => st.id === stateId) ?? ai.states[0];
+  const prefs = stateDef ? resolveTilePrefs(stateDef, mon) : undefined;
+  const player = { x: state.player.x, y: state.player.y };
+  const monPos = { x: mon.x, y: mon.y };
+
+  const stateSec = document.createElement("div");
+  stateSec.className = "monster-brain-section";
+  {
+    const h = document.createElement("h3");
+    h.textContent = "State";
+    stateSec.appendChild(h);
+    const strong = document.createElement("div");
+    const nameEl = document.createElement("strong");
+    nameEl.textContent = stateId;
+    strong.appendChild(nameEl);
+    stateSec.appendChild(strong);
+    const meta = document.createElement("div");
+    const range = stateDef?.attackRange
+      ? `${stateDef.attackRange.metric} ≤ ${stateDef.attackRange.max}`
+      : "—";
+    const weapon = mon.skeletonWeapon ? ` · Weapon: ${mon.skeletonWeapon}` : "";
+    meta.textContent = `Move: ${ai.moveStyle} · Attack range: ${range}${weapon}`;
+    stateSec.appendChild(meta);
+    const flags = document.createElement("div");
+    flags.className = "monster-brain-muted";
+    const onFav = prefs ? isOnFavoredTile(state, mon, prefs) : false;
+    const onBad = prefs ? isOnBadTile(state, mon, prefs) : false;
+    const inRange = stateDef?.attackRange
+      ? inAttackRange(monPos, player, stateDef.attackRange)
+      : false;
+    flags.textContent = `On favored: ${onFav ? "yes" : "no"} · On disliked: ${onBad ? "yes" : "no"} · In range: ${inRange ? "yes" : "no"}`;
+    stateSec.appendChild(flags);
+    if (mon.leapDir) {
+      const leap = document.createElement("div");
+      leap.className = "monster-brain-muted";
+      const dx = mon.leapDir.x;
+      const dy = mon.leapDir.y;
+      const facing =
+        dx === 1 ? "east" : dx === -1 ? "west" : dy === 1 ? "south" : dy === -1 ? "north" : "?";
+      leap.textContent = `Leap telegraph: ${facing}`;
+      stateSec.appendChild(leap);
+    }
+  }
+  monsterBrainBody.appendChild(stateSec);
+
+  if (prefs) {
+    monsterBrainBody.appendChild(formatPrefList("Favored tiles", prefs.favored));
+    monsterBrainBody.appendChild(formatPrefList("Secondary tiles", prefs.secondary));
+    monsterBrainBody.appendChild(formatPrefList("Disliked tiles", prefs.bad));
+  }
+
+  if (ai.maxActionsPerTurn !== undefined) {
+    const cap = document.createElement("div");
+    cap.className = "monster-brain-section";
+    const h = document.createElement("h3");
+    h.textContent = "Action budget";
+    const p = document.createElement("p");
+    p.textContent = `Max ${ai.maxActionsPerTurn} ability use(s) per turn`;
+    cap.appendChild(h);
+    cap.appendChild(p);
+    monsterBrainBody.appendChild(cap);
+  }
+
+  const abilSec = document.createElement("div");
+  abilSec.className = "monster-brain-section";
+  {
+    const h = document.createElement("h3");
+    h.textContent = "Abilities";
+    abilSec.appendChild(h);
+    const ul = document.createElement("ul");
+    for (const a of ai.abilities) {
+      const li = document.createElement("li");
+      const parts = [`${a.id} (${a.kind})`];
+      if (a.params?.steps !== undefined) parts.push(`${a.params.steps} step(s)`);
+      if (a.params?.minDamage !== undefined) {
+        parts.push(`dmg ${a.params.minDamage}–${a.params.maxDamage ?? a.params.minDamage}`);
+      }
+      li.textContent = parts.join(" · ");
+      ul.appendChild(li);
+    }
+    abilSec.appendChild(ul);
+  }
+  monsterBrainBody.appendChild(abilSec);
+
+  if (stateDef) {
+    const decideSec = document.createElement("div");
+    decideSec.className = "monster-brain-section";
+    const h = document.createElement("h3");
+    h.textContent = "Decision tree";
+    decideSec.appendChild(h);
+    for (const rule of stateDef.decide) {
+      const ruleEl = document.createElement("div");
+      ruleEl.className = "monster-brain-rule";
+      const title = document.createElement("div");
+      const strong = document.createElement("strong");
+      strong.textContent = rule.id ?? "rule";
+      title.appendChild(strong);
+      title.appendChild(document.createTextNode(" · "));
+      const whenSpan = document.createElement("span");
+      whenSpan.className = "monster-brain-muted";
+      whenSpan.textContent = `when: ${formatWhen(rule.when)}`;
+      title.appendChild(whenSpan);
+      ruleEl.appendChild(title);
+      const actions = document.createElement("ul");
+      for (const act of rule.actions) {
+        const li = document.createElement("li");
+        li.textContent =
+          act.ability +
+          (act.seek ? ` → seek ${act.seek}` : "") +
+          (act.optional ? " (optional)" : "") +
+          (rule.shuffleActions ? " [shuffled]" : "");
+        actions.appendChild(li);
+      }
+      ruleEl.appendChild(actions);
+      decideSec.appendChild(ruleEl);
+    }
+    monsterBrainBody.appendChild(decideSec);
+  }
+
+  monsterBrainEl.hidden = false;
+  monsterBrainEl.setAttribute("aria-hidden", "false");
 }
 
 function buildOfferCardArticle(cardId: string): HTMLElement {
@@ -900,8 +1380,109 @@ function syncCardPickupModal(): void {
   cardPickupBody.appendChild(buildOfferCardArticle(cardId));
 }
 
+function dualWieldDiscardChoices(s: GameState): string[] {
+  if (s.dualWieldStage?.step !== "choose_discard_attack") return [];
+  const first = s.dualWieldStage.firstCardId;
+  return [...new Set(s.player.discardPile)].filter((id) => {
+    const def = s.cardDefs.get(id);
+    return (
+      id !== first &&
+      !!def?.types.includes("Attack") &&
+      !!def.tags?.includes("physical attack") &&
+      !!def.tags?.includes("melee")
+    );
+  });
+}
+
+function syncDualWieldModal(): void {
+  if (state.dualWieldStage?.step !== "choose_discard_attack") {
+    dualWieldOfferEl.classList.remove("is-open");
+    dualWieldOfferEl.setAttribute("aria-hidden", "true");
+    dualWieldCards.replaceChildren();
+    return;
+  }
+  dualWieldOfferEl.classList.add("is-open");
+  dualWieldOfferEl.setAttribute("aria-hidden", "false");
+  dualWieldCards.replaceChildren();
+  for (const id of dualWieldDiscardChoices(state)) {
+    const slot = document.createElement("div");
+    slot.className = "chest-offer-slot";
+    slot.appendChild(buildOfferCardArticle(id));
+    const play = document.createElement("button");
+    play.type = "button";
+    play.className = "primary";
+    play.textContent = "Play now";
+    play.addEventListener("click", () =>
+      apply({ type: "RESOLVE_DUAL_WIELD_DISCARD", cardId: id }),
+    );
+    slot.appendChild(play);
+    dualWieldCards.appendChild(slot);
+  }
+}
+
+function syncShiftyMerchantUi(): void {
+  const ms = state.merchantState;
+  const showDialogue = merchantDialogueOpen(state);
+  const showShop = merchantShopOpen(state);
+
+  if (!showDialogue || !ms) {
+    shiftyDialogueEl.classList.remove("is-open");
+    shiftyDialogueEl.setAttribute("aria-hidden", "true");
+  } else {
+    shiftyDialogueEl.classList.add("is-open");
+    shiftyDialogueEl.setAttribute("aria-hidden", "false");
+    shiftyDialogueText.textContent = ms.dialogueText;
+    shiftyDialogueChoices.replaceChildren();
+    for (const choice of ms.dialogueChoices) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = choice.label;
+      b.addEventListener("click", () =>
+        apply({ type: "RESOLVE_MERCHANT_DIALOGUE", choiceId: choice.id }),
+      );
+      shiftyDialogueChoices.appendChild(b);
+    }
+  }
+
+  if (!showShop || !ms) {
+    shiftyShopEl.classList.remove("is-open");
+    shiftyShopEl.setAttribute("aria-hidden", "true");
+  } else {
+    shiftyShopEl.classList.add("is-open");
+    shiftyShopEl.setAttribute("aria-hidden", "false");
+    shiftyShopListings.replaceChildren();
+    for (const listing of ms.listings) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "shifty-shop-item";
+      const name = document.createElement("span");
+      name.className = "shifty-shop-item-name";
+      name.textContent = listing.name;
+      const meta = document.createElement("span");
+      meta.className = "shifty-shop-item-meta";
+      meta.textContent = `${listing.price}G · stock ${listing.stock}`;
+      b.appendChild(name);
+      b.appendChild(meta);
+      b.addEventListener("click", () =>
+        apply({ type: "SELECT_MERCHANT_ITEM", listingId: listing.id }),
+      );
+      shiftyShopListings.appendChild(b);
+    }
+  }
+}
+
 function renderDungeonPiles(): void {
   const n = state.dungeonDraw.length;
+  dungeonDeckVisual.classList.toggle("is-inspectable", state.editorMode);
+  dungeonDeckVisual.tabIndex = state.editorMode ? 0 : -1;
+  dungeonDeckVisual.setAttribute("role", state.editorMode ? "button" : "img");
+  dungeonDeckVisual.setAttribute(
+    "aria-label",
+    state.editorMode ? "Inspect dungeon deck order" : "Face-down dungeon cards",
+  );
+  dungeonDeckVisual.title = state.editorMode
+    ? "Inspect dungeon deck order"
+    : "Face-down dungeon cards";
   dungeonDeckVisual.replaceChildren();
   if (n === 0) {
     const empty = document.createElement("div");
@@ -964,6 +1545,8 @@ function renderAll(): void {
     lastSyncedFloorId = state.floorId;
     mapCameraInitialized = false;
   }
+  renderMonsterBrain();
+  grid.setBrainInspectMonsterId(brainInspectMonsterId);
   grid.sync(state);
   if (!mapCameraInitialized) {
     grid.centerOnPlayer(state);
@@ -1006,8 +1589,16 @@ function renderAll(): void {
     : "—";
 
   btnEnd.disabled =
-    state.phase !== "player" || choiceModalBlocksPlay(state) || !!state.pending;
-  cancelBtn.style.display = state.pending ? "inline-block" : "none";
+    state.phase !== "player" ||
+    choiceModalBlocksPlay(state) ||
+    !!state.pending ||
+    !!state.dualWieldStage;
+  cancelBtn.style.display =
+    state.pending ||
+    state.dualWieldStage?.step === "choose_hand_attack" ||
+    state.dualWieldStage?.step === "choose_discard_attack"
+      ? "inline-block"
+      : "none";
   unequipBtn.disabled = !state.player.equipped || choiceModalBlocksPlay(state);
   inspectDeckBtn.disabled = choiceModalBlocksPlay(state);
   inspectDiscardBtn.disabled = choiceModalBlocksPlay(state);
@@ -1026,6 +1617,17 @@ function renderAll(): void {
     state.player.hp >= state.player.maxHp;
 
   itemHerbBtn.style.display = state.player.herb > 0 ? "" : "none";
+
+  for (const g of gemBtns) {
+    const count = state.player.gems[g.id] ?? 0;
+    g.hud.textContent = String(count);
+    g.btn.style.display = count > 0 ? "" : "none";
+    g.btn.disabled =
+      state.phase !== "player" ||
+      !!state.pending ||
+      choiceModalBlocksPlay(state) ||
+      count <= 0;
+  }
 
   btnSkillTree.disabled =
     state.phase === "defeat" ||
@@ -1048,10 +1650,17 @@ function renderAll(): void {
         ? `Found card (${state.cardPickupOffer!.queue.length} to resolve) — add to deck or leave it.`
         : "Add this card to your deck (discard pile), or leave it.";
   } else if (state.phase === "peace") {
-    if (state.deckDestroyPending) {
+    if (merchantDialogueOpen(state)) {
+      hintEl.textContent = "Shifty is talking — choose a reply.";
+    } else if (merchantShopOpen(state)) {
+      hintEl.textContent = "Browse Shifty's shop, or leave when you're done.";
+    } else if (state.deckDestroyPending) {
       hintEl.textContent = "Pedestal — destroy one deck card, or skip.";
     } else if (state.pedestalOffer) {
       hintEl.textContent = "Pedestal — take one card into discard, or take none.";
+    } else if (state.merchantState) {
+      hintEl.textContent =
+        "Peace — click Shifty to talk, the pedestal first, then the east stair to descend.";
     } else {
       hintEl.textContent =
         "Peace — click to move. Pedestal (sky circle) first; then step the east stair (grey) to descend.";
@@ -1072,33 +1681,47 @@ function renderAll(): void {
         ? `Click a highlighted tile to move up to ${mr} spaces (Quickstep + Sprinter).`
         : "Click a highlighted tile to step 1 space.";
   } else if (state.pending?.kind === "move_token_step") {
-    hintEl.textContent = "Click a highlighted tile to use your move token (1 step).";
+    hintEl.textContent = `Click a highlighted tile to use your move token (${state.player.hasteThisTurn ? 2 : 1} step${state.player.hasteThisTurn ? "s" : ""}).`;
   } else if (state.pending?.kind === "discard_punch") {
-    hintEl.textContent = "Click an adjacent enemy to punch.";
+    hintEl.textContent = "Click an adjacent highlighted tile to punch everything on it.";
   } else if (state.pending?.kind === "play_spear") {
     hintEl.textContent =
-      "Click an enemy in a straight line 1–2 tiles away (cardinal) to thrust — may pierce one tile behind.";
+      "Click a highlighted cardinal tile 1–2 spaces away — everything there and one tile behind is struck.";
   } else if (state.pending?.kind === "play_knife") {
-    hintEl.textContent = "Click an adjacent enemy to stab with the knife (you draw a card).";
+    hintEl.textContent = "Click an adjacent highlighted tile to strike everything there, then draw a card.";
   } else if (state.pending?.kind === "play_axe") {
-    hintEl.textContent = "Click an adjacent enemy to cleave — your next move is cancelled.";
+    hintEl.textContent = "Click an adjacent highlighted tile to cleave everything there — your next movement is cancelled.";
   } else if (state.pending?.kind === "play_magic_missile") {
     hintEl.textContent =
-      "Click an enemy in a straight or diagonal line from you (queen move). Magic Missile ignores defense.";
+      "Click a highlighted target tile in a straight or diagonal line. Magic Missile ignores defense.";
   } else if (state.pending?.kind === "play_knockback_punch") {
-    hintEl.textContent = "Click an adjacent enemy to punch — knocks them back 2 spaces.";
+    hintEl.textContent = "Click an adjacent highlighted tile — punch everything and apply stacked knockback.";
   } else if (state.pending?.kind === "play_bow_attack") {
-    hintEl.textContent = `Click a highlighted enemy within ${state.pending.range} spaces (line of sight; cannot target adjacent).`;
+    hintEl.textContent = `Click a highlighted target tile within ${state.pending.range} spaces (line of sight; not adjacent).`;
   } else if (state.pending?.kind === "play_lightning_bolt") {
     const p = state.pending;
     const hop = p.hitIds.length + 1;
     const cardId = state.player.hand[p.cardHandIndex];
     const dmgShown = p.nextDamage + lightningBoltSkillDamageBonus(state, cardId);
-    hintEl.textContent = `Lightning chain (hit ${hop}) — click a highlighted enemy within ${p.nextDamage} spaces for ${dmgShown} damage.`;
+    hintEl.textContent = `Lightning chain (hit ${hop}) — click a highlighted target tile within ${p.nextDamage} spaces for ${dmgShown} damage.`;
   } else if (state.pending?.kind === "play_fireball") {
     hintEl.textContent = `Click a highlighted tile within ${state.pending.range} spaces (line of sight) as the blast center.`;
+  } else if (state.pending?.kind === "play_potion_of_harming") {
+    hintEl.textContent = `Click a highlighted tile within ${state.pending.range} spaces — creatures there take ${state.pending.damage} damage and a harming cloud remains.`;
   } else if (state.pending?.kind === "play_card_seeker") {
-    hintEl.textContent = "Click a highlighted tile to move 1 space — 2 random cards drop as ground loot.";
+    hintEl.textContent = `Click a highlighted tile to move up to ${state.pending.range} space${state.pending.range === 1 ? "" : "s"} — 2 random cards drop as ground loot.`;
+  } else if (state.pending?.kind === "play_loot_and_scoot") {
+    hintEl.textContent = `Click a highlighted tile to move up to ${state.pending.range} spaces and scatter coins.`;
+  } else if (state.pending?.kind === "play_flying_kick") {
+    hintEl.textContent = "Choose a highlighted direction for the 2-space Flying Kick.";
+  } else if (state.pending?.kind === "play_great_sword") {
+    hintEl.textContent =
+      "Choose an adjacent target for 7–12 damage, or an unobstructed cardinal/diagonal target 2 spaces away for 2–5 damage.";
+  } else if (state.dualWieldStage?.step === "choose_hand_attack") {
+    hintEl.textContent = "Dual Wield: play an Attack from your hand, or Cancel to end Dual Wield.";
+  } else if (state.dualWieldStage?.step === "choose_discard_attack") {
+    hintEl.textContent =
+      "Dual Wield: choose a physical melee Attack from your discard pile to play now, or Cancel.";
   } else if (state.pending?.kind === "enter_blocked_tile") {
     hintEl.textContent =
       "Choose a hand card to discard as extra cost to enter the rubble (cannot be the same card as your move, when applicable).";
@@ -1164,6 +1787,8 @@ function renderAll(): void {
       (!!state.pending && !enterBlocked && !waterEscape) ||
       choiceModalBlocksPlay(state);
     const isBonus = def?.effect.type === "bonus_chit";
+    const isPenalty = def?.effect.type === "penalty_destroy";
+    const dualHandChoice = state.dualWieldStage?.step === "choose_hand_attack";
 
     const mkBtn = (label: string, cls: string, onClick: () => void, extraDisabled?: boolean) => {
       const b = document.createElement("button");
@@ -1183,7 +1808,10 @@ function renderAll(): void {
           enterBlocked
             ? apply({ type: "CONFIRM_ENTER_BLOCKED", handIndex: idx })
             : apply({ type: "REQUEST_PLAY_CARD", handIndex: idx }),
-        isBonus || waterEscape || (enterBlocked && idx === forbidIdx),
+        isBonus ||
+          waterEscape ||
+          (enterBlocked && idx === forbidIdx) ||
+          (dualHandChoice && !def?.types.includes("Attack")),
       ),
     );
 
@@ -1202,18 +1830,27 @@ function renderAll(): void {
       );
     } else if (!enterBlocked) {
       discardRow.appendChild(
-        mkBtn("Move +1", "", () =>
-          apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "move1" }),
+        mkBtn(
+          "Move +1",
+          "",
+          () => apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "move1" }),
+          isPenalty || dualHandChoice,
         ),
       );
       discardRow.appendChild(
-        mkBtn("Punch", "", () =>
-          apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "punch" }),
+        mkBtn(
+          "Punch",
+          "",
+          () => apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "punch" }),
+          isPenalty || dualHandChoice,
         ),
       );
       discardRow.appendChild(
-        mkBtn("Scout", "", () =>
-          apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "investigate" }),
+        mkBtn(
+          "Scout",
+          "",
+          () => apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "investigate" }),
+          isPenalty || dualHandChoice,
         ),
       );
     }
@@ -1224,7 +1861,7 @@ function renderAll(): void {
         "Equip",
         "",
         () => apply({ type: "REQUEST_EQUIP", handIndex: idx }),
-        !!state.player.equipped || isBonus || enterBlocked || waterEscape,
+        !!state.player.equipped || isBonus || isPenalty || enterBlocked || waterEscape || dualHandChoice,
       ),
     );
 
@@ -1249,6 +1886,8 @@ function renderAll(): void {
   syncDeckDestroyModal();
   syncCardPickupModal();
   syncDeckBuilderModal();
+  syncDualWieldModal();
+  syncShiftyMerchantUi();
 
   if (skillTreeModal.classList.contains("is-open")) {
     renderSkillTree();
@@ -1260,9 +1899,16 @@ cancelBtn.addEventListener("click", () => {
   if (state.pending?.kind === "water_escape") apply({ type: "CANCEL_WATER_ESCAPE" });
   else apply({ type: "CANCEL_PENDING" });
 });
+dualWieldCancel.addEventListener("click", () => apply({ type: "CANCEL_PENDING" }));
+dualWieldBackdrop.addEventListener("click", () => apply({ type: "CANCEL_PENDING" }));
 unequipBtn.addEventListener("click", () => apply({ type: "UNEQUIP" }));
 itemBreadBtn.addEventListener("click", () => apply({ type: "USE_BREAD" }));
 itemHerbBtn.addEventListener("click", () => apply({ type: "USE_HERB" }));
+for (const g of gemBtns) {
+  g.btn.addEventListener("click", () => apply({ type: "USE_GEM", gemId: g.id }));
+}
+shiftyShopLeave.addEventListener("click", () => apply({ type: "CLOSE_MERCHANT_SHOP" }));
+shiftyShopBackdrop.addEventListener("click", () => apply({ type: "CLOSE_MERCHANT_SHOP" }));
 btnEnd.addEventListener("click", () => apply({ type: "END_TURN" }));
 
 dungeonCardToastDismiss.addEventListener("click", () => {
@@ -1271,8 +1917,18 @@ dungeonCardToastDismiss.addEventListener("click", () => {
 
 inspectDeckBtn.addEventListener("click", () => openPileInspector("deck"));
 inspectDiscardBtn.addEventListener("click", () => openPileInspector("discard"));
+dungeonDeckVisual.addEventListener("click", () => openPileInspector("dungeon"));
+dungeonDeckVisual.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  openPileInspector("dungeon");
+});
 pileInspectorBackdrop.addEventListener("click", closePileInspector);
 pileInspectorClose.addEventListener("click", closePileInspector);
+monsterBrainClose.addEventListener("click", () => {
+  closeMonsterBrain();
+  renderAll();
+});
 chestOfferSkip.addEventListener("click", () => {
   if (state.chestOffer) apply({ type: "RESOLVE_CHEST_OFFER", pickIndex: null });
 });
@@ -1364,6 +2020,14 @@ document.addEventListener("keydown", (e) => {
     closeCommandWindow();
     return;
   }
+  if (e.key === "Escape" && shiftyShopEl.classList.contains("is-open")) {
+    apply({ type: "CLOSE_MERCHANT_SHOP" });
+    return;
+  }
+  if (e.key === "Escape" && shiftyDialogueEl.classList.contains("is-open")) {
+    apply({ type: "RESOLVE_MERCHANT_DIALOGUE", choiceId: "leave" });
+    return;
+  }
   if (e.key === "Escape" && deckBuilderOfferEl.classList.contains("is-open")) {
     if (state.deckBuilderOffer?.step === "choose_type") {
       apply({ type: "RESOLVE_DECK_BUILDER_CANCEL" });
@@ -1414,7 +2078,7 @@ async function bootstrap(): Promise<void> {
 
   const styles = await loadSpriteStyles("/assets/manifest.json");
   const attackFx = await loadAttackFxFrames();
-  grid = new GridView(styles, cellClick);
+  grid = new GridView(styles, cellClick, cellSecondary);
   grid.setAttackFxFrames(attackFx);
   grid.setPixelArtEnabled(readStoredPixelArtPreference());
   syncGraphicsToggleButton();

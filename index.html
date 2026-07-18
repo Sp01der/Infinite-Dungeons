@@ -96,6 +96,26 @@
                 <span class="item-pill-label">Herb</span>
                 <span id="hud-herb" class="item-pill-val">0</span>
               </button>
+              <button type="button" class="item-pill item-pill--gem" id="item-gem-strength" title="Gem of Strength — next physical attack ×1.5" style="display:none">
+                <span class="item-pill-label">Str</span>
+                <span id="hud-gem-strength" class="item-pill-val">0</span>
+              </button>
+              <button type="button" class="item-pill item-pill--gem" id="item-gem-speed" title="Gem of Speed — next movement doubled" style="display:none">
+                <span class="item-pill-label">Spd</span>
+                <span id="hud-gem-speed" class="item-pill-val">0</span>
+              </button>
+              <button type="button" class="item-pill item-pill--gem" id="item-gem-luck" title="Gem of Luck — Chance Highest this turn" style="display:none">
+                <span class="item-pill-label">Lck</span>
+                <span id="hud-gem-luck" class="item-pill-val">0</span>
+              </button>
+              <button type="button" class="item-pill item-pill--gem" id="item-gem-cards" title="Gem of Cards — draw 2" style="display:none">
+                <span class="item-pill-label">Crd</span>
+                <span id="hud-gem-cards" class="item-pill-val">0</span>
+              </button>
+              <button type="button" class="item-pill item-pill--gem" id="item-gem-healing" title="Gem of Healing — heal 10% max HP" style="display:none">
+                <span class="item-pill-label">Hln</span>
+                <span id="hud-gem-healing" class="item-pill-val">0</span>
+              </button>
             </div>
             <div class="dock-sub">
               <span class="mini-pile">Equipped <strong id="hud-equipped">—</strong></span>
@@ -204,12 +224,14 @@
         <div class="command-help">
           <p><code>Set [variable] [number]</code> — level, danger, max hp, hp, gold, bread, herb, noise, exp, skill points</p>
           <p><code>Card [card name] [add|remove]</code> — adds to discard or removes one copy</p>
+          <p><code>Deck [clear|reshuffle|reset]</code> — clear, reshuffle, or replace your deck with a new starting deck</p>
           <p><code>Dungeon [card name]</code> — places a dungeon card on top</p>
           <p><code>Floor [n]</code> — jump to floor n (new layout, danger = n)</p>
           <p><code>Theme [Normal|Overgrown|Damp|Brownstone]</code> — regenerate this floor with that theme</p>
           <p><code>Summon [monster] [level?]</code> — spawn adjacent</p>
           <p><code>Graphics [pixel|boxes]</code> — pixel art on, or solid box sprites for testing</p>
           <p><code>Chance [Highest|Lowest|Normal] [true|false?]</code> — bias rolls (optional player-only)</p>
+          <p><code>Editor [true|false]</code> — toggle 9999 HP, full-map visibility, deck inspection, right-click teleport/kill, and click a monster (when not targeting a card) to inspect its ATBMB brain</p>
         </div>
       </div>
     </div>
@@ -218,11 +240,25 @@
       <div class="pile-inspector-backdrop" id="pile-inspector-backdrop" tabindex="-1"></div>
       <div class="pile-inspector-panel">
         <h2 id="pile-inspector-title" class="pile-inspector-heading">Pile</h2>
-        <p class="pile-inspector-note">Counts only — order is hidden.</p>
+        <p id="pile-inspector-note" class="pile-inspector-note">Counts only — order is hidden.</p>
         <div id="pile-inspector-body" class="pile-inspector-body"></div>
         <button type="button" class="pile-inspector-close" id="pile-inspector-close">Close</button>
       </div>
     </div>
+
+    <aside id="monster-brain" class="monster-brain" aria-hidden="true" hidden>
+      <div class="monster-brain-header">
+        <h2 id="monster-brain-title" class="monster-brain-heading">Monster brain</h2>
+        <button type="button" id="monster-brain-close" class="monster-brain-close" aria-label="Close brain panel">×</button>
+      </div>
+      <p id="monster-brain-subtitle" class="monster-brain-subtitle"></p>
+      <div class="monster-brain-legend">
+        <span class="monster-brain-swatch is-favored">Favored</span>
+        <span class="monster-brain-swatch is-secondary">Secondary</span>
+        <span class="monster-brain-swatch is-bad">Disliked</span>
+      </div>
+      <div id="monster-brain-body" class="monster-brain-body"></div>
+    </aside>
 
     <div id="chest-offer" class="chest-offer" aria-hidden="true" role="dialog" aria-labelledby="chest-offer-title">
       <div class="chest-offer-backdrop" id="chest-offer-backdrop" tabindex="-1"></div>
@@ -282,6 +318,37 @@
         <div class="chest-offer-actions card-pickup-actions">
           <button type="button" class="primary" id="card-pickup-accept">Add to deck</button>
           <button type="button" class="chest-offer-skip" id="card-pickup-decline">Leave it</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="shifty-dialogue" class="shifty-dialogue" aria-hidden="true" role="dialog" aria-labelledby="shifty-dialogue-text">
+      <div class="shifty-dialogue-box">
+        <p id="shifty-dialogue-text" class="shifty-dialogue-text"></p>
+        <div id="shifty-dialogue-choices" class="shifty-dialogue-choices"></div>
+      </div>
+    </div>
+
+    <div id="shifty-shop" class="chest-offer shifty-shop" aria-hidden="true" role="dialog" aria-labelledby="shifty-shop-title">
+      <div class="chest-offer-backdrop" id="shifty-shop-backdrop" tabindex="-1"></div>
+      <div class="chest-offer-panel shifty-shop-panel">
+        <h2 id="shifty-shop-title" class="chest-offer-heading">Shifty&apos;s wares</h2>
+        <p class="chest-offer-note">Three cards and three consumables. Prices shift each visit.</p>
+        <div id="shifty-shop-listings" class="shifty-shop-listings"></div>
+        <div class="chest-offer-actions">
+          <button type="button" class="chest-offer-skip" id="shifty-shop-leave">Leave shop</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="dual-wield-offer" class="chest-offer" aria-hidden="true" role="dialog" aria-labelledby="dual-wield-title">
+      <div class="chest-offer-backdrop" id="dual-wield-backdrop" tabindex="-1"></div>
+      <div class="chest-offer-panel">
+        <h2 id="dual-wield-title" class="chest-offer-heading">Dual Wield — second attack</h2>
+        <p class="chest-offer-note">Choose a physical melee Attack from your discard pile to play immediately, or cancel.</p>
+        <div id="dual-wield-cards" class="chest-offer-cards"></div>
+        <div class="chest-offer-actions">
+          <button type="button" class="chest-offer-skip" id="dual-wield-cancel">Cancel</button>
         </div>
       </div>
     </div>

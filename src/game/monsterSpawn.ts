@@ -46,14 +46,18 @@ export function createMonsterInstance(
   const hp = monsterMaxHp(baseHp, dangerLevel);
   const level = dangerLevel;
   const base: MonsterInstance = { id, defId, x, y, hp, active: true, level };
-  if (defId === "slime") return { ...base, leapTarget: null };
-  if (defId === "skeleton") return { ...base, skeletonWeapon: rollSkeletonWeapon() };
-  if (defId === "rockling") return { ...base, defenseOverride: rollInt(1, 2) };
-  if (defId === "skeleton_archer") return { ...base, bowLoaded: false };
-  if (defId === "mimic") return { ...base, mimicAsleep: true };
+  const withAi =
+    def?.ai?.initialState !== undefined
+      ? { ...base, aiStateId: def.ai.initialState, aiFlags: {} }
+      : base;
+  if (defId === "slime") return { ...withAi, leapTarget: null, leapDir: null };
+  if (defId === "skeleton") return { ...withAi, skeletonWeapon: rollSkeletonWeapon() };
+  if (defId === "rockling") return { ...withAi, defenseOverride: rollInt(1, 2) };
+  if (defId === "skeleton_archer") return { ...withAi, bowLoaded: false };
+  if (defId === "mimic") return { ...withAi, mimicAsleep: true };
   if (defId === "elite_skeleton") {
     return {
-      ...base,
+      ...withAi,
       level: dangerLevel + 1,
       spawnedInGauntlet: opts?.spawnedInGauntlet ?? false,
       eliteTeleported: false,
@@ -61,7 +65,7 @@ export function createMonsterInstance(
   }
   if (defId === "corrupted_shade") {
     return {
-      ...base,
+      ...withAi,
       shadeDeck: shuffleShadeDeck(SHADE_DECK_TEMPLATE),
       shadeDiscard: [],
       darkBoltReady: false,
@@ -69,16 +73,16 @@ export function createMonsterInstance(
     };
   }
   if (defId === "drosir") {
-    return { ...base, aquatic: true };
+    return { ...withAi, aquatic: true };
   }
   if (defId === "douvlon" && opts?.douvlonColor && opts?.douvlonPairId) {
     return {
-      ...base,
+      ...withAi,
       douvlonColor: opts.douvlonColor,
       douvlonPairId: opts.douvlonPairId,
     };
   }
-  return base;
+  return withAi;
 }
 
 export function monsterDefenseForIncoming(m: MonsterInstance, def: MonsterDef | undefined): number {

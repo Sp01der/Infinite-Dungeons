@@ -743,7 +743,7 @@ export function verifyGeneratedFloor(f: GeneratedFloor): string | null {
   const nonCorrCount = roomKinds.filter((k) =>
     k === "entrance" || k === "normal" || k === "treasure" || k === "gauntlet" || k === "greenhouse",
   ).length;
-  if (nonCorrCount < 9 || nonCorrCount > 12) return "non-corridor room count out of bounds";
+  if (nonCorrCount < 9 || nonCorrCount > 13) return "non-corridor room count out of bounds";
   if (countKind("entrance") !== 1) return "invalid entrance count";
   if (countKind("gauntlet") !== 1) return "invalid gauntlet count";
   const gauntletRid = roomKinds.findIndex((k) => k === "gauntlet");

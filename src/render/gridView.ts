@@ -8,7 +8,7 @@ import {
   Texture,
   Ticker,
 } from "pixi.js";
-import { chebyshev, keyOf, lineOfSightClear, magicMissilePathClear, magicMissilePathClearToPoint } from "../engine/grid";
+import { chebyshev, keyOf, lineOfSightClear, magicMissilePathClearToPoint } from "../engine/grid";
 import {
   extendReachableWithBlockedDestinations,
   manhattan,
@@ -19,8 +19,8 @@ import type {
   HitVisual,
   PendingIntent,
   RoomKind,
-  SkeletonWeapon,
 } from "../game/types";
+import { tileMatchesAnyPref, resolveTilePrefs } from "../game/atbmb";
 import type { SpriteStyle } from "./assets";
 import type { AttackFxFrames } from "./attackFx";
 import {
@@ -44,12 +44,20 @@ const PROJECTILE_TRAVEL_MS = 240;
 const MELEE_SLASH_MS = 216;
 const FIREBALL_EXPLOSION_FRAME_MS = 100;
 const FIREBALL_EXPLOSION_MS = 700;
+const VINE_EXTEND_MS = 280;
 const FX_SPRITE_SCALE = 2;
+const MOVE_ANIM_MS = 160;
 
 /** Thickness of “heavy” wall rim along discovered floor (highlights door gaps). */
 const WALL_RIM_THICK = Math.max(5, Math.round(TILE * 0.16));
 
 const CLICK_DRAG_THRESHOLD_PX = 9;
+
+function stableBinaryVariant(id: string): "a" | "b" {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  return (hash & 1) === 0 ? "a" : "b";
+}
 
 export class GridView extends Container {
   private floorLayer = new Container();
@@ -61,13 +69,17 @@ export class GridView extends Container {
   private fogLayer = new Container();
   private entityLayer = new Container();
   private highlightLayer = new Container();
+  private brainHighlightLayer = new Graphics();
   private collapseMarkerLayer = new Container();
   private douvlonLineLayer = new Graphics();
   private darknessLayer = new Container();
   private fxLayer = new Container();
   private styles: Map<string, SpriteStyle>;
   private onCellClick: (x: number, y: number) => void;
+  private onCellSecondary: (x: number, y: number) => void;
   private latestState: GameState | null = null;
+  /** Editor: monster instance id whose ATBMB brain tiles are highlighted. */
+  private brainInspectMonsterId: string | null = null;
   private hitAnims: {
     gx: number;
     gy: number;
@@ -77,9 +89,30 @@ export class GridView extends Container {
     fx?: HitVisual["fx"];
   }[] = [];
   private fxTickerAdded = false;
+  private harmingCloudTickerAdded = false;
+  private lastHarmingCloudFrame = -1;
   private attackFxFrames: AttackFxFrames | null = null;
   /** When true, use pixel-art textures where available; otherwise solid tint boxes. */
   private usePixelArt = true;
+  /** Entity roots keyed by `"player"` or monster instance id — used for move tweens. */
+  private entityRoots = new Map<string, Container>();
+  private moveTickerAdded = false;
+  private activeMoves: {
+    root: Container;
+    fromX: number;
+    fromY: number;
+    toX: number;
+    toY: number;
+    t0: number;
+    duration: number;
+    resolve: () => void;
+  }[] = [];
+  /** When true, skip harming-cloud re-sync so mid-tween entity roots stay intact. */
+  private presentationLocked = false;
+
+  setPresentationLocked(locked: boolean): void {
+    this.presentationLocked = locked;
+  }
 
   private viewportWidth = VIEW_WIDTH_PX;
   private viewportHeight = VIEW_HEIGHT_PX;
@@ -90,10 +123,15 @@ export class GridView extends Container {
   private lastPanClientY = 0;
   private panAccumDist = 0;
 
-  constructor(styles: Map<string, SpriteStyle>, onCellClick: (x: number, y: number) => void) {
+  constructor(
+    styles: Map<string, SpriteStyle>,
+    onCellClick: (x: number, y: number) => void,
+    onCellSecondary: (x: number, y: number) => void,
+  ) {
     super();
     this.styles = styles;
     this.onCellClick = onCellClick;
+    this.onCellSecondary = onCellSecondary;
     this.sortableChildren = true;
     this.floorLayer.zIndex = 0;
     this.wallRimLayer.zIndex = 1;
@@ -106,6 +144,7 @@ export class GridView extends Container {
     this.collapseMarkerLayer.zIndex = 6;
     this.douvlonLineLayer.zIndex = 7;
     this.darknessLayer.zIndex = 8;
+    this.brainHighlightLayer.zIndex = 8.5;
     this.highlightLayer.zIndex = 9;
     this.fxLayer.zIndex = 10;
     this.addChild(this.floorLayer);
@@ -118,8 +157,9 @@ export class GridView extends Container {
     this.addChild(this.entityLayer);
     this.addChild(this.collapseMarkerLayer);
     this.addChild(this.douvlonLineLayer);
-    this.addChild(this.highlightLayer);
     this.addChild(this.darknessLayer);
+    this.addChild(this.brainHighlightLayer);
+    this.addChild(this.highlightLayer);
     this.addChild(this.fxLayer);
     this.eventMode = "static";
     this.cursor = "grab";
@@ -133,11 +173,23 @@ export class GridView extends Container {
   configureViewport(widthPx: number, heightPx: number, canvas: HTMLCanvasElement): void {
     this.viewportWidth = widthPx;
     this.viewportHeight = heightPx;
+    if (this.interactionCanvas !== canvas) {
+      this.interactionCanvas?.removeEventListener("contextmenu", this.preventContextMenu);
+      canvas.addEventListener("contextmenu", this.preventContextMenu);
+    }
     this.interactionCanvas = canvas;
   }
 
   getPixelArtEnabled(): boolean {
     return this.usePixelArt;
+  }
+
+  setBrainInspectMonsterId(id: string | null): void {
+    this.brainInspectMonsterId = id;
+  }
+
+  getBrainInspectMonsterId(): string | null {
+    return this.brainInspectMonsterId;
   }
 
   /** Toggle pixel-art textures vs solid color boxes. Re-syncs if a state is loaded. */
@@ -182,6 +234,17 @@ export class GridView extends Container {
 
   private onPointerDown = (ev: FederatedPointerEvent) => {
     const ne = ev.nativeEvent as PointerEvent;
+    if (ne.button === 2) {
+      ne.preventDefault();
+      const s = this.latestState;
+      if (!s?.editorMode) return;
+      const lp = ev.getLocalPosition(this);
+      const x = Math.floor(lp.x / TILE);
+      const y = Math.floor(lp.y / TILE);
+      if (x < 0 || y < 0 || x >= s.width || y >= s.height) return;
+      this.onCellSecondary(x, y);
+      return;
+    }
     if (ne.button !== 0) return;
     this.panPointerDown = true;
     this.panAccumDist = 0;
@@ -231,6 +294,10 @@ export class GridView extends Container {
     this.onCellClick(x, y);
   };
 
+  private preventContextMenu = (event: MouseEvent): void => {
+    event.preventDefault();
+  };
+
   /** Attack FX (when pixel art on) + red flash + floating damage number. */
   playHits(hits: HitVisual[]): void {
     const base = performance.now();
@@ -252,15 +319,149 @@ export class GridView extends Container {
     }
   }
 
-  private fxTravelMs(fx: HitVisual["fx"] | undefined): number {
-    if (!fx || !this.usePixelArt || !this.attackFxFrames) return 0;
-    return fx.kind === "melee_slash" ? MELEE_SLASH_MS : PROJECTILE_TRAVEL_MS;
+  /**
+   * Play hits and resolve when the attack impact lands (damage reveal),
+   * not when floating numbers fully fade.
+   */
+  playHitsAsync(hits: HitVisual[]): Promise<void> {
+    if (hits.length === 0) return Promise.resolve();
+    this.playHits(hits);
+    const fireballAnchor = hits.find((h) => h.fx?.kind === "fireball");
+    let maxImpact = 0;
+    hits.forEach((h, i) => {
+      const t0Offset =
+        fireballAnchor && h !== fireballAnchor ? PROJECTILE_TRAVEL_MS : i * 55;
+      const impact = t0Offset + this.fxTravelMs(h.fx);
+      if (impact > maxImpact) maxImpact = impact;
+    });
+    return new Promise((resolve) => {
+      window.setTimeout(resolve, Math.max(maxImpact, 1));
+    });
   }
 
-  private fxDurationMs(fx: HitVisual["fx"] | undefined): number {
+  /** Tween an entity root from one tile to another. */
+  playMove(
+    entityId: string,
+    fromX: number,
+    fromY: number,
+    toX: number,
+    toY: number,
+  ): Promise<void> {
+    const root = this.entityRoots.get(entityId);
+    if (!root) return Promise.resolve();
+    const steps = Math.max(1, Math.abs(toX - fromX) + Math.abs(toY - fromY));
+    const duration = MOVE_ANIM_MS * Math.min(steps, 4);
+    root.x = fromX * TILE;
+    root.y = fromY * TILE;
+    return new Promise((resolve) => {
+      this.activeMoves.push({
+        root,
+        fromX: fromX * TILE,
+        fromY: fromY * TILE,
+        toX: toX * TILE,
+        toY: toY * TILE,
+        t0: performance.now(),
+        duration,
+        resolve,
+      });
+      if (!this.moveTickerAdded) {
+        Ticker.shared.add(this.updateMoves, this);
+        this.moveTickerAdded = true;
+      }
+    });
+  }
+
+  private updateMoves = (): void => {
+    const now = performance.now();
+    const remaining: typeof this.activeMoves = [];
+    for (const m of this.activeMoves) {
+      const t = Math.min(1, (now - m.t0) / m.duration);
+      const eased = t * t * (3 - 2 * t);
+      m.root.x = m.fromX + (m.toX - m.fromX) * eased;
+      m.root.y = m.fromY + (m.toY - m.fromY) * eased;
+      if (t >= 1) {
+        m.root.x = m.toX;
+        m.root.y = m.toY;
+        m.resolve();
+      } else {
+        remaining.push(m);
+      }
+    }
+    this.activeMoves = remaining;
+    if (this.activeMoves.length === 0) {
+      Ticker.shared.remove(this.updateMoves, this);
+      this.moveTickerAdded = false;
+    }
+  };
+
+  private ensureEntityRoot(entityId: string, tileX: number, tileY: number): Container {
+    const root = new Container();
+    root.x = tileX * TILE;
+    root.y = tileY * TILE;
+    this.entityRoots.set(entityId, root);
+    this.entityLayer.addChild(root);
+    return root;
+  }
+
+  private fxTravelMs(fx: HitVisual["fx"] | undefined): number {
+    if (!fx || !this.usePixelArt || !this.attackFxFrames) return 0;
+    if (fx.kind === "melee_slash") return MELEE_SLASH_MS;
+    if (fx.kind === "vine_whip") return VINE_EXTEND_MS;
+    return PROJECTILE_TRAVEL_MS;
+  }
+
+  private vineRetractMs(fx: HitVisual["fx"], catchX: number, catchY: number): number {
+    if (!fx || fx.tipToX === undefined || fx.tipToY === undefined) {
+      return MOVE_ANIM_MS;
+    }
+    const steps = Math.max(
+      1,
+      Math.abs(fx.tipToX - catchX) + Math.abs(fx.tipToY - catchY),
+    );
+    return MOVE_ANIM_MS * Math.min(steps, 4);
+  }
+
+  private fxDurationMs(fx: HitVisual["fx"] | undefined, catchX = 0, catchY = 0): number {
     if (!fx || !this.usePixelArt || !this.attackFxFrames) return 0;
     if (fx.kind === "fireball") return PROJECTILE_TRAVEL_MS + FIREBALL_EXPLOSION_MS;
+    if (fx.kind === "vine_whip") return VINE_EXTEND_MS + this.vineRetractMs(fx, catchX, catchY);
     return this.fxTravelMs(fx);
+  }
+
+  /**
+   * Vine extends to the catch tile, then retracts while the target is pulled.
+   */
+  async playVineWhipPull(
+    hit: HitVisual,
+    move: { entityId: string; fromX: number; fromY: number; toX: number; toY: number },
+  ): Promise<void> {
+    this.playHits([hit]);
+    await new Promise<void>((resolve) => {
+      window.setTimeout(resolve, Math.max(VINE_EXTEND_MS, 1));
+    });
+    await this.playMove(move.entityId, move.fromX, move.fromY, move.toX, move.toY);
+  }
+
+  private drawVineSegments(
+    texture: Texture,
+    fromCx: number,
+    fromCy: number,
+    tipCx: number,
+    tipCy: number,
+  ): void {
+    const dx = tipCx - fromCx;
+    const dy = tipCy - fromCy;
+    const dist = Math.hypot(dx, dy);
+    if (dist < 2) return;
+    const spacing = TILE * 0.85;
+    const count = Math.max(1, Math.round(dist / spacing));
+    const rotation = Math.atan2(dy, dx);
+    for (let i = 0; i < count; i++) {
+      const t = Math.min(1, ((i + 0.5) * spacing) / dist);
+      const x = fromCx + dx * t;
+      const y = fromCy + dy * t;
+      this.fxLayer.addChild(this.makeFxSprite(texture, x, y, rotation));
+    }
   }
 
   private makeFxSprite(texture: Texture, cx: number, cy: number, rotation: number): Sprite {
@@ -291,7 +492,11 @@ export class GridView extends Container {
 
     this.hitAnims = this.hitAnims.filter((a) => {
       const elapsed = now - a.t0;
-      return elapsed < Math.max(this.fxDurationMs(a.fx), this.fxTravelMs(a.fx) + HIT_ANIM_MS);
+      const dur = Math.max(
+        this.fxDurationMs(a.fx, a.gx, a.gy),
+        this.fxTravelMs(a.fx) + HIT_ANIM_MS,
+      );
+      return elapsed < dur;
     });
 
     if (this.hitAnims.length === 0) {
@@ -331,6 +536,30 @@ export class GridView extends Container {
             this.fxLayer.addChild(this.makeFxSprite(texture, toCx, toCy, rotation));
           }
           damageStart = MELEE_SLASH_MS;
+        } else if (fx.kind === "vine_whip") {
+          const retractMs = this.vineRetractMs(fx, a.gx, a.gy);
+          const total = VINE_EXTEND_MS + retractMs;
+          if (elapsed < total) {
+            let tipX: number;
+            let tipY: number;
+            if (elapsed < VINE_EXTEND_MS) {
+              const t = elapsed / VINE_EXTEND_MS;
+              const eased = t * t * (3 - 2 * t);
+              tipX = fromCx + (toCx - fromCx) * eased;
+              tipY = fromCy + (toCy - fromCy) * eased;
+            } else {
+              const pullCx =
+                fx.tipToX !== undefined ? fx.tipToX * TILE + TILE / 2 : toCx;
+              const pullCy =
+                fx.tipToY !== undefined ? fx.tipToY * TILE + TILE / 2 : toCy;
+              const t = Math.min(1, (elapsed - VINE_EXTEND_MS) / retractMs);
+              const eased = t * t * (3 - 2 * t);
+              tipX = toCx + (pullCx - toCx) * eased;
+              tipY = toCy + (pullCy - toCy) * eased;
+            }
+            this.drawVineSegments(frames.vineWhipSegment, fromCx, fromCy, tipX, tipY);
+          }
+          damageStart = VINE_EXTEND_MS;
         } else {
           if (elapsed < PROJECTILE_TRAVEL_MS) {
             const t = elapsed / PROJECTILE_TRAVEL_MS;
@@ -402,10 +631,12 @@ export class GridView extends Container {
     this.lootLayer.removeChildren();
     this.fogLayer.removeChildren();
     this.entityLayer.removeChildren();
+    this.entityRoots.clear();
     this.collapseMarkerLayer.removeChildren();
     this.douvlonLineLayer.clear();
     this.darknessLayer.removeChildren();
     this.highlightLayer.removeChildren();
+    this.brainHighlightLayer.clear();
     this.gridLines.clear();
 
     const w = state.width;
@@ -612,12 +843,10 @@ export class GridView extends Container {
     for (const tw of state.tangleweeds) {
       if (tw.hp <= 0) continue;
       if (state.fogOfWar && !state.discovered.has(keyOf(tw))) continue;
-      const g = new Graphics();
-      const cx = tw.x * TILE + TILE * 0.5;
-      const cy = tw.y * TILE + TILE * 0.5;
-      const r = Math.max(4, Math.round(TILE * 0.16));
-      g.circle(cx, cy, r).fill({ color: 0x1e8449, alpha: 0.94 });
-      this.rockLayer.addChild(g);
+      const variant = stableBinaryVariant(tw.id);
+      const vine = this.makePlacedSprite(`tangleweed_vine_${variant}`, tw.x, tw.y);
+      if (tw.withered) vine.tint = 0x9a6841;
+      this.rockLayer.addChild(vine);
     }
 
     for (const loot of state.groundLoot) {
@@ -657,17 +886,11 @@ export class GridView extends Container {
       }
     }
 
-    const pSpr = this.makePlacedSprite("player", state.player.x, state.player.y);
-    this.entityLayer.addChild(pSpr);
-    const playerFire = this.makeFireOverlay(
-      state.player.x,
-      state.player.y,
-      state.player.fireLevels ?? 0,
-    );
-    if (playerFire) this.entityLayer.addChild(playerFire);
-    this.entityLayer.addChild(
-      this.makeEntityLabel("You", state.player.x * TILE, state.player.y * TILE, 0xffffff),
-    );
+    const playerRoot = this.ensureEntityRoot("player", state.player.x, state.player.y);
+    playerRoot.addChild(this.makePlacedSprite("player", 0, 0));
+    const playerFire = this.makeFireOverlay(0, 0, state.player.fireLevels ?? 0);
+    if (playerFire) playerRoot.addChild(playerFire);
+    playerRoot.addChild(this.makeEntityLabel("You", 0, 0, 0xffffff));
 
     const douvlonPairs = new Map<string, { red?: { x: number; y: number }; blue?: { x: number; y: number }; visibleCount: number }>();
     for (const m of state.monsters) {
@@ -685,63 +908,98 @@ export class GridView extends Container {
       if (state.fogOfWar && !state.discovered.has(keyOf(m))) continue;
       const def = state.monsterDefs.get(m.defId);
       const mimicChest = m.defId === "mimic" && m.mimicAsleep;
-      const spr = this.makePlacedSprite(
-        mimicChest ? "chest" : def?.spriteId ?? "enemy_slime",
-        m.x,
-        m.y,
-      );
+      const archerAiming =
+        m.defId === "skeleton_archer" &&
+        (m.aiStateId === "aiming" || m.bowLoaded);
+      const spriteId =
+        m.defId === "skeleton" && m.skeletonWeapon
+          ? `enemy_skeleton_${m.skeletonWeapon}`
+          : archerAiming
+            ? "enemy_skeleton_archer_aiming"
+            : def?.spriteId ?? "enemy_slime";
+      const root = this.ensureEntityRoot(m.id, m.x, m.y);
+      const spr = this.makePlacedSprite(mimicChest ? "chest" : spriteId, 0, 0);
       if (m.defId === "douvlon") {
         const tint = m.douvlonColor === "blue" ? 0x5dade2 : 0xe74c3c;
         spr.tint = tint;
       }
-      this.entityLayer.addChild(spr);
-      const monsterFire = this.makeFireOverlay(m.x, m.y, m.fireLevels ?? 0);
-      if (monsterFire) this.entityLayer.addChild(monsterFire);
-      if (m.defId === "slime" && m.leapTarget != null) {
-        const r = Math.max(3, Math.round(TILE * 0.11));
-        const cx = m.x * TILE + Math.max(2, inset / 3) + r;
-        const cy = m.y * TILE + Math.max(2, inset / 3) + r;
-        const dot = new Graphics();
-        dot.circle(cx, cy, r).fill({ color: 0xe74c3c, alpha: 0.95 });
-        this.entityLayer.addChild(dot);
+      root.addChild(spr);
+      const monsterFire = this.makeFireOverlay(0, 0, m.fireLevels ?? 0);
+      if (monsterFire) root.addChild(monsterFire);
+      if ((m.poisonLevels ?? 0) > 0) {
+        const levels = m.poisonLevels ?? 0;
+        const poisonId =
+          levels >= 5 ? "poison_major" : levels >= 3 ? "poison_medium" : "poison_minor";
+        const style = this.styles.get(poisonId);
+        if (this.usePixelArt && style?.kind === "texture") {
+          root.addChild(this.makePlacedSprite(poisonId, 0, 0));
+        } else {
+          const r = Math.max(3, Math.round(TILE * 0.11));
+          const dot = new Graphics();
+          dot.circle(TILE - r - 3, r + 3, r).fill({ color: 0x65a30d, alpha: 0.95 });
+          root.addChild(dot);
+        }
       }
-      if ((m.defId === "skeleton" || m.defId === "skeleton_archer") && m.skeletonWeapon) {
-        const badge = this.makeSkeletonWeaponIcon(m.skeletonWeapon);
-        const badgeScale = Math.max(0.78, TILE / 48);
-        badge.scale.set(badgeScale);
-        badge.x = m.x * TILE + 1;
-        badge.y = m.y * TILE + 1;
-        this.entityLayer.addChild(badge);
-      }
-      if (m.defId === "skeleton_archer" && m.bowLoaded) {
-        const r = Math.max(3, Math.round(TILE * 0.11));
-        const cx = m.x * TILE + Math.max(2, inset / 3) + r;
-        const cy = m.y * TILE + Math.max(2, inset / 3) + r;
-        const dot = new Graphics();
-        dot.circle(cx, cy, r).fill({ color: 0xf39c12, alpha: 0.95 });
-        this.entityLayer.addChild(dot);
+      if (m.defId === "slime" && (m.leapDir != null || m.leapTarget != null)) {
+        const dir =
+          m.leapDir ??
+          (m.leapTarget
+            ? {
+                x: Math.sign(m.leapTarget.x - m.x) || 0,
+                y: Math.sign(m.leapTarget.y - m.y) || 0,
+              }
+            : null);
+        if (dir && (dir.x !== 0 || dir.y !== 0)) {
+          const arrow = new Graphics();
+          const cx = TILE / 2;
+          const cy = TILE / 2;
+          const len = TILE * 0.28;
+          const tipX = cx + dir.x * len;
+          const tipY = cy + dir.y * len;
+          const backX = cx - dir.x * len * 0.35;
+          const backY = cy - dir.y * len * 0.35;
+          const px = -dir.y;
+          const py = dir.x;
+          const wing = TILE * 0.12;
+          arrow
+            .poly([
+              tipX,
+              tipY,
+              backX + px * wing,
+              backY + py * wing,
+              backX - px * wing,
+              backY - py * wing,
+            ])
+            .fill({ color: 0xe74c3c, alpha: 0.95 });
+          root.addChild(arrow);
+        } else {
+          const r = Math.max(3, Math.round(TILE * 0.11));
+          const cx = Math.max(2, inset / 3) + r;
+          const cy = Math.max(2, inset / 3) + r;
+          const dot = new Graphics();
+          dot.circle(cx, cy, r).fill({ color: 0xe74c3c, alpha: 0.95 });
+          root.addChild(dot);
+        }
       }
       if (m.defId === "corrupted_shade") {
         const r = Math.max(3, Math.round(TILE * 0.11));
-        const baseX = m.x * TILE + Math.max(2, inset / 3) + r;
-        const baseY = m.y * TILE + Math.max(2, inset / 3) + r;
+        const baseX = Math.max(2, inset / 3) + r;
+        const baseY = Math.max(2, inset / 3) + r;
         if (m.darkBoltReady) {
           const dot = new Graphics();
           dot.circle(baseX, baseY, r).fill({ color: 0x8e44ad, alpha: 0.95 });
-          this.entityLayer.addChild(dot);
+          root.addChild(dot);
         }
         if (m.blackShieldActive) {
           const dot = new Graphics();
           const ox = m.darkBoltReady ? r * 2 + 1 : 0;
           dot.circle(baseX + ox, baseY, r).fill({ color: 0x2980b9, alpha: 0.95 });
-          this.entityLayer.addChild(dot);
+          root.addChild(dot);
         }
       }
       if (!mimicChest) {
         const label = def?.name ?? "?";
-        this.entityLayer.addChild(
-          this.makeEntityLabel(`${label} ${m.hp}hp`, m.x * TILE, m.y * TILE, 0xf5e6ff),
-        );
+        root.addChild(this.makeEntityLabel(`${label} ${m.hp}hp`, 0, 0, 0xf5e6ff));
       }
     }
 
@@ -761,7 +1019,7 @@ export class GridView extends Container {
     }
 
     this.darknessLayer.eventMode = "none";
-    if (state.lightsOutTurns > 0) {
+    if (state.lightsOutTurns > 0 && !state.editorMode) {
       const px = state.player.x;
       const py = state.player.y;
       const entityHintAt = (gx: number, gy: number): boolean => {
@@ -806,15 +1064,11 @@ export class GridView extends Container {
       }
 
       const mer = sf.merchant;
-      if (!state.fogOfWar || state.discovered.has(keyOf(mer))) {
-        const ox = mer.x * TILE + tileInset / 2;
-        const oy = mer.y * TILE + tileInset / 2;
-        const sz = TILE - tileInset;
-        const mg = new Graphics();
-        mg.roundRect(ox, oy, sz, sz, 3)
-          .fill({ color: 0xa0522d, alpha: 0.96 })
-          .stroke({ width: 2.5, color: 0xf1c40f, alpha: 1 });
-        this.entityLayer.addChild(mg);
+      if (
+        state.merchantState &&
+        (!state.fogOfWar || state.discovered.has(keyOf(mer)))
+      ) {
+        this.entityLayer.addChild(this.makePlacedSprite("merchant_shifty", mer.x, mer.y));
       }
 
       for (const d of sf.exitDoorCells) {
@@ -836,50 +1090,61 @@ export class GridView extends Container {
       }
     }
 
+    for (const cloud of state.harmingClouds) {
+      if (cloud.turnsLeft <= 0) continue;
+      if (state.fogOfWar && !state.discovered.has(keyOf(cloud))) continue;
+      const frame = Math.floor(performance.now() / 1000) % 4;
+      const cloudId = `harming_cloud_${frame}`;
+      const style = this.styles.get(cloudId);
+      if (this.usePixelArt && style?.kind === "texture") {
+        this.entityLayer.addChild(this.makePlacedSprite(cloudId, cloud.x, cloud.y));
+      } else {
+        const g = new Graphics();
+        g.circle(cloud.x * TILE + TILE / 2, cloud.y * TILE + TILE / 2, TILE * 0.32).fill({
+          color: 0x8b4513,
+          alpha: 0.55,
+        });
+        this.entityLayer.addChild(g);
+      }
+    }
+    this.ensureHarmingCloudTicker(state);
+
+    this.drawBrainHighlights(state);
     this.drawHighlights(state);
   }
 
-  /** Tiny weapon silhouette (14×14 design units) for skeleton AI readability. */
-  private makeSkeletonWeaponIcon(weapon: SkeletonWeapon): Graphics {
-    const g = new Graphics();
-    const blade = 0xd5d8dc;
-    const bladeHi = 0xecf0f1;
-    const guard = 0x2c3e50;
-    const grip = 0x5d4037;
-    const shaft = 0x6d4c41;
-    const head = 0x90a4ae;
+  private drawBrainHighlights(state: GameState): void {
+    this.brainHighlightLayer.clear();
+    const id = this.brainInspectMonsterId;
+    if (!id || !state.editorMode || state.pending) return;
+    const mon = state.monsters.find((m) => m.id === id && m.hp > 0);
+    if (!mon) return;
+    const ai = state.monsterDefs.get(mon.defId)?.ai;
+    if (!ai) return;
+    const stateId = mon.aiStateId ?? ai.initialState;
+    const stateDef = ai.states.find((st) => st.id === stateId) ?? ai.states[0];
+    const prefs = stateDef ? resolveTilePrefs(stateDef, mon) : undefined;
+    if (!prefs) return;
 
-    switch (weapon) {
-      case "sword":
-        g.poly([7, 1, 8, 1, 8.5, 9.5, 6.5, 9.5]).fill({ color: blade });
-        g.poly([6.5, 5, 9, 5, 8.8, 9.5, 6.7, 9.5]).fill({ color: bladeHi, alpha: 0.35 });
-        g.rect(4.5, 10, 6, 1.4).fill({ color: guard });
-        g.roundRect(6.5, 11.3, 2, 3.2, 0.6).fill({ color: grip });
-        break;
-      case "spear":
-        g.moveTo(3.5, 13).lineTo(11, 3.5).stroke({ width: 2.1, color: shaft, cap: "round" });
-        g.poly([11, 3.5, 12.8, 2.2, 10.6, 2.8]).fill({ color: blade });
-        g.poly([11, 3.5, 12.2, 2.8, 10.9, 3.2]).fill({ color: bladeHi, alpha: 0.4 });
-        break;
-      case "axe":
-        g.rect(7, 6.5, 2, 8).fill({ color: shaft });
-        g.poly([1.5, 3.5, 7, 2, 7, 8.5, 2.5, 7.5]).fill({ color: head });
-        g.poly([2, 4.5, 6.2, 3.2, 6.2, 7.3, 2.8, 6.4]).fill({ color: bladeHi, alpha: 0.25 });
-        break;
-      case "scimitar":
-        g.moveTo(2, 12)
-          .quadraticCurveTo(5, 3, 12, 7)
-          .lineTo(11, 9)
-          .quadraticCurveTo(6, 11, 2, 12)
-          .closePath()
-          .fill({ color: blade });
-        g.moveTo(3.5, 10)
-          .quadraticCurveTo(6, 5, 10.5, 7.5)
-          .stroke({ width: 1.2, color: bladeHi, alpha: 0.5 });
-        g.roundRect(10.5, 9.5, 2.2, 3.8, 0.5).fill({ color: grip });
-        break;
+    const favored = prefs.favored;
+    const secondary = prefs.secondary;
+    const bad = prefs.bad;
+    if (!favored?.length && !secondary?.length && !bad?.length) return;
+
+    for (let y = 0; y < state.height; y++) {
+      for (let x = 0; x < state.width; x++) {
+        const tile = { x, y };
+        if (state.fogOfWar && !state.discovered.has(keyOf(tile))) continue;
+        let color: number | null = null;
+        if (tileMatchesAnyPref(state, mon, tile, bad)) color = 0xe74c3c;
+        else if (tileMatchesAnyPref(state, mon, tile, favored)) color = 0x2ecc71;
+        else if (tileMatchesAnyPref(state, mon, tile, secondary)) color = 0xf1c40f;
+        if (color === null) continue;
+        this.brainHighlightLayer
+          .rect(x * TILE, y * TILE, TILE, TILE)
+          .fill({ color, alpha: 0.38 });
+      }
     }
-    return g;
   }
 
   private makeEntityLabel(text: string, tileX: number, tileY: number, color: number): Text {
@@ -988,6 +1253,14 @@ export class GridView extends Container {
     }
     const rockKeys = new Set(state.rocks.map((r) => keyOf(r)));
     const bridgeKeys = this.bridgeKeySet(state);
+    const attackTargets = new Map<string, { x: number; y: number }>();
+    const addAttackTarget = (target: { x: number; y: number }) => {
+      if (state.fogOfWar && !state.discovered.has(keyOf(target))) return;
+      attackTargets.set(keyOf(target), { x: target.x, y: target.y });
+    };
+    for (const m of state.monsters) if (m.hp > 0) addAttackTarget(m);
+    for (const pot of state.pots) addAttackTarget(pot);
+    for (const tw of state.tangleweeds) if (tw.hp > 0) addAttackTarget(tw);
     if (pending.kind === "water_escape") {
       const occW = new Set<string>();
       for (const m of state.monsters) {
@@ -1064,22 +1337,40 @@ export class GridView extends Container {
         occ,
       );
     }
-    if (pending.kind === "play_card_seeker" || pending.kind === "move_token_step") {
+    if (
+      pending.kind === "play_card_seeker" ||
+      pending.kind === "play_loot_and_scoot" ||
+      pending.kind === "move_token_step"
+    ) {
+      const range =
+        pending.kind === "play_card_seeker" || pending.kind === "play_loot_and_scoot"
+          ? pending.range
+          : state.player.hasteThisTurn
+            ? 2
+            : 1;
       const base = reachableOrthogonal(
         state.tiles,
         state.width,
         state.height,
         from,
-        1,
+        range,
         occ,
         rockKeys,
         bridgeKeys,
       );
       const needExtra =
-        pending.kind === "play_card_seeker"
+        pending.kind === "play_card_seeker" || pending.kind === "play_loot_and_scoot"
           ? state.player.hand.length >= 2
           : state.player.hand.length >= 1;
-      return extendReachableWithBlockedDestinations(
+      if (pending.kind === "play_loot_and_scoot") {
+        return new Set(
+          [...base].filter((k) => {
+            const [x, y] = k.split(",").map(Number);
+            return state.tiles[y]?.[x] === "floor";
+          }),
+        );
+      }
+      const reachable = extendReachableWithBlockedDestinations(
         base,
         from,
         state.tiles,
@@ -1088,11 +1379,14 @@ export class GridView extends Container {
         needExtra,
         occ,
       );
+      return reachable;
     }
     if (
       pending.kind === "play_melee" ||
       pending.kind === "play_knife" ||
       pending.kind === "play_axe" ||
+      pending.kind === "play_mace_smash" ||
+      pending.kind === "play_poisoned_blade" ||
       pending.kind === "discard_punch"
     ) {
       const adj = new Set<string>();
@@ -1107,53 +1401,90 @@ export class GridView extends Container {
           adj.add(keyOf(t));
         }
       }
-      // Same-tile tangleweed (spawned on you) can be attacked in place.
-      if (
-        state.tangleweeds.some((tw) => tw.hp > 0 && tw.x === from.x && tw.y === from.y) &&
-        (pending.kind === "play_melee" || pending.kind === "discard_punch")
-      ) {
+      // Tangleweed can spawn on the player; all adjacent-style attacks may hit it in place.
+      if (attackTargets.has(keyOf(from))) {
         adj.add(keyOf(from));
       }
       return adj;
     }
 
+    if (pending.kind === "play_great_sword") {
+      const cells = new Set<string>();
+      for (const o of [
+        { x: 1, y: 0 },
+        { x: -1, y: 0 },
+        { x: 0, y: 1 },
+        { x: 0, y: -1 },
+      ]) {
+        const target = { x: from.x + o.x, y: from.y + o.y };
+        if (attackTargets.has(keyOf(target))) cells.add(keyOf(target));
+      }
+      for (const target of attackTargets.values()) {
+        const dx = target.x - from.x;
+        const dy = target.y - from.y;
+        const straight = dx === 0 || dy === 0 || Math.abs(dx) === Math.abs(dy);
+        if (!straight || Math.max(Math.abs(dx), Math.abs(dy)) !== 2) continue;
+        const middle = { x: from.x + dx / 2, y: from.y + dy / 2 };
+        const blocked =
+          state.tiles[middle.y]?.[middle.x] !== "floor" ||
+          attackTargets.has(keyOf(middle)) ||
+          state.chests.some((c) => c.x === middle.x && c.y === middle.y) ||
+          state.rocks.some((r) => r.x === middle.x && r.y === middle.y);
+        if (!blocked) cells.add(keyOf(target));
+      }
+      return cells;
+    }
+
+    if (pending.kind === "play_flying_kick") {
+      const cells = new Set<string>();
+      for (const o of [
+        { x: 1, y: 0 },
+        { x: -1, y: 0 },
+        { x: 0, y: 1 },
+        { x: 0, y: -1 },
+      ]) {
+        const path = Array.from({ length: pending.move }, (_, i) => ({
+          x: from.x + o.x * (i + 1),
+          y: from.y + o.y * (i + 1),
+        }));
+        const blocked = path.some(
+          (cell) =>
+            state.tiles[cell.y]?.[cell.x] !== "floor" ||
+            state.rocks.some((r) => r.x === cell.x && r.y === cell.y) ||
+            state.chests.some((c) => c.x === cell.x && c.y === cell.y),
+        );
+        if (!blocked) cells.add(keyOf(path[path.length - 1]!));
+      }
+      return cells;
+    }
+
     if (pending.kind === "play_spear") {
       const cells = new Set<string>();
-      for (const m of state.monsters) {
-        if (m.hp <= 0) continue;
-        if (state.fogOfWar && !state.discovered.has(keyOf(m))) continue;
-        const dx = m.x - from.x;
-        const dy = m.y - from.y;
+      for (const target of attackTargets.values()) {
+        const dx = target.x - from.x;
+        const dy = target.y - from.y;
         if (dx !== 0 && dy !== 0) continue;
         const dist = Math.abs(dx) + Math.abs(dy);
         if (dist !== 1 && dist !== 2) continue;
-        cells.add(keyOf(m));
-      }
-      for (const pot of state.pots) {
-        if (state.fogOfWar && !state.discovered.has(keyOf(pot))) continue;
-        const dx = pot.x - from.x;
-        const dy = pot.y - from.y;
-        if (dx !== 0 && dy !== 0) continue;
-        const dist = Math.abs(dx) + Math.abs(dy);
-        if (dist !== 1 && dist !== 2) continue;
-        cells.add(keyOf(pot));
+        cells.add(keyOf(target));
       }
       return cells;
     }
 
     if (pending.kind === "play_magic_missile") {
       const cells = new Set<string>();
-      for (const m of state.monsters) {
-        if (m.hp <= 0) continue;
-        if (state.fogOfWar && !state.discovered.has(keyOf(m))) continue;
-        if (magicMissilePathClear(state.tiles, state.monsters, from, m)) cells.add(keyOf(m));
-      }
-      for (const pot of state.pots) {
-        if (state.fogOfWar && !state.discovered.has(keyOf(pot))) continue;
+      for (const target of attackTargets.values()) {
         if (
-          magicMissilePathClearToPoint(state.tiles, state.monsters, state.pots, from, pot.x, pot.y)
+          magicMissilePathClearToPoint(
+            state.tiles,
+            state.monsters,
+            state.pots,
+            from,
+            target.x,
+            target.y,
+          )
         ) {
-          cells.add(keyOf(pot));
+          cells.add(keyOf(target));
         }
       }
       return cells;
@@ -1165,17 +1496,16 @@ export class GridView extends Container {
         const t = { x: from.x + o.x, y: from.y + o.y };
         if (t.x >= 0 && t.y >= 0 && t.x < state.width && t.y < state.height) adj.add(keyOf(t));
       }
+      if (attackTargets.has(keyOf(from))) adj.add(keyOf(from));
       return adj;
     }
 
     if (pending.kind === "play_bow_attack") {
       const cells = new Set<string>();
-      for (const m of state.monsters) {
-        if (m.hp <= 0) continue;
-        if (state.fogOfWar && !state.discovered.has(keyOf(m))) continue;
-        if (manhattan(from, m) <= 1) continue;
-        if (chebyshev(from, m) > pending.range) continue;
-        if (lineOfSightClear(state.tiles, from, { x: m.x, y: m.y })) cells.add(keyOf(m));
+      for (const target of attackTargets.values()) {
+        if (manhattan(from, target) <= 1) continue;
+        if (chebyshev(from, target) > pending.range) continue;
+        if (lineOfSightClear(state.tiles, from, target)) cells.add(keyOf(target));
       }
       return cells;
     }
@@ -1187,14 +1517,12 @@ export class GridView extends Container {
         pending.hitIds.length === 0
           ? from
           : (() => {
-              const lastMon = state.monsters.find((m) => m.id === pending.hitIds[pending.hitIds.length - 1]);
-              return lastMon ? { x: lastMon.x, y: lastMon.y } : from;
+              const [x, y] = pending.hitIds[pending.hitIds.length - 1]!.split(",").map(Number);
+              return { x, y };
             })();
-      for (const m of state.monsters) {
-        if (m.hp <= 0) continue;
-        if (state.fogOfWar && !state.discovered.has(keyOf(m))) continue;
-        if (pending.hitIds.includes(m.id)) continue;
-        if (chebyshev(origin, { x: m.x, y: m.y }) <= pending.nextDamage) cells.add(keyOf(m));
+      for (const target of attackTargets.values()) {
+        if (pending.hitIds.includes(keyOf(target))) continue;
+        if (chebyshev(origin, target) <= pending.nextDamage) cells.add(keyOf(target));
       }
       return cells;
     }
@@ -1213,8 +1541,55 @@ export class GridView extends Container {
       return cells;
     }
 
+    if (pending.kind === "play_potion_of_harming") {
+      const cells = new Set<string>();
+      for (let y = 0; y < state.height; y++) {
+        for (let x = 0; x < state.width; x++) {
+          const t = { x, y };
+          if (chebyshev(from, t) > pending.range) continue;
+          if (state.tiles[y]?.[x] === "wall") continue;
+          if (state.fogOfWar && !state.discovered.has(keyOf(t))) continue;
+          cells.add(keyOf(t));
+        }
+      }
+      return cells;
+    }
+
     return new Set();
   }
+
+  private ensureHarmingCloudTicker(state: GameState): void {
+    const active = state.harmingClouds.some((c) => c.turnsLeft > 0);
+    if (!active) {
+      if (this.harmingCloudTickerAdded) {
+        Ticker.shared.remove(this.updateHarmingCloudAnim, this);
+        this.harmingCloudTickerAdded = false;
+      }
+      this.lastHarmingCloudFrame = -1;
+      return;
+    }
+    if (!this.harmingCloudTickerAdded) {
+      Ticker.shared.add(this.updateHarmingCloudAnim, this);
+      this.harmingCloudTickerAdded = true;
+    }
+  }
+
+  private updateHarmingCloudAnim = (): void => {
+    if (this.presentationLocked) return;
+    const s = this.latestState;
+    if (!s || !s.harmingClouds.some((c) => c.turnsLeft > 0)) {
+      if (this.harmingCloudTickerAdded) {
+        Ticker.shared.remove(this.updateHarmingCloudAnim, this);
+        this.harmingCloudTickerAdded = false;
+      }
+      this.lastHarmingCloudFrame = -1;
+      return;
+    }
+    const frame = Math.floor(performance.now() / 1000) % 4;
+    if (frame === this.lastHarmingCloudFrame) return;
+    this.lastHarmingCloudFrame = frame;
+    this.sync(s);
+  };
 
   private makeSprite(id: string): Sprite {
     const style = this.styles.get(id) ?? { kind: "tinted" as const, tint: 0x888888 };

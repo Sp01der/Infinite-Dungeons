@@ -1,4 +1,4 @@
-import { Assets, Texture } from "pixi.js";
+import { Assets, Rectangle, Texture } from "pixi.js";
 import bundledManifest from "../content/sprites-manifest.json";
 
 export type SpriteStyle =
@@ -10,6 +10,8 @@ export interface ManifestFile {
     string,
     {
       texture?: string;
+      /** Optional [x, y, width, height] region within a sprite sheet. */
+      frame?: [number, number, number, number];
       fallbackColor?: string;
       alpha?: number;
     }
@@ -26,7 +28,7 @@ function parseHex(hex: string): number {
  * so public textures/overrides win without dropping newer sprite ids.
  */
 async function resolveManifest(manifestUrl: string): Promise<ManifestFile> {
-  const bundled = bundledManifest as ManifestFile;
+  const bundled = bundledManifest as unknown as ManifestFile;
   const merged: ManifestFile = {
     sprites: { ...bundled.sprites },
   };
@@ -61,9 +63,15 @@ export async function loadSpriteStyles(manifestUrl: string): Promise<Map<string,
           data: { scaleMode: "nearest" },
         });
         if (texture.source) texture.source.scaleMode = "nearest";
+        const resolvedTexture = entry.frame
+          ? new Texture({
+              source: texture.source,
+              frame: new Rectangle(...entry.frame),
+            })
+          : texture;
         map.set(id, {
           kind: "texture",
-          texture,
+          texture: resolvedTexture,
           fallbackTint,
           alpha: entry.alpha,
         });

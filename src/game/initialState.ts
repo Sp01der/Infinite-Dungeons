@@ -98,7 +98,7 @@ export function appendGoldSeekerBonusCoin(s: GameState): GameState {
 
 const STARTER_COMMONS = ["spear", "knife", "axe", "quickstep"] as const;
 
-function buildStartingDeck(): string[] {
+export function buildStartingDeck(): string[] {
   const pool = [...STARTER_COMMONS];
   shuffleInPlace(pool);
   const pickA = pool[0]!;
@@ -593,6 +593,10 @@ export function createInitialState(floorDef: FloorDef): GameState {
       gold: 0,
       bread: 0,
       herb: 0,
+      gems: { strength: 0, speed: 0, luck: 0, cards: 0, healing: 0 },
+      nextPhysicalAttackMultiplier: 1,
+      nextMoveDoubled: false,
+      gemLuckRestore: null,
       drawPile: buildStartingDeck(),
       discardPile: [],
       hand: [],
@@ -606,7 +610,7 @@ export function createInitialState(floorDef: FloorDef): GameState {
       skillsUnlocked: [],
       moveTokens: 0,
       knockbackTokens: 0,
-      knockbackPrimed: false,
+      knockbackPrimed: 0,
       movementCardsPlayedThisTurn: 0,
       scoutUsesThisTurn: 0,
       hasteThisTurn: false,
@@ -623,6 +627,7 @@ export function createInitialState(floorDef: FloorDef): GameState {
     bridgeTiles: [],
     floodingRoomId: null,
     pendingStalactites: [],
+    harmingClouds: [],
     tangleweeds: [],
     themePickHistory: {},
     roomIds,
@@ -633,11 +638,14 @@ export function createInitialState(floorDef: FloorDef): GameState {
     monsterDefs,
     dungeonCardDefs: loadDungeonCardDefs(),
     pending: null,
+    dualWieldStage: null,
     chestOffer: null,
     cardPickupOffer: null,
     deckBuilderOffer: null,
     gauntletCommenced: false,
     stairFeatures: null,
+    shiftyMet: false,
+    merchantState: null,
     pedestalUsed: false,
     pedestalOffer: null,
     deckDestroyPending: false,
@@ -649,6 +657,8 @@ export function createInitialState(floorDef: FloorDef): GameState {
     lightsOutTurns: 0,
     chanceMode: "normal",
     chancePlayerOnly: false,
+    editorMode: false,
+    editorModeBackup: null,
     log: [
       "Welcome to the dungeon.",
       `${monsters.length} monster(s), ${pots.length} pot(s), ${chests.length} chest(s), ${groundLoot.length} ground loot spot(s).`,
@@ -709,6 +719,10 @@ export function createInitialStateGenerated(depth = 1): GameState {
       gold: 0,
       bread: 0,
       herb: 0,
+      gems: { strength: 0, speed: 0, luck: 0, cards: 0, healing: 0 },
+      nextPhysicalAttackMultiplier: 1,
+      nextMoveDoubled: false,
+      gemLuckRestore: null,
       drawPile: buildStartingDeck(),
       discardPile: [],
       hand: [],
@@ -722,7 +736,7 @@ export function createInitialStateGenerated(depth = 1): GameState {
       skillsUnlocked: [],
       moveTokens: 0,
       knockbackTokens: 0,
-      knockbackPrimed: false,
+      knockbackPrimed: 0,
       movementCardsPlayedThisTurn: 0,
       scoutUsesThisTurn: 0,
       hasteThisTurn: false,
@@ -739,6 +753,7 @@ export function createInitialStateGenerated(depth = 1): GameState {
     bridgeTiles: [...gen.bridgeTiles],
     floodingRoomId: null,
     pendingStalactites: [],
+    harmingClouds: [],
     tangleweeds: [],
     themePickHistory: bumpThemeHistory({}, gen.floorTheme),
     roomIds,
@@ -749,11 +764,14 @@ export function createInitialStateGenerated(depth = 1): GameState {
     monsterDefs,
     dungeonCardDefs: loadDungeonCardDefs(),
     pending: null,
+    dualWieldStage: null,
     chestOffer: null,
     cardPickupOffer: null,
     deckBuilderOffer: null,
     gauntletCommenced: false,
     stairFeatures: null,
+    shiftyMet: false,
+    merchantState: null,
     pedestalUsed: false,
     pedestalOffer: null,
     deckDestroyPending: false,
@@ -765,6 +783,8 @@ export function createInitialStateGenerated(depth = 1): GameState {
     lightsOutTurns: 0,
     chanceMode: "normal",
     chancePlayerOnly: false,
+    editorMode: false,
+    editorModeBackup: null,
     log: [
       "Welcome to the dungeon.",
       `Theme: ${themeDisplayName(gen.floorTheme)}.`,
@@ -786,8 +806,8 @@ export function createNextFloorState(
   const gen = generateFloor({ depth, theme });
   const monsterDefs = prev.monsterDefs;
   const { width, height, tiles, playerStart, roomIds, roomKinds } = gen;
-  const fogOfWar = true;
-  const discovered = buildDiscovered(fogOfWar, tiles, roomIds, width, height, playerStart);
+  const fogOfWar = !prev.editorMode;
+  const discovered = buildDiscovered(true, tiles, roomIds, width, height, playerStart);
   const { monsters, pots, chests } = placePropsByRoom(
     tiles,
     roomIds,
@@ -851,11 +871,14 @@ export function createNextFloorState(
       doublePunchThisTurn: false,
       moveTokens: 0,
       knockbackTokens: 0,
-      knockbackPrimed: false,
+      knockbackPrimed: 0,
       movementCardsPlayedThisTurn: 0,
       scoutUsesThisTurn: 0,
       hasteThisTurn: false,
       fireLevels: 0,
+      nextPhysicalAttackMultiplier: 1,
+      nextMoveDoubled: false,
+      gemLuckRestore: null,
     },
     depth,
     danger,
@@ -868,6 +891,7 @@ export function createNextFloorState(
     bridgeTiles: [...gen.bridgeTiles],
     floodingRoomId: null,
     pendingStalactites: [],
+    harmingClouds: [],
     tangleweeds: [],
     themePickHistory: bumpThemeHistory(prev.themePickHistory, gen.floorTheme),
     roomIds,
@@ -878,11 +902,14 @@ export function createNextFloorState(
     monsterDefs,
     dungeonCardDefs: prev.dungeonCardDefs,
     pending: null,
+    dualWieldStage: null,
     chestOffer: null,
     cardPickupOffer: null,
     deckBuilderOffer: prev.deckBuilderOffer,
     gauntletCommenced: false,
     stairFeatures: null,
+    shiftyMet: prev.shiftyMet,
+    merchantState: null,
     pedestalUsed: false,
     pedestalOffer: null,
     deckDestroyPending: false,
@@ -894,6 +921,8 @@ export function createNextFloorState(
     lightsOutTurns: 0,
     chanceMode: prev.chanceMode,
     chancePlayerOnly: prev.chancePlayerOnly,
+    editorMode: prev.editorMode,
+    editorModeBackup: prev.editorModeBackup,
     log: [
       ...prev.log.slice(-48),
       `You descend to Floor ${depth} · ${themeDisplayName(gen.floorTheme)}.`,

@@ -258,6 +258,17 @@ body {
   height: 4.5rem;
 }
 
+.dungeon-deck-visual.is-inspectable {
+  cursor: pointer;
+}
+
+.dungeon-deck-visual.is-inspectable:hover,
+.dungeon-deck-visual.is-inspectable:focus-visible {
+  filter: brightness(1.18);
+  outline: 2px solid #c9a227;
+  outline-offset: 3px;
+}
+
 .dungeon-card-back {
   position: absolute;
   left: calc(var(--i, 0) * 2px);
@@ -584,6 +595,22 @@ button.pile-inspect:focus-visible {
 }
 
 .item-pill--herb:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.item-pill--gem {
+  border-color: #5a4a7a;
+  background: linear-gradient(145deg, #1a1624, #121018);
+  cursor: pointer;
+}
+
+.item-pill--gem:hover:not(:disabled) {
+  border-color: #8a6ab8;
+  background: linear-gradient(145deg, #221c30, #16121c);
+}
+
+.item-pill--gem:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
@@ -994,6 +1021,143 @@ button.pile-inspect:focus-visible {
 
 .pile-inspector-close:hover {
   background: #343c50;
+}
+
+.monster-brain {
+  position: fixed;
+  top: 4.5rem;
+  right: 0.75rem;
+  z-index: 120;
+  width: min(18.5rem, calc(100vw - 1.5rem));
+  max-height: min(70vh, 32rem);
+  overflow: auto;
+  padding: 0.75rem 0.85rem 0.9rem;
+  border-radius: 10px;
+  border: 2px solid #4a5068;
+  background: linear-gradient(165deg, rgba(28, 31, 42, 0.96), rgba(18, 20, 28, 0.96));
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+}
+
+.monster-brain[hidden] {
+  display: none !important;
+}
+
+.monster-brain-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-bottom: 0.2rem;
+}
+
+.monster-brain-heading {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #eef0f5;
+}
+
+.monster-brain-close {
+  flex-shrink: 0;
+  width: 1.6rem;
+  height: 1.6rem;
+  padding: 0;
+  font: inherit;
+  font-size: 1.15rem;
+  line-height: 1;
+  color: #c5cad6;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.monster-brain-close:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.monster-brain-subtitle {
+  margin: 0 0 0.55rem;
+  font-size: 0.72rem;
+  color: #8a93a8;
+}
+
+.monster-brain-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-bottom: 0.65rem;
+}
+
+.monster-brain-swatch {
+  font-size: 0.65rem;
+  font-weight: 600;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  color: #0d1118;
+}
+
+.monster-brain-swatch.is-favored {
+  background: #2ecc71;
+}
+
+.monster-brain-swatch.is-secondary {
+  background: #f1c40f;
+}
+
+.monster-brain-swatch.is-bad {
+  background: #e74c3c;
+  color: #fff;
+}
+
+.monster-brain-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  font-size: 0.78rem;
+  color: #dce0eb;
+}
+
+.monster-brain-section {
+  padding: 0.45rem 0.5rem;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.monster-brain-section h3 {
+  margin: 0 0 0.3rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #8a93a8;
+}
+
+.monster-brain-section ul {
+  margin: 0;
+  padding-left: 1rem;
+}
+
+.monster-brain-section li {
+  margin: 0.15rem 0;
+}
+
+.monster-brain-muted {
+  color: #8a93a8;
+}
+
+.monster-brain-rule {
+  margin-top: 0.35rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.monster-brain-rule:first-of-type {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
 }
 
 .chest-offer {
@@ -1702,4 +1866,111 @@ button.pile-inspect:focus-visible {
   border: 1px solid #3d354e;
   border-radius: 4px;
   padding: 0.05rem 0.25rem;
+}
+
+/* Shifty merchant dialogue — pixel box near top of the stage */
+.shifty-dialogue {
+  position: fixed;
+  top: 4.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 230;
+  pointer-events: none;
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity 0.15s ease, visibility 0.15s;
+}
+
+.shifty-dialogue.is-open {
+  pointer-events: auto;
+  visibility: visible;
+  opacity: 1;
+}
+
+.shifty-dialogue-box {
+  position: relative;
+  width: min(36rem, calc(100vw - 2rem));
+  aspect-ratio: 120 / 48;
+  image-rendering: pixelated;
+  background: url("/assets/shifty_dialogue.png") center / 100% 100% no-repeat;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-start;
+  padding: 10% 9% 14% 8%;
+  box-sizing: border-box;
+  filter: drop-shadow(0 8px 20px rgba(0, 0, 0, 0.55));
+}
+
+.shifty-dialogue-text {
+  margin: 0;
+  flex: 1 1 auto;
+  font-family: "Courier New", Courier, monospace;
+  font-size: clamp(0.7rem, 1.6vw, 0.95rem);
+  line-height: 1.25;
+  color: #1a1210;
+  overflow: hidden;
+}
+
+.shifty-dialogue-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.35rem;
+  justify-content: flex-end;
+}
+
+.shifty-dialogue-choices button {
+  font: inherit;
+  font-size: clamp(0.65rem, 1.4vw, 0.8rem);
+  font-weight: 700;
+  padding: 0.2rem 0.55rem;
+  border: 2px solid #3a2a1a;
+  border-radius: 4px;
+  background: #e8d8b8;
+  color: #1a1210;
+  cursor: pointer;
+}
+
+.shifty-dialogue-choices button:hover {
+  background: #f2e6c8;
+}
+
+.shifty-shop-panel {
+  width: min(34rem, 100%);
+}
+
+.shifty-shop-listings {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.5rem;
+  margin: 0.75rem 0;
+}
+
+.shifty-shop-item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.15rem;
+  padding: 0.55rem 0.65rem;
+  text-align: left;
+  font: inherit;
+  color: #eef0f5;
+  background: #1a2030;
+  border: 2px solid #4a5068;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.shifty-shop-item:hover {
+  border-color: #c9a227;
+  background: #222a3c;
+}
+
+.shifty-shop-item-name {
+  font-weight: 700;
+}
+
+.shifty-shop-item-meta {
+  font-size: 0.78rem;
+  color: #a8b0c0;
 }

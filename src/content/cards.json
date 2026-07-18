@@ -11,8 +11,9 @@
     "id": "copper_sword",
     "name": "Copper Sword",
     "rarity": "Basic",
-    "description": "Deal 3–5 damage to an adjacent enemy.",
+    "description": "Deal 3–5 damage to a target on an adjacent tile.",
     "types": ["Attack"],
+    "tags": ["physical attack", "melee"],
     "effect": { "type": "melee_attack", "minDamage": 3, "maxDamage": 5 }
   },
   {
@@ -27,24 +28,27 @@
     "id": "spear",
     "name": "Spear",
     "rarity": "Common",
-    "description": "3–5 damage in a line (+): hit an enemy 1–2 spaces away; pierces one tile to a second foe.",
+    "description": "Deal 3–5 damage to a target on a cardinal tile 1–2 spaces away, then pierce through the tile behind it.",
     "types": ["Attack"],
+    "tags": ["physical attack", "melee", "ranged"],
     "effect": { "type": "spear_line", "minDamage": 3, "maxDamage": 5 }
   },
   {
     "id": "knife",
     "name": "Knife",
     "rarity": "Common",
-    "description": "Deal 1–4 to an adjacent enemy, then draw a card.",
+    "description": "Deal 1–4 damage to a target on an adjacent tile, then draw a card.",
     "types": ["Attack"],
+    "tags": ["physical attack", "melee"],
     "effect": { "type": "knife", "minDamage": 1, "maxDamage": 4 }
   },
   {
     "id": "axe",
     "name": "Axe",
     "rarity": "Common",
-    "description": "Deal 4–8 to an adjacent enemy. Your next move (card or bonus) does nothing.",
+    "description": "Deal 4–8 damage to a target on an adjacent tile. Your next movement does nothing.",
     "types": ["Attack"],
+    "tags": ["physical attack", "melee"],
     "effect": { "type": "axe", "minDamage": 4, "maxDamage": 8 }
   },
   {
@@ -91,8 +95,9 @@
     "id": "magic_missile",
     "name": "Magic Missile",
     "rarity": "Rare",
-    "description": "Deal 1–6 damage to one enemy in a straight or diagonal line from you (queen move). Ignores defense.",
+    "description": "Deal 1–6 damage to a target on one tile in a straight or diagonal line from you. Ignores defense.",
     "types": ["Magic", "Attack"],
+    "tags": ["ranged"],
     "effect": { "type": "magic_missile", "minDamage": 1, "maxDamage": 6 }
   },
   {
@@ -123,31 +128,34 @@
     "id": "knockback_punch",
     "name": "Knockback Punch",
     "rarity": "Uncommon",
-    "description": "Deal 3–4 damage to an adjacent enemy (counts as a punch). Knock the target back 2 spaces.",
+    "description": "Deal 3–4 damage to a target on an adjacent tile (counts as a punch). Knock survivors back 2 spaces, plus any primed knockback.",
     "types": ["Attack"],
+    "tags": ["punch", "physical attack", "melee"],
     "effect": { "type": "knockback_punch", "minDamage": 3, "maxDamage": 4, "knockback": 2 }
   },
   {
     "id": "bow",
     "name": "Bow",
     "rarity": "Common",
-    "description": "Deal 3–4 damage to a target within 8 spaces. Requires line of sight. Cannot hit adjacent targets.",
+    "description": "Deal 3–4 damage to a target on a tile within 8 spaces. Requires line of sight. Cannot target adjacent tiles.",
     "types": ["Attack"],
+    "tags": ["physical attack", "ranged"],
     "effect": { "type": "bow_attack", "minDamage": 3, "maxDamage": 4, "range": 8 }
   },
   {
     "id": "lightning_bolt",
     "name": "Lightning Bolt",
     "rarity": "Legendary",
-    "description": "Hit a target within 5 spaces for 5 damage, then chain to new targets within 4 spaces for 4, 3, 2, 1 damage. Cannot hit the same target twice.",
+    "description": "Hit a target on a tile within 5 spaces for 5 damage, then chain to new targets for 4, 3, 2, 1 damage. Ignores defense. Cannot hit the same tile twice.",
     "types": ["Magic", "Attack"],
+    "tags": ["ranged"],
     "effect": { "type": "lightning_bolt", "startDamage": 5, "startRange": 5, "chainRange": 4 }
   },
   {
     "id": "haste",
     "name": "Haste",
     "rarity": "Rare",
-    "description": "For this turn, all movement is doubled (2→4, 1→2). You cannot play Attack, Protection, Aid, or Deck cards for the rest of this turn.",
+    "description": "For this turn, all player movement from every source is doubled. You cannot play Attack, Protection, Aid, or Deck cards for the rest of this turn.",
     "types": ["Skill"],
     "effect": { "type": "haste" }
   },
@@ -165,6 +173,7 @@
     "rarity": "Uncommon",
     "description": "Choose a square within 8 spaces (line of sight). Deal 4–6 damage in a 3×3 blast and inflict 1–2 Fire levels on everything hit.",
     "types": ["Magic", "Attack"],
+    "tags": ["ranged"],
     "effect": { "type": "fireball", "minDamage": 4, "maxDamage": 6, "range": 8, "minFire": 1, "maxFire": 2 }
   },
   {
@@ -174,5 +183,80 @@
     "description": "Gain +5 defense for this turn.",
     "types": ["Protection"],
     "effect": { "type": "parry", "defenseBonus": 5 }
+  },
+  {
+    "id": "mace_smash",
+    "name": "Mace Smash",
+    "rarity": "Uncommon",
+    "description": "Deal 6–10 damage to an adjacent target. Ignores 1 defense. Add a Weariness card on top of your deck.",
+    "types": ["Attack"],
+    "tags": ["physical attack", "melee"],
+    "effect": { "type": "mace_smash", "minDamage": 6, "maxDamage": 10, "defensePierce": 1 }
+  },
+  {
+    "id": "weariness",
+    "name": "Weariness",
+    "rarity": "Bonus",
+    "description": "Playing this card destroys it. Cannot be used for bonus actions.",
+    "types": ["Penalty"],
+    "effect": { "type": "penalty_destroy" }
+  },
+  {
+    "id": "poisoned_blade",
+    "name": "Poisoned Blade",
+    "rarity": "Uncommon",
+    "description": "Deal 2–5 damage to an adjacent target. If it takes more than 1 damage, it gains 3 levels of Poison.",
+    "types": ["Attack"],
+    "tags": ["physical attack", "melee"],
+    "effect": { "type": "poisoned_blade", "minDamage": 2, "maxDamage": 5, "poisonLevels": 3 }
+  },
+  {
+    "id": "loot_and_scoot",
+    "name": "Loot and Scoot",
+    "rarity": "Rare",
+    "description": "Randomly spawn 0–2 coins in the dungeon. Move up to 2 spaces. If you land on a pot, gain 1 gold plus its loot.",
+    "types": ["Move", "Skill"],
+    "effect": { "type": "loot_and_scoot", "move": 2, "maxCoins": 2 }
+  },
+  {
+    "id": "dual_wield",
+    "name": "Dual Wield",
+    "rarity": "Rare",
+    "description": "Play an Attack, then choose another physical melee Attack from your discard pile and play it immediately.",
+    "types": ["Deck"],
+    "effect": { "type": "dual_wield" }
+  },
+  {
+    "id": "flying_kick",
+    "name": "Flying Kick",
+    "rarity": "Common",
+    "description": "Move 2 spaces in one direction. Targets in your path take 3–6 physical damage and 1 knockback. If the full move is blocked, nothing happens.",
+    "types": ["Attack", "Move"],
+    "tags": ["physical attack", "melee"],
+    "effect": { "type": "flying_kick", "move": 2, "minDamage": 3, "maxDamage": 6, "knockback": 1 }
+  },
+  {
+    "id": "great_sword",
+    "name": "Great Sword",
+    "rarity": "Legendary",
+    "description": "Choose an adjacent target for 7–12 damage, or a target 2 spaces away in a cardinal or diagonal line for 2–5 damage if nothing is between you.",
+    "types": ["Attack"],
+    "tags": ["physical attack", "melee"],
+    "effect": {
+      "type": "great_sword",
+      "minDamage": 7,
+      "maxDamage": 12,
+      "secondaryMinDamage": 2,
+      "secondaryMaxDamage": 5
+    }
+  },
+  {
+    "id": "potion_of_harming",
+    "name": "Potion of Harming",
+    "rarity": "Merchant",
+    "description": "Select a tile within 5 spaces. Creatures on it take 5 damage. That tile gains a harming cloud for 3 turns. Entering a harming cloud deals 5 damage.",
+    "types": ["Alchemy", "Attack"],
+    "tags": ["ranged"],
+    "effect": { "type": "potion_of_harming", "range": 5, "damage": 5, "cloudTurns": 3 }
   }
 ]

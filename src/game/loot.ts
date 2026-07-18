@@ -1,5 +1,5 @@
 import { rollInt } from "../engine/combat";
-import type { CardDef, CardType } from "./types";
+import type { CardDef, CardType, GroundLootInstance } from "./types";
 
 export type PotLoot =
   | { kind: "nothing" }
@@ -19,19 +19,37 @@ export function rollPotLoot(cardDefs: Map<string, CardDef>, depth: number, hitCh
 }
 
 export type ChestLootRoll =
-  | { kind: "coins"; amount: 1 | 2 | 3 }
+  | { kind: "coins"; amount: 3 | 4 }
   | { kind: "bread" }
   | { kind: "cardChoice"; tier: "basicToUncommon" | "rarePlus" };
 
-/** 10% / 20% / 20% coins, 20% bread, 20% normal card choice, 10% rare+ card choice. */
+/** 25% / 25% coins, 20% bread, 20% normal card choice, 10% rare+ card choice. */
 export function rollChestLoot(): ChestLootRoll {
   const r = Math.random();
-  if (r < 0.1) return { kind: "coins", amount: 1 };
-  if (r < 0.3) return { kind: "coins", amount: 2 };
-  if (r < 0.5) return { kind: "coins", amount: 3 };
+  if (r < 0.25) return { kind: "coins", amount: 3 };
+  if (r < 0.5) return { kind: "coins", amount: 4 };
   if (r < 0.7) return { kind: "bread" };
   if (r < 0.9) return { kind: "cardChoice", tier: "basicToUncommon" };
   return { kind: "cardChoice", tier: "rarePlus" };
+}
+
+/** Monsters have a 5% chance to leave one coin on their tile when slain. */
+export function maybeDropMonsterCoin(
+  groundLoot: GroundLootInstance[],
+  x: number,
+  y: number,
+): { groundLoot: GroundLootInstance[]; dropped: boolean } {
+  if (Math.random() >= 0.05) return { groundLoot, dropped: false };
+
+  let serial = 0;
+  for (const loot of groundLoot) {
+    const match = /^gloot_(\d+)$/.exec(loot.id);
+    if (match) serial = Math.max(serial, Number.parseInt(match[1]!, 10) + 1);
+  }
+  return {
+    groundLoot: [...groundLoot, { id: `gloot_${serial}`, x, y, kind: "coin", amount: 1 }],
+    dropped: true,
+  };
 }
 
 function shuffleStrings(xs: string[]): void {
@@ -53,7 +71,11 @@ export function pickThreeFromPool(pool: string[], fallback: string): [string, st
 
 /** Three offered cards for a chest (may repeat if the pool is tiny). */
 export function isPlayableDeckCard(d: CardDef): boolean {
-  return d.effect.type !== "bonus_chit";
+  return (
+    d.effect.type !== "bonus_chit" &&
+    d.effect.type !== "penalty_destroy" &&
+    d.rarity !== "Merchant"
+  );
 }
 
 const NON_CHEST_BASE_RARITIES = new Set(["Basic", "Common", "Uncommon"]);

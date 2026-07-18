@@ -76,31 +76,26 @@ export function attackStrengthBonus(s: GameState): number {
   return hasSkill(s, SID.ATK_STRENGTH) ? 1 : 0;
 }
 
-export function heavyPunchBonus(s: GameState): number {
-  return hasSkill(s, SID.ATK_HEAVY_PUNCHES) ? 1 : 0;
+/** Punches made by discarding a card pass no definition; played punch cards use the `punch` tag. */
+export function heavyPunchBonus(s: GameState, def?: CardDef): number {
+  if (!hasSkill(s, SID.ATK_HEAVY_PUNCHES)) return 0;
+  return !def || def.tags?.includes("punch") ? 1 : 0;
+}
+
+/** Flurry doubles ordinary discard punches and any played card tagged `punch`. */
+export function punchStrikeCount(s: GameState, def?: CardDef): number {
+  if (!s.player.doublePunchThisTurn) return 1;
+  return !def || def.tags?.includes("punch") ? 2 : 1;
 }
 
 export function fighterTrainingBonus(s: GameState, def: CardDef | undefined): number {
   if (!hasSkill(s, SID.ATK_FIGHTER) || !def) return 0;
-  const t = def.effect.type;
-  if (
-    t === "melee_attack" ||
-    t === "spear_line" ||
-    t === "knife" ||
-    t === "axe" ||
-    t === "bow_attack" ||
-    t === "knockback_punch"
-  ) {
-    return 1;
-  }
-  return 0;
+  return def.tags?.includes("physical attack") ? 1 : 0;
 }
 
 export function mageTrainingBonus(s: GameState, def: CardDef | undefined): number {
   if (!hasSkill(s, SID.ATK_MAGE) || !def) return 0;
-  const t = def.effect.type;
-  if (t === "magic_missile" || t === "lightning_bolt") return 1;
-  return 0;
+  return def.types.includes("Attack") && def.types.includes("Magic") ? 1 : 0;
 }
 
 /** Flat damage added to each Lightning Bolt chain hop (range/decay still use the card's base step). */
@@ -111,9 +106,15 @@ export function lightningBoltSkillDamageBonus(s: GameState, cardId: string | und
 
 export function sprinterExtraMoveRange(s: GameState, def: CardDef | undefined): number {
   if (!hasSkill(s, SID.MOB_SPRINTER) || !def) return 0;
-  if (def.effect.type !== "move") return 0;
+  if (!def.types.includes("Move")) return 0;
   if (s.player.movementCardsPlayedThisTurn > 0) return 0;
   return 1;
+}
+
+export function hasteMovementRange(s: GameState, baseRange: number): number {
+  let range = s.player.hasteThisTurn ? baseRange * 2 : baseRange;
+  if (s.player.nextMoveDoubled) range *= 2;
+  return range;
 }
 
 export function breadHealBonus(s: GameState): number {

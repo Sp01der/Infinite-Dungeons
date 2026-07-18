@@ -5,23 +5,35 @@ import {
   inBounds,
   keyOf,
   lineOfSightClear,
-  magicMissilePathClear,
   magicMissilePathClearToPoint,
   tileAt,
 } from "../engine/grid";
-import { extendReachableWithBlockedDestinations, manhattan, reachableOrthogonal } from "../engine/movement";
+import {
+  extendReachableWithBlockedDestinations,
+  isWalkable,
+  manhattan,
+  reachableOrthogonal,
+} from "../engine/movement";
 import { buildFreshDungeonDeck, DUNGEON_DEADLIER_ID } from "./dungeonDeck";
 import {
   appendGoldSeekerBonusCoin,
+  buildStartingDeck,
   createNextFloorState,
   pickMonsterId,
   pickWeightedDefId,
 } from "./initialState";
 import { runMonsterPhaseWithHooks } from "./monsterAi";
 import { cullMonstersWithDouvlonPairs, setMonsterHpWithDouvlonSync } from "./douvlon";
+import { animsFromHits, finalizeAnims, mergeAnimResults, pushMoveAnim } from "./turnAnims";
 import { createMonsterInstance, monsterDefenseForIncoming } from "./monsterSpawn";
 import { attachStairRoom } from "./stairRoom";
 import {
+  handleMerchantCommand,
+  merchantUiBlocks,
+  spawnMerchantAfterGauntlet,
+} from "./merchantRuntime";
+import {
+  maybeDropMonsterCoin,
   pickChestOfferCards,
   pickDeckBuilderThreeForType,
   pickPedestalOfferCards,
@@ -35,7 +47,7 @@ import {
   breadHealBonus,
   descendantSkipDungeonDraw,
   fighterTrainingBonus,
-  hasSkill,
+  hasteMovementRange,
   heavyPunchBonus,
   incomingDamageToPlayer,
   knockbackTokensGrantedPerTurn,
@@ -44,12 +56,14 @@ import {
   moveTokensGrantedPerTurn,
   playerDrawCountPerTurn,
   potLootHitChance,
+  punchStrikeCount,
   SID,
   sprinterExtraMoveRange,
 } from "./skillsRuntime";
 import { getSkillDef } from "./skillDefs";
 import type {
   AttackFxKind,
+  CardDef,
   DispatchResult,
   FloorTheme,
   GameCommand,
@@ -62,6 +76,7 @@ import type {
   RockInstance,
   RoomKind,
   TileKind,
+  TurnAnimEvent,
 } from "./types";
 
 function log(state: GameState, line: string): GameState {
@@ -74,7 +89,8 @@ function choiceModalBlocksProgression(s: GameState): boolean {
     (s.cardPickupOffer?.queue.length ?? 0) > 0 ||
     !!s.pedestalOffer ||
     s.deckDestroyPending ||
-    !!s.deckBuilderOffer
+    !!s.deckBuilderOffer ||
+    merchantUiBlocks(s)
   );
 }
 
@@ -200,16 +216,60 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
       );
     }
     const removed = removeOneCardFromDeck(state, cmd.cardId);
-    if (removed) return noHits(log(removed, `Command: removed one ${nm}.`));
-    if (state.player.equipped === cmd.cardId) {
+    if (removed) {
+      return noHits(log(clearEquippedIfGone(removed), `Command: removed one ${nm}.`));
+    }
+    return noHits(log(state, `Command: ${nm} is not in your deck.`));
+  }
+
+  if (cmd.type === "DEV_DECK") {
+    if (cmd.action === "clear") {
       return noHits(
         log(
-          { ...state, player: { ...state.player, equipped: null } },
-          `Command: removed equipped ${nm}.`,
+          {
+            ...state,
+            pending: null,
+            player: {
+              ...state.player,
+              drawPile: [],
+              discardPile: [],
+              hand: [],
+              equipped: null,
+            },
+          },
+          "Command: deck cleared.",
         ),
       );
     }
-    return noHits(log(state, `Command: ${nm} is not in your deck.`));
+
+    if (cmd.action === "reset") {
+      return noHits(
+        log(
+          {
+            ...state,
+            pending: null,
+            player: {
+              ...state.player,
+              drawPile: buildStartingDeck(),
+              discardPile: [],
+              hand: [],
+              equipped: null,
+            },
+          },
+          "Command: deck reset to a new starting deck.",
+        ),
+      );
+    }
+
+    return noHits(
+      log(
+        {
+          ...reshufflePlayerCards(state),
+          pending: null,
+        },
+        "Command: deck reshuffled.",
+      ),
+    );
   }
 
   if (cmd.type === "DEV_DUNGEON_TOP") {
@@ -269,12 +329,111 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
     );
   }
 
+  if (cmd.type === "DEV_EDITOR") {
+    if (cmd.enabled) {
+      const editorModeBackup = state.editorModeBackup ?? {
+        hp: state.player.hp,
+        maxHp: state.player.maxHp,
+        fogOfWar: state.fogOfWar,
+      };
+      return noHits(
+        log(
+          {
+            ...state,
+            fogOfWar: false,
+            editorMode: true,
+            editorModeBackup,
+            player: { ...state.player, hp: 9999, maxHp: 9999 },
+          },
+          "Command: editor mode enabled.",
+        ),
+      );
+    }
+
+    if (!state.editorMode) {
+      return noHits(log(state, "Command: editor mode is already disabled."));
+    }
+
+    const restoredPlayer = state.editorModeBackup
+      ? {
+          ...state.player,
+          hp: state.editorModeBackup.hp,
+          maxHp: state.editorModeBackup.maxHp,
+        }
+      : state.player;
+    const next = revealAtPlayer({
+      ...state,
+      fogOfWar: state.editorModeBackup?.fogOfWar ?? true,
+      editorMode: false,
+      editorModeBackup: null,
+      player: restoredPlayer,
+    });
+    return noHits(log(next, "Command: editor mode disabled."));
+  }
+
+  if (cmd.type === "DEV_EDITOR_CELL_ACTION") {
+    if (!state.editorMode) return noHits(state);
+
+    const monster = state.monsters.find(
+      (m) => m.hp > 0 && m.x === cmd.x && m.y === cmd.y,
+    );
+    if (monster) {
+      const name = state.monsterDefs.get(monster.defId)?.name ?? "Enemy";
+      let next = {
+        ...state,
+        monsters: patchMonsterHp(state.monsters, monster.id, 0),
+      };
+      next = applyMonsterKillRewards(next, monster.defId, monster.x, monster.y);
+      next = log(next, `Editor: ${name} killed.`);
+      return withHits(next, [{ gridX: cmd.x, gridY: cmd.y, damage: monster.hp }]);
+    }
+
+    const destination = { x: cmd.x, y: cmd.y };
+    const occupied = new Set<string>();
+    for (const rock of state.rocks) occupied.add(keyOf(rock));
+    for (const pot of state.pots) occupied.add(keyOf(pot));
+    for (const chest of state.chests) occupied.add(keyOf(chest));
+    for (const loot of state.groundLoot) occupied.add(keyOf(loot));
+    for (const weed of state.tangleweeds) {
+      if (weed.hp > 0) occupied.add(keyOf(weed));
+    }
+    if (state.stairFeatures) {
+      occupied.add(keyOf(state.stairFeatures.pedestal));
+      occupied.add(keyOf(state.stairFeatures.merchant));
+    }
+    occupied.add(keyOf({ x: state.player.x, y: state.player.y }));
+    const bridgeTiles = new Set(state.bridgeTiles.map((p) => keyOf(p)));
+    if (
+      !isWalkable(
+        state.tiles,
+        state.width,
+        state.height,
+        destination,
+        occupied,
+        bridgeTiles,
+      )
+    ) {
+      return noHits(state);
+    }
+
+    return noHits(
+      log(
+        {
+          ...state,
+          pending: null,
+          player: { ...state.player, x: cmd.x, y: cmd.y },
+        },
+        `Editor: teleported to ${cmd.x},${cmd.y}.`,
+      ),
+    );
+  }
+
   if (cmd.type === "DEV_GOTO_FLOOR") {
     const targetDepth = Math.max(1, Math.trunc(cmd.depth));
     let next = createNextFloorState(state, { depth: targetDepth });
     next = reshufflePlayerDeck(next);
-    next = ensureEquippedOnDeckTop(next);
     const drawN = playerDrawCountPerTurn(next);
+    next = ensureEquippedOnTopOfDraw(next);
     next = drawFromPlayerDeck(next, drawN, true);
     next = applyPerTurnSkillResourcesAfterDraw(next);
     next = revealAtPlayer(next);
@@ -291,8 +450,8 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
       danger: state.danger,
     });
     next = reshufflePlayerDeck(next);
-    next = ensureEquippedOnDeckTop(next);
     const drawN = playerDrawCountPerTurn(next);
+    next = ensureEquippedOnTopOfDraw(next);
     next = drawFromPlayerDeck(next, drawN, true);
     next = applyPerTurnSkillResourcesAfterDraw(next);
     next = revealAtPlayer(next);
@@ -308,13 +467,18 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
   return noHits(state);
 }
 
-function applyMonsterKillRewards(state: GameState, defId: string): GameState {
+function applyMonsterKillRewards(
+  state: GameState,
+  defId: string,
+  x: number,
+  y: number,
+): GameState {
   let next = state;
   if (defId === "mimic") {
     next = applyMimicDeathLoot(next);
-  } else {
-    next = { ...next, player: { ...next.player, gold: next.player.gold + 2 } };
   }
+  const drop = maybeDropMonsterCoin(next.groundLoot, x, y);
+  if (drop.dropped) next = log({ ...next, groundLoot: drop.groundLoot }, "The monster dropped 1 gold.");
   const power = next.monsterDefs.get(defId)?.power ?? 3;
   return addExp(next, power);
 }
@@ -373,7 +537,11 @@ function playerEntangled(s: GameState): boolean {
   return s.tangleweeds.some((tw) => tw.hp > 0 && tw.x === s.player.x && tw.y === s.player.y);
 }
 
-function tryKnockMonsterFromPlayer(s: GameState, mon: MonsterInstance): GameState {
+function tryKnockMonsterFromPlayer(
+  s: GameState,
+  mon: MonsterInstance,
+  moveAnims?: TurnAnimEvent[],
+): GameState {
   const dx = Math.sign(mon.x - s.player.x);
   const dy = Math.sign(mon.y - s.player.y);
   if (dx === 0 && dy === 0) return log(s, "No knockback direction.");
@@ -388,16 +556,58 @@ function tryKnockMonsterFromPlayer(s: GameState, mon: MonsterInstance): GameStat
   if (s.pots.some((p) => p.x === nx && p.y === ny)) return log(s, "Something blocks the knockback.");
   if (s.chests.some((c) => c.x === nx && c.y === ny)) return log(s, "A chest blocks the knockback.");
   if (s.rocks.some((r) => r.x === nx && r.y === ny)) return log(s, "Rubble blocks the knockback.");
+  if (moveAnims) pushMoveAnim(moveAnims, mon.id, mon, np);
   const monsters = s.monsters.map((m) => (m.id === mon.id ? { ...m, x: nx, y: ny } : m));
   return log({ ...s, monsters }, "Knockback sends them reeling!");
 }
 
 /** Apply knockback N times in the direction away from the player. */
-function tryKnockMonsterFromPlayerN(s: GameState, monId: string, times: number): GameState {
+function tryKnockMonsterFromPlayerN(
+  s: GameState,
+  monId: string,
+  times: number,
+  moveAnims?: TurnAnimEvent[],
+): GameState {
   for (let i = 0; i < times; i++) {
     const cur = s.monsters.find((m) => m.id === monId && m.hp > 0);
     if (!cur) break;
-    s = tryKnockMonsterFromPlayer(s, cur);
+    s = tryKnockMonsterFromPlayer(s, cur, moveAnims);
+  }
+  return s;
+}
+
+function tryKnockMonsterInDirection(
+  s: GameState,
+  monId: string,
+  dx: number,
+  dy: number,
+  times: number,
+  moveAnims?: TurnAnimEvent[],
+): GameState {
+  for (let i = 0; i < times; i++) {
+    const mon = s.monsters.find((m) => m.id === monId && m.hp > 0);
+    if (!mon) break;
+    const nx = mon.x + dx;
+    const ny = mon.y + dy;
+    const blocked =
+      nx < 0 ||
+      ny < 0 ||
+      nx >= s.width ||
+      ny >= s.height ||
+      tileAt(s.tiles, { x: nx, y: ny }) !== "floor" ||
+      s.monsters.some((m) => m.id !== monId && m.hp > 0 && m.x === nx && m.y === ny) ||
+      (s.player.x === nx && s.player.y === ny) ||
+      s.pots.some((p) => p.x === nx && p.y === ny) ||
+      s.chests.some((c) => c.x === nx && c.y === ny) ||
+      s.rocks.some((r) => r.x === nx && r.y === ny);
+    if (blocked) break;
+    if (moveAnims) pushMoveAnim(moveAnims, monId, mon, { x: nx, y: ny });
+    s = {
+      ...s,
+      monsters: s.monsters.map((m) =>
+        m.id === monId ? { ...m, x: nx, y: ny } : m,
+      ),
+    };
   }
   return s;
 }
@@ -413,11 +623,26 @@ function applyFireToMonster(
   );
 }
 
+function applyPoisonToMonsters(
+  monsters: MonsterInstance[],
+  monsterIds: readonly string[],
+  levels: number,
+): MonsterInstance[] {
+  const ids = new Set(monsterIds);
+  return monsters.map((m) =>
+    ids.has(m.id) ? { ...m, poisonLevels: (m.poisonLevels ?? 0) + levels } : m,
+  );
+}
+
 function weaponAttackRollRaw(s: GameState, cardId: string | undefined, minD: number, maxD: number): number {
   const def = cardId ? s.cardDefs.get(cardId) : undefined;
   let r = rollInt(minD, maxD);
   r += attackStrengthBonus(s);
   r += fighterTrainingBonus(s, def);
+  r += heavyPunchBonus(s, def);
+  if (s.player.nextPhysicalAttackMultiplier !== 1 && def?.tags?.includes("physical attack")) {
+    r = Math.floor(r * s.player.nextPhysicalAttackMultiplier);
+  }
   return r;
 }
 
@@ -492,11 +717,27 @@ function unlockSkillDispatch(state: GameState, skillId: string): DispatchResult 
 }
 
 function noHits(s: GameState): DispatchResult {
-  return { state: s, hits: [] };
+  return { state: s, hits: [], anims: [] };
 }
 
-function withHits(s: GameState, hits: HitVisual[]): DispatchResult {
-  return { state: s, hits };
+function withHits(s: GameState, hits: HitVisual[], extraAnims: TurnAnimEvent[] = []): DispatchResult {
+  return { state: s, hits, anims: [...animsFromHits(hits, s), ...extraAnims] };
+}
+
+/** Attack first (HP at pre-knockback positions), then knockback move tweens. */
+function withHitsThenKnockback(
+  afterHit: GameState,
+  hits: HitVisual[],
+  survivorIds: string[],
+  knockback: number,
+): DispatchResult {
+  const knockMoves: TurnAnimEvent[] = [];
+  const state = applyKnockbackToMonsters(afterHit, survivorIds, knockback, knockMoves);
+  return {
+    state,
+    hits,
+    anims: [...animsFromHits(hits, afterHit), ...knockMoves],
+  };
 }
 
 function playerAttackFx(s: GameState, kind: AttackFxKind): HitVisual["fx"] {
@@ -505,10 +746,6 @@ function playerAttackFx(s: GameState, kind: AttackFxKind): HitVisual["fx"] {
 
 function hitAt(s: GameState, x: number, y: number, damage: number, kind: AttackFxKind): HitVisual {
   return { gridX: x, gridY: y, damage, fx: playerAttackFx(s, kind) };
-}
-
-function meleeHitAt(s: GameState, x: number, y: number, damage: number): HitVisual {
-  return hitAt(s, x, y, damage, "melee_slash");
 }
 
 function occupiedByMonsters(state: GameState): Set<string> {
@@ -702,7 +939,7 @@ function applyPendingCollapse(state: GameState): { state: GameState; hits: HitVi
       next,
       `${state.monsterDefs.get(om.defId)?.name ?? "Monster"} is crushed by falling stone.`,
     );
-    next = applyMonsterKillRewards(next, om.defId);
+    next = applyMonsterKillRewards(next, om.defId, om.x, om.y);
   }
 
   const playerHere = keyOf({ x: next.player.x, y: next.player.y });
@@ -749,7 +986,7 @@ function awakenMimicOnTile(s: GameState, x: number, y: number): GameState {
     ...s,
     monsters: s.monsters.map((m) =>
       m.defId === "mimic" && m.x === x && m.y === y && m.mimicAsleep
-        ? { ...m, mimicAsleep: false }
+        ? { ...m, mimicAsleep: false, aiStateId: "awake" }
         : m,
     ),
   };
@@ -944,15 +1181,23 @@ function enqueueCardPickup(s: GameState, cardId: string): GameState {
   return { ...s, cardPickupOffer: { queue: [...prev, cardId] } };
 }
 
-/** Keeps `equipped` set; removes that id from draw/discard so one copy sits on top of the draw pile. */
-function ensureEquippedOnDeckTop(s: GameState): GameState {
-  const eq = s.player.equipped;
-  if (!eq) return s;
-  const drawPile = s.player.drawPile.filter((c) => c !== eq);
-  const discardPile = s.player.discardPile.filter((c) => c !== eq);
+/** Played equipped cards return to the top; all other played cards go to discard. */
+function playerAfterPlayingCard(
+  s: GameState,
+  hand: string[],
+  cardId: string,
+): GameState["player"] {
+  if (s.player.equipped === cardId) {
+    return {
+      ...s.player,
+      hand,
+      drawPile: [cardId, ...s.player.drawPile],
+    };
+  }
   return {
-    ...s,
-    player: { ...s.player, drawPile: [eq, ...drawPile], discardPile },
+    ...s.player,
+    hand,
+    discardPile: [...s.player.discardPile, cardId],
   };
 }
 
@@ -1000,6 +1245,32 @@ function spawnGroundCardLootInDiscovered(state: GameState, count: number): GameS
   let s = { ...state, groundLoot: nextLoot };
   s = log(s, placed < count ? `Dropped ${placed} card(s) on the ground (no more room).` : `Dropped ${placed} card(s) on the ground.`);
   return s;
+}
+
+function spawnGroundCoinsInDungeon(state: GameState, count: number): GameState {
+  if (count <= 0) return log(state, "Loot and Scoot finds no loose coins.");
+  const blocked = new Set<string>([
+    keyOf(state.player),
+    ...state.pots.map(keyOf),
+    ...state.chests.map(keyOf),
+    ...state.groundLoot.map(keyOf),
+  ]);
+  const candidates: Point[] = [];
+  for (let y = 0; y < state.height; y++) {
+    for (let x = 0; x < state.width; x++) {
+      if (state.tiles[y][x] !== "floor" || blocked.has(keyOf({ x, y }))) continue;
+      candidates.push({ x, y });
+    }
+  }
+  shuffleInPlace(candidates);
+  let serial = nextGroundLootSerial(state);
+  const placed = Math.min(count, candidates.length);
+  const groundLoot = [...state.groundLoot];
+  for (let i = 0; i < placed; i++) {
+    const p = candidates[i]!;
+    groundLoot.push({ id: `gloot_${serial++}`, x: p.x, y: p.y, kind: "coin", amount: 1 });
+  }
+  return log({ ...state, groundLoot }, `Loot and Scoot scatters ${placed} coin${placed === 1 ? "" : "s"}.`);
 }
 
 function sealGauntletCorridorTiles(s: GameState): GameState {
@@ -1123,9 +1394,59 @@ function maybeCommenceGauntlet(s: GameState, enterX: number, enterY: number): Ga
 }
 
 function resolvePlayerEnterTile(s: GameState, x: number, y: number): GameState {
-  let next = collectAdjacentLoot(openChestAsPlayer(breakPotAsPlayer(s, x, y), x, y));
+  let next = applyHarmingCloudEnter(s, x, y);
+  if (next.phase === "defeat") return next;
+  if (next.player.nextMoveDoubled) {
+    next = { ...next, player: { ...next.player, nextMoveDoubled: false } };
+  }
+  next = collectAdjacentLoot(openChestAsPlayer(breakPotAsPlayer(next, x, y), x, y));
   next = maybeCommenceGauntlet(next, x, y);
   return next;
+}
+
+function applyHarmingCloudEnter(s: GameState, x: number, y: number): GameState {
+  const cloud = s.harmingClouds.find((c) => c.x === x && c.y === y && c.turnsLeft > 0);
+  if (!cloud) return s;
+  const dmg = incomingDamageToPlayer(s, 5);
+  const hp = Math.max(0, s.player.hp - dmg);
+  let next: GameState = {
+    ...s,
+    player: { ...s.player, hp },
+  };
+  next = log(next, `The harming cloud burns you for ${dmg}!`);
+  if (hp <= 0) return { ...next, phase: "defeat" };
+  return next;
+}
+
+function tickHarmingClouds(s: GameState): GameState {
+  if (s.harmingClouds.length === 0) return s;
+  const clouds = s.harmingClouds
+    .map((c) => ({ ...c, turnsLeft: c.turnsLeft - 1 }))
+    .filter((c) => c.turnsLeft > 0);
+  let next: GameState = { ...s, harmingClouds: clouds };
+  if (clouds.length < s.harmingClouds.length) {
+    next = log(next, "A harming cloud dissipates.");
+  }
+  return next;
+}
+
+function nextHarmingCloudId(s: GameState): string {
+  let n = 0;
+  for (const c of s.harmingClouds) {
+    const m = /^harmcloud_(\d+)$/.exec(c.id);
+    if (m) n = Math.max(n, parseInt(m[1]!, 10) + 1);
+  }
+  return `harmcloud_${n}`;
+}
+
+function consumeStrengthGemIfPhysical(s: GameState, cardId: string | undefined): GameState {
+  if (s.player.nextPhysicalAttackMultiplier === 1) return s;
+  const def = cardId ? s.cardDefs.get(cardId) : undefined;
+  if (!def?.tags?.includes("physical attack")) return s;
+  return {
+    ...s,
+    player: { ...s.player, nextPhysicalAttackMultiplier: 1 },
+  };
 }
 
 /** Same tile or orthogonally adjacent; loot tile must be discovered in fog. */
@@ -1378,7 +1699,7 @@ function shuffleInPlace<T>(xs: T[]): void {
   }
 }
 
-function reshufflePlayerDeck(s: GameState): GameState {
+function reshufflePlayerCards(s: GameState): GameState {
   const all = [...s.player.drawPile, ...s.player.discardPile, ...s.player.hand];
   shuffleInPlace(all);
   return {
@@ -1388,15 +1709,64 @@ function reshufflePlayerDeck(s: GameState): GameState {
       drawPile: all,
       discardPile: [],
       hand: [],
+    },
+  };
+}
+
+function reshufflePlayerDeck(s: GameState): GameState {
+  const reshuffled = reshufflePlayerCards(s);
+  return {
+    ...reshuffled,
+    player: {
+      ...reshuffled.player,
       suppressNextMove: false,
       defenseBonusThisTurn: 0,
       doublePunchThisTurn: false,
       moveTokens: 0,
       knockbackTokens: 0,
-      knockbackPrimed: false,
+      knockbackPrimed: 0,
       hasteThisTurn: false,
     },
   };
+}
+
+/**
+ * Guarantees the equipped card is drawn at the start of every turn: pulls one
+ * copy out of the discard pile (or from deeper in the draw pile) and places it
+ * on top of the draw pile before the turn's draw.
+ */
+function ensureEquippedOnTopOfDraw(s: GameState): GameState {
+  const id = s.player.equipped;
+  if (!id) return s;
+  if (s.player.drawPile[0] === id) return s;
+  const di = s.player.discardPile.lastIndexOf(id);
+  if (di >= 0) {
+    const discardPile = [...s.player.discardPile];
+    discardPile.splice(di, 1);
+    return {
+      ...s,
+      player: { ...s.player, discardPile, drawPile: [id, ...s.player.drawPile] },
+    };
+  }
+  const dri = s.player.drawPile.indexOf(id);
+  if (dri >= 0) {
+    const drawPile = [...s.player.drawPile];
+    drawPile.splice(dri, 1);
+    return { ...s, player: { ...s.player, drawPile: [id, ...drawPile] } };
+  }
+  return s;
+}
+
+/** Clears the equipped marker when no copy of that card remains in the deck. */
+function clearEquippedIfGone(s: GameState): GameState {
+  const id = s.player.equipped;
+  if (!id) return s;
+  const anyLeft =
+    s.player.hand.includes(id) ||
+    s.player.drawPile.includes(id) ||
+    s.player.discardPile.includes(id);
+  if (anyLeft) return s;
+  return { ...s, player: { ...s.player, equipped: null } };
 }
 
 function removeOneCardFromDeck(s: GameState, cardId: string): GameState | null {
@@ -1490,6 +1860,7 @@ export function processGauntletVictory(s: GameState): GameState {
     next,
     "The gauntlet falls silent. A stair chamber opens — peace. Your deck is reshuffled.",
   );
+  next = spawnMerchantAfterGauntlet(next);
   return {
     ...next,
     phase: "peace",
@@ -1571,12 +1942,10 @@ function investigateRevealOneRoom(s: GameState): GameState {
 }
 
 function discardHand(s: GameState): GameState {
-  const eq = s.player.equipped;
   const toDiscard: string[] = [];
   for (const id of s.player.hand) {
     const def = s.cardDefs.get(id);
     if (def?.effect.type === "bonus_chit") continue;
-    if (eq && id === eq) continue;
     toDiscard.push(id);
   }
   const discardPile = [...s.player.discardPile, ...toDiscard];
@@ -1588,7 +1957,7 @@ function discardHand(s: GameState): GameState {
       discardPile,
       moveTokens: 0,
       knockbackTokens: 0,
-      knockbackPrimed: false,
+      knockbackPrimed: 0,
     },
   };
 }
@@ -1598,7 +1967,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
   let disc = [...s.dungeonDiscard];
   if (draw.length === 0) {
     if (disc.length === 0) {
-      return { state: log(s, "The dungeon deck is empty."), hits: [] };
+      return withHits(log(s, "The dungeon deck is empty."), []);
     }
     draw = [...disc];
     disc = [];
@@ -1609,7 +1978,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
   const def = s.dungeonCardDefs.get(id);
   let base: GameState = { ...s, dungeonDraw: rest, dungeonDiscard: [...disc, id] };
   if (!def) {
-    return { state: log(base, `Unknown dungeon card: ${id}`), hits: [] };
+    return withHits(log(base, `Unknown dungeon card: ${id}`), []);
   }
 
   if (s.stabilityBuffActive && id !== DUNGEON_DEADLIER_ID && Math.random() < 0.5) {
@@ -1618,7 +1987,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
       { ...base, stabilityBuffActive: false, dungeonCardReveal: { title: def.name, summary } },
       `Dungeon: ${def.name} — ${summary}`,
     );
-    return { state: st, hits: [] };
+    return withHits(st, []);
   }
 
   const working: GameState = { ...base, stabilityBuffActive: false };
@@ -1629,7 +1998,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
       { ...working, dungeonCardReveal: { title: def.name, summary } },
       `Dungeon: ${def.name} — ${summary}`,
     );
-    return { state: st, hits: [] };
+    return withHits(st, []);
   }
 
   const title = def.name;
@@ -1642,7 +2011,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         { ...working, dungeonCardReveal: { title, summary } },
         `Dungeon: ${title} — ${summary}`,
       );
-      return { state: st, hits: [] };
+      return withHits(st, []);
     }
     case "add_noise": {
       const noise = working.noise + def.effect.amount;
@@ -1651,7 +2020,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         { ...working, noise, dungeonCardReveal: { title, summary } },
         `Dungeon: ${title} — ${summary}`,
       );
-      return { state: st, hits: [] };
+      return withHits(st, []);
     }
     case "trap": {
       const rawTrap = rollTrapDamage();
@@ -1691,7 +2060,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         { ...fr.state, dungeonCardReveal: { title, summary } },
         `Dungeon: ${title} — rocks fall.`,
       );
-      return { state: st, hits: fr.hits };
+      return withHits(st, fr.hits);
     }
     case "monsters_from_deep": {
       const sp = spawnMonstersFromDeep(working);
@@ -1700,7 +2069,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         { ...sp.state, dungeonCardReveal: { title, summary } },
         `Dungeon: ${title} — ${summary}`,
       );
-      return { state: st, hits: [] };
+      return withHits(st, []);
     }
     case "danger_and_reshuffle": {
       const danger = working.danger + 1;
@@ -1715,7 +2084,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         },
         `Dungeon: ${title} — ${summary}`,
       );
-      return { state: st, hits: [] };
+      return withHits(st, []);
     }
     case "stability": {
       summary = "The next dungeon card may not take effect (except THE DUNGEON IS DEADLIER).";
@@ -1723,7 +2092,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         { ...working, stabilityBuffActive: true, dungeonCardReveal: { title, summary } },
         `Dungeon: ${title} — ${summary}`,
       );
-      return { state: st, hits: [] };
+      return withHits(st, []);
     }
     case "dust_settles": {
       summary = "You cannot scout this turn.";
@@ -1731,7 +2100,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         { ...working, scoutBlockedThisTurn: true, dungeonCardReveal: { title, summary } },
         `Dungeon: ${title} — ${summary}`,
       );
-      return { state: st, hits: [] };
+      return withHits(st, []);
     }
     case "collapse": {
       const roomTiles = pickCollapseRoomFloorTiles(working);
@@ -1741,7 +2110,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
           { ...working, dungeonCardReveal: { title, summary } },
           `Dungeon: ${title} — ${summary}`,
         );
-        return { state: st, hits: [] };
+        return withHits(st, []);
       }
       summary = "A chamber is marked — it will collapse at the end of your next turn.";
       const st = log(
@@ -1752,7 +2121,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         },
         `Dungeon: ${title} — ${summary}`,
       );
-      return { state: st, hits: [] };
+      return withHits(st, []);
     }
     case "lights_out": {
       const n = Math.max(1, working.depth - 2);
@@ -1767,7 +2136,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         },
         `Dungeon: ${title} — ${summary}`,
       );
-      return { state: st, hits: [] };
+      return withHits(st, []);
     }
     case "targeted_collapse": {
       const p = working.player;
@@ -1790,7 +2159,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         },
         `Dungeon: ${title} — ${summary}`,
       );
-      return { state: st, hits: [] };
+      return withHits(st, []);
     }
     case "you_are_not_alone": {
       // Collect eligible rooms: not gauntlet, not gauntlet_corridor, not stair_room
@@ -1820,7 +2189,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
           { ...working, dungeonCardReveal: { title, summary } },
           `Dungeon: ${title} — ${summary}`,
         );
-        return { state: st, hits: [] };
+        return withHits(st, []);
       }
       const chosenRid = pool[rollInt(0, pool.length - 1)]!;
       // Find free floor tiles in that room (not on player, not on existing monster)
@@ -1844,7 +2213,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
           { ...working, dungeonCardReveal: { title, summary } },
           `Dungeon: ${title} — ${summary}`,
         );
-        return { state: st, hits: [] };
+        return withHits(st, []);
       }
       const spawnTile = candidateTiles[rollInt(0, candidateTiles.length - 1)]!;
       const serial = nextMonsterSerial(working.monsters);
@@ -1865,7 +2234,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         },
         `Dungeon: ${title}.`,
       );
-      return { state: st, hits: [] };
+      return withHits(st, []);
     }
     case "overgrowth": {
       let st = working;
@@ -1910,7 +2279,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
       }
       summary = any ? "The greenhouses surge with growth." : "No greenhouses stir.";
       const out = log({ ...st, dungeonCardReveal: { title, summary } }, `Dungeon: ${title} — ${summary}`);
-      return { state: out, hits: [] };
+      return withHits(out, []);
     }
     case "flooding": {
       const eligibleRids = new Set<number>();
@@ -1928,10 +2297,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
       const pool = [...eligibleRids];
       if (pool.length === 0) {
         summary = "Nowhere floods.";
-        return {
-          state: log({ ...working, dungeonCardReveal: { title, summary } }, `Dungeon: ${title} — ${summary}`),
-          hits: [],
-        };
+        return withHits(log({ ...working, dungeonCardReveal: { title, summary } }, `Dungeon: ${title} — ${summary}`), [],);
       }
       const chosenRid = pool[rollInt(0, pool.length - 1)]!;
       summary = "A chamber is marked — water will rise each turn.";
@@ -1943,7 +2309,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         },
         `Dungeon: ${title} — ${summary}`,
       );
-      return { state: stFl, hits: [] };
+      return withHits(stFl, []);
     }
     case "stalactites_fall": {
       const marks: Point[] = [];
@@ -1972,10 +2338,10 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
         },
         `Dungeon: ${title} — ${summary}`,
       );
-      return { state: stSc, hits: [] };
+      return withHits(stSc, []);
     }
     default:
-      return { state: log(working, "Unknown dungeon card effect."), hits: [] };
+      return withHits(log(working, "Unknown dungeon card effect."), []);
   }
 }
 
@@ -2004,7 +2370,11 @@ function pickCollapseRoomFloorTiles(s: GameState): Point[] | null {
   return tiles.length > 0 ? tiles : null;
 }
 
-function runMonsterPhase(state: GameState): { state: GameState; hits: HitVisual[] } {
+function runMonsterPhase(state: GameState): {
+  state: GameState;
+  hits: HitVisual[];
+  anims: TurnAnimEvent[];
+} {
   return runMonsterPhaseWithHooks(state, {
     resolvePlayerEnter: resolvePlayerEnterTile,
     breakPotMonster: breakPotAsMonster,
@@ -2021,7 +2391,7 @@ function applyPerTurnSkillResourcesAfterDraw(next: GameState): GameState {
       doublePunchThisTurn: false,
       moveTokens: moveTokensGrantedPerTurn(next),
       knockbackTokens: knockbackTokensGrantedPerTurn(next),
-      knockbackPrimed: false,
+      knockbackPrimed: 0,
       movementCardsPlayedThisTurn: 0,
       scoutUsesThisTurn: 0,
       hasteThisTurn: false,
@@ -2034,11 +2404,19 @@ function beginNextPlayerTurn(s: GameState): GameState {
   let next = { ...s, turn: s.turn + 1 };
   next = applyPendingStalactiteDamage(next);
   if (next.phase === "defeat") return next;
+  next = tickHarmingClouds(next);
   if (next.lightsOutTurns > 0) {
     next = { ...next, lightsOutTurns: next.lightsOutTurns - 1 };
   }
-  next = ensureEquippedOnDeckTop(next);
+  if (next.player.gemLuckRestore != null) {
+    next = {
+      ...next,
+      chanceMode: next.player.gemLuckRestore,
+      player: { ...next.player, gemLuckRestore: null },
+    };
+  }
   const drawN = playerDrawCountPerTurn(next);
+  next = ensureEquippedOnTopOfDraw(next);
   next = drawFromPlayerDeck(next, drawN, true);
   next = applyPerTurnSkillResourcesAfterDraw(next);
   next = revealAtPlayer(next);
@@ -2055,15 +2433,398 @@ function beginNextPlayerTurn(s: GameState): GameState {
   );
 }
 
+function hasAttackTargetAt(s: GameState, x: number, y: number): boolean {
+  return (
+    s.monsters.some((m) => m.hp > 0 && m.x === x && m.y === y) ||
+    s.pots.some((p) => p.x === x && p.y === y) ||
+    s.tangleweeds.some((tw) => tw.hp > 0 && tw.x === x && tw.y === y)
+  );
+}
+
+function attackTargetTiles(s: GameState): Point[] {
+  const byKey = new Map<string, Point>();
+  const add = (p: Point) => {
+    if (s.fogOfWar && !s.discovered.has(keyOf(p))) return;
+    byKey.set(keyOf(p), { x: p.x, y: p.y });
+  };
+  for (const m of s.monsters) if (m.hp > 0) add(m);
+  for (const p of s.pots) add(p);
+  for (const tw of s.tangleweeds) if (tw.hp > 0) add(tw);
+  return [...byKey.values()];
+}
+
+type TileAttackResult = {
+  state: GameState;
+  hits: HitVisual[];
+  survivorMonsterIds: string[];
+  monsterDamage: Map<string, number>;
+  targetCount: number;
+};
+
+/** Damage every target on a tile using one shared raw damage value. */
+function damageAttackTargetsAt(
+  state: GameState,
+  target: Point,
+  rawDamage: number,
+  fxKind: AttackFxKind,
+  ignoreDefense = false,
+  defensePierce = 0,
+): TileAttackResult {
+  let s = state;
+  const hits: HitVisual[] = [];
+  let targetCount = 0;
+  const survivorMonsterIds: string[] = [];
+  const monsterDamage = new Map<string, number>();
+  const monsterIds = s.monsters
+    .filter((m) => m.hp > 0 && m.x === target.x && m.y === target.y)
+    .map((m) => m.id);
+
+  for (const id of monsterIds) {
+    const mon = s.monsters.find((m) => m.id === id && m.hp > 0);
+    if (!mon) continue;
+    targetCount++;
+    const def = s.monsterDefs.get(mon.defId);
+    const defense = Math.max(0, monsterDefenseForIncoming(mon, def) - defensePierce);
+    const damage = ignoreDefense ? rawDamage : applyDefense(rawDamage, defense);
+    monsterDamage.set(mon.id, damage);
+    const hp = Math.max(0, mon.hp - damage);
+    s = { ...s, monsters: patchMonsterHp(s.monsters, mon.id, hp) };
+    hits.push(hitAt(s, target.x, target.y, damage, fxKind));
+    if (hp <= 0) {
+      s = log(s, `${def?.name ?? "Enemy"} defeated.`);
+      s = applyMonsterKillRewards(s, mon.defId, mon.x, mon.y);
+    } else {
+      survivorMonsterIds.push(mon.id);
+    }
+  }
+
+  const tangleweedIds = s.tangleweeds
+    .filter((tw) => tw.hp > 0 && tw.x === target.x && tw.y === target.y)
+    .map((tw) => tw.id);
+  for (const id of tangleweedIds) {
+    const tw = s.tangleweeds.find((x) => x.id === id && x.hp > 0);
+    if (!tw) continue;
+    targetCount++;
+    const hp = Math.max(0, tw.hp - rawDamage);
+    s = {
+      ...s,
+      tangleweeds: s.tangleweeds.map((x) => (x.id === id ? { ...x, hp } : x)),
+    };
+    hits.push(hitAt(s, target.x, target.y, rawDamage, fxKind));
+    if (hp <= 0) s = log(s, "Tangleweed destroyed.");
+  }
+
+  while (s.pots.some((p) => p.x === target.x && p.y === target.y)) {
+    targetCount++;
+    s = breakPotFromAttack(s, target.x, target.y);
+    hits.push(hitAt(s, target.x, target.y, 1, fxKind));
+  }
+
+  return { state: s, hits, survivorMonsterIds, monsterDamage, targetCount };
+}
+
+function applyKnockbackToMonsters(
+  state: GameState,
+  monsterIds: string[],
+  distance: number,
+  moveAnims?: TurnAnimEvent[],
+): GameState {
+  let s = state;
+  if (distance <= 0) return s;
+  for (const id of monsterIds) s = tryKnockMonsterFromPlayerN(s, id, distance, moveAnims);
+  return s;
+}
+
+function consumePlayedCard(
+  state: GameState,
+  handIndex: number,
+): { state: GameState; cardId: string } | null {
+  const hand = [...state.player.hand];
+  const cardId = hand[handIndex];
+  if (!cardId) return null;
+  hand.splice(handIndex, 1);
+  return {
+    cardId,
+    state: {
+      ...state,
+      player: playerAfterPlayingCard(state, hand, cardId),
+      pending: null,
+    },
+  };
+}
+
+function isPhysicalMeleeAttack(def: CardDef | undefined): boolean {
+  return !!def?.types.includes("Attack") &&
+    !!def.tags?.includes("physical attack") &&
+    !!def.tags?.includes("melee");
+}
+
+function resolvePlayerAttackAtTile(state: GameState, target: Point): DispatchResult {
+  const pending = state.pending;
+  if (!pending || !hasAttackTargetAt(state, target.x, target.y)) return noHits(state);
+  if (state.fogOfWar && !state.discovered.has(keyOf(target))) return noHits(state);
+  const player = { x: state.player.x, y: state.player.y };
+
+  if (pending.kind === "play_great_sword") {
+    const dx = target.x - player.x;
+    const dy = target.y - player.y;
+    const adjacent = manhattan(player, target) === 1;
+    const straight = dx === 0 || dy === 0 || Math.abs(dx) === Math.abs(dy);
+    const longReach = straight && Math.max(Math.abs(dx), Math.abs(dy)) === 2;
+    if (!adjacent && !longReach) return noHits(state);
+    if (longReach) {
+      const middle = { x: player.x + dx / 2, y: player.y + dy / 2 };
+      const middleBlocked =
+        tileAt(state.tiles, middle) !== "floor" ||
+        hasAttackTargetAt(state, middle.x, middle.y) ||
+        state.chests.some((c) => c.x === middle.x && c.y === middle.y) ||
+        state.rocks.some((r) => r.x === middle.x && r.y === middle.y);
+      if (middleBlocked) return noHits(log(state, "Something blocks the Great Sword's reach."));
+    }
+    const consumed = consumePlayedCard(state, pending.cardHandIndex);
+    if (!consumed) return noHits(state);
+    const minDamage = adjacent ? pending.minDamage : pending.secondaryMinDamage;
+    const maxDamage = adjacent ? pending.maxDamage : pending.secondaryMaxDamage;
+    const raw = weaponAttackRollRaw(consumed.state, consumed.cardId, minDamage, maxDamage);
+    const result = damageAttackTargetsAt(consumed.state, target, raw, "melee_slash");
+    const knockback = state.player.knockbackPrimed;
+    let afterHit = {
+      ...result.state,
+      player: { ...result.state.player, knockbackPrimed: 0 },
+    };
+    afterHit = consumeStrengthGemIfPhysical(afterHit, consumed.cardId);
+    afterHit = log(
+      afterHit,
+      adjacent ? "Great Sword — crushing strike!" : "Great Sword — long-reach strike!",
+    );
+    return withHitsThenKnockback(afterHit, result.hits, result.survivorMonsterIds, knockback);
+  }
+
+  if (pending.kind === "discard_punch") {
+    if (manhattan(player, target) > 1) return noHits(state);
+    const strikes = punchStrikeCount(state);
+    let s: GameState = { ...state, pending: null };
+    const hits: HitVisual[] = [];
+    let survivors: string[] = [];
+    for (let i = 0; i < strikes; i++) {
+      if (!hasAttackTargetAt(s, target.x, target.y)) break;
+      let raw = rollInt(1, 2) + attackStrengthBonus(s) + heavyPunchBonus(s);
+      if (s.player.nextPhysicalAttackMultiplier !== 1) {
+        raw = Math.floor(raw * s.player.nextPhysicalAttackMultiplier);
+      }
+      const result = damageAttackTargetsAt(s, target, raw, "melee_slash");
+      s = result.state;
+      hits.push(...result.hits);
+      survivors = result.survivorMonsterIds;
+    }
+    const knockback = state.player.knockbackPrimed;
+    const afterHit = log(
+      { ...s, player: { ...s.player, knockbackPrimed: 0, nextPhysicalAttackMultiplier: 1 } },
+      strikes > 1 ? "Flurry punch!" : "Punch!",
+    );
+    return withHitsThenKnockback(afterHit, hits, survivors, knockback);
+  }
+
+  if (
+    pending.kind === "play_melee" ||
+    pending.kind === "play_knife" ||
+    pending.kind === "play_axe" ||
+    pending.kind === "play_knockback_punch" ||
+    pending.kind === "play_mace_smash" ||
+    pending.kind === "play_poisoned_blade"
+  ) {
+    if (manhattan(player, target) > 1) return noHits(state);
+    const consumed = consumePlayedCard(state, pending.cardHandIndex);
+    if (!consumed) return noHits(state);
+    const def = state.cardDefs.get(consumed.cardId);
+    const strikes =
+      pending.kind === "play_knockback_punch" ? punchStrikeCount(state, def) : 1;
+    let s = consumed.state;
+    const hits: HitVisual[] = [];
+    let survivors: string[] = [];
+    for (let i = 0; i < strikes; i++) {
+      if (!hasAttackTargetAt(s, target.x, target.y)) break;
+      const raw = weaponAttackRollRaw(s, consumed.cardId, pending.minDamage, pending.maxDamage);
+      const result = damageAttackTargetsAt(
+        s,
+        target,
+        raw,
+        "melee_slash",
+        false,
+        pending.kind === "play_mace_smash" ? pending.defensePierce : 0,
+      );
+      s = result.state;
+      hits.push(...result.hits);
+      survivors = result.survivorMonsterIds;
+      if (pending.kind === "play_poisoned_blade") {
+        const poisoned = survivors.filter((id) => (result.monsterDamage.get(id) ?? 0) > 1);
+        if (poisoned.length > 0) {
+          s = {
+            ...s,
+            monsters: applyPoisonToMonsters(s.monsters, poisoned, pending.poisonLevels),
+          };
+          s = log(s, `Poisoned Blade inflicts ${pending.poisonLevels} Poison.`);
+        }
+      }
+    }
+    const builtIn = pending.kind === "play_knockback_punch" ? pending.knockback : 0;
+    const knockback = builtIn + state.player.knockbackPrimed;
+    let afterHit: GameState = { ...s, player: { ...s.player, knockbackPrimed: 0 } };
+    if (pending.kind === "play_knife") {
+      afterHit = drawFromPlayerDeck(afterHit, 1);
+      afterHit = log(afterHit, "Knife — draw a card.");
+    }
+    if (pending.kind === "play_axe") {
+      afterHit = { ...afterHit, player: { ...afterHit.player, suppressNextMove: true } };
+      afterHit = log(afterHit, "Axe — your next movement will fail.");
+    }
+    if (pending.kind === "play_mace_smash") {
+      afterHit = {
+        ...afterHit,
+        player: { ...afterHit.player, drawPile: ["weariness", ...afterHit.player.drawPile] },
+      };
+      afterHit = log(afterHit, "Mace Smash adds Weariness to the top of your deck.");
+    }
+    afterHit = consumeStrengthGemIfPhysical(afterHit, consumed.cardId);
+    return withHitsThenKnockback(afterHit, hits, survivors, knockback);
+  }
+
+  if (pending.kind === "play_spear") {
+    const distance = manhattan(player, target);
+    const dx = Math.sign(target.x - player.x);
+    const dy = Math.sign(target.y - player.y);
+    if ((distance !== 1 && distance !== 2) || (dx !== 0 && dy !== 0)) return noHits(state);
+    const consumed = consumePlayedCard(state, pending.cardHandIndex);
+    if (!consumed) return noHits(state);
+    const raw = weaponAttackRollRaw(
+      consumed.state,
+      consumed.cardId,
+      pending.minDamage,
+      pending.maxDamage,
+    );
+    let result = damageAttackTargetsAt(consumed.state, target, raw, "melee_slash");
+    let s = result.state;
+    const hits = [...result.hits];
+    let survivors = [...result.survivorMonsterIds];
+    const behind = { x: target.x + dx, y: target.y + dy };
+    if (hasAttackTargetAt(s, behind.x, behind.y)) {
+      result = damageAttackTargetsAt(s, behind, raw, "melee_slash");
+      s = result.state;
+      hits.push(...result.hits);
+      survivors.push(...result.survivorMonsterIds);
+    }
+    const knockback = state.player.knockbackPrimed;
+    let afterHit: GameState = { ...s, player: { ...s.player, knockbackPrimed: 0 } };
+    afterHit = consumeStrengthGemIfPhysical(afterHit, consumed.cardId);
+    afterHit = log(afterHit, "The spear pierces the line!");
+    return withHitsThenKnockback(afterHit, hits, survivors, knockback);
+  }
+
+  if (pending.kind === "play_magic_missile") {
+    if (
+      !magicMissilePathClearToPoint(
+        state.tiles,
+        state.monsters,
+        state.pots,
+        player,
+        target.x,
+        target.y,
+      )
+    ) {
+      return noHits(state);
+    }
+    const consumed = consumePlayedCard(state, pending.cardHandIndex);
+    if (!consumed) return noHits(state);
+    const raw = magicAttackRollRaw(
+      consumed.state,
+      consumed.cardId,
+      pending.minDamage,
+      pending.maxDamage,
+    );
+    const result = damageAttackTargetsAt(
+      consumed.state,
+      target,
+      raw,
+      "magic_missile",
+      true,
+    );
+    return withHits(log(result.state, `Magic Missile — ${raw} damage, ignoring defense.`), result.hits);
+  }
+
+  if (pending.kind === "play_bow_attack") {
+    if (manhattan(player, target) <= 1) return noHits(log(state, "The bow cannot hit adjacent targets."));
+    if (chebyshev(player, target) > pending.range) return noHits(log(state, "Target is out of bow range."));
+    if (!lineOfSightClear(state.tiles, player, target)) return noHits(log(state, "No line of sight."));
+    const consumed = consumePlayedCard(state, pending.cardHandIndex);
+    if (!consumed) return noHits(state);
+    const raw = weaponAttackRollRaw(
+      consumed.state,
+      consumed.cardId,
+      pending.minDamage,
+      pending.maxDamage,
+    );
+    const result = damageAttackTargetsAt(consumed.state, target, raw, "arrow");
+    let s = consumeStrengthGemIfPhysical(result.state, consumed.cardId);
+    return withHits(log(s, `Bow shot — ${raw} raw damage.`), result.hits);
+  }
+
+  if (pending.kind === "play_lightning_bolt") {
+    const targetKey = keyOf(target);
+    if (pending.hitIds.includes(targetKey)) {
+      return noHits(log(state, "Lightning cannot hit the same tile twice."));
+    }
+    const origin =
+      pending.hitIds.length === 0
+        ? player
+        : (() => {
+            const [x, y] = pending.hitIds[pending.hitIds.length - 1]!.split(",").map(Number);
+            return { x, y };
+          })();
+    if (chebyshev(origin, target) > pending.nextDamage) {
+      return noHits(log(state, "Target is out of chain range."));
+    }
+    const cardId = state.player.hand[pending.cardHandIndex];
+    if (!cardId) return noHits(state);
+    const raw = pending.nextDamage + lightningBoltSkillDamageBonus(state, cardId);
+    const result = damageAttackTargetsAt(state, target, raw, "magic_missile", true);
+    let s = result.state;
+    const hitIds = [...pending.hitIds, targetKey];
+    const nextDamage = pending.nextDamage - 1;
+    const nextTargets =
+      nextDamage > 0
+        ? attackTargetTiles(s).filter(
+            (p) => !hitIds.includes(keyOf(p)) && chebyshev(target, p) <= nextDamage,
+          )
+        : [];
+    if (nextTargets.length === 0) {
+      const consumed = consumePlayedCard(s, pending.cardHandIndex);
+      if (consumed) s = consumed.state;
+      s = log(s, "Lightning chain ends.");
+    } else {
+      s = {
+        ...s,
+        pending: { ...pending, nextDamage, hitIds },
+      };
+      s = log(s, `Lightning chains — choose a target within ${nextDamage}.`);
+    }
+    return withHits(s, result.hits);
+  }
+
+  return noHits(state);
+}
+
 function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
   if (
     cmd.type === "DEV_SET_VARIABLE" ||
     cmd.type === "DEV_CARD" ||
+    cmd.type === "DEV_DECK" ||
     cmd.type === "DEV_DUNGEON_TOP" ||
     cmd.type === "DEV_GOTO_FLOOR" ||
     cmd.type === "DEV_SET_THEME" ||
     cmd.type === "DEV_SUMMON" ||
-    cmd.type === "DEV_CHANCE"
+    cmd.type === "DEV_CHANCE" ||
+    cmd.type === "DEV_EDITOR" ||
+    cmd.type === "DEV_EDITOR_CELL_ACTION"
   ) {
     return handleDevCommand(state, cmd);
   }
@@ -2074,9 +2835,26 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
   if (pickupLen > 0 && cmd.type !== "RESOLVE_CARD_PICKUP") return noHits(state);
   if (state.pedestalOffer && cmd.type !== "RESOLVE_PEDESTAL_PICK") return noHits(state);
   if (state.deckDestroyPending && cmd.type !== "RESOLVE_DECK_DESTROY") return noHits(state);
+  if (
+    state.dualWieldStage?.step === "choose_discard_attack" &&
+    cmd.type !== "RESOLVE_DUAL_WIELD_DISCARD" &&
+    cmd.type !== "CANCEL_PENDING"
+  ) {
+    return noHits(log(state, "Choose Dual Wield's discard attack first."));
+  }
+  if (
+    state.dualWieldStage?.step === "choose_hand_attack" &&
+    cmd.type !== "REQUEST_PLAY_CARD" &&
+    cmd.type !== "CANCEL_PENDING"
+  ) {
+    return noHits(log(state, "Play an Attack to continue Dual Wield."));
+  }
 
   if (state.phase === "peace") {
+    const merchantResult = handleMerchantCommand(state, cmd);
+    if (merchantResult) return merchantResult;
     if (cmd.type === "PEACE_MOVE_TO") {
+      if (merchantUiBlocks(state)) return noHits(log(state, "Finish talking with Shifty first."));
       const dest = { x: cmd.x, y: cmd.y };
       const from = { x: state.player.x, y: state.player.y };
       if (manhattan(from, dest) !== 1) return noHits(state);
@@ -2093,8 +2871,8 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       if (onStairDown && state.pedestalUsed) {
         let next = createNextFloorState(state);
         next = reshufflePlayerDeck(next);
-        next = ensureEquippedOnDeckTop(next);
         const drawN = playerDrawCountPerTurn(next);
+        next = ensureEquippedOnTopOfDraw(next);
         next = drawFromPlayerDeck(next, drawN, true);
         next = applyPerTurnSkillResourcesAfterDraw(next);
         next = revealAtPlayer(next);
@@ -2150,7 +2928,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       const nm = state.cardDefs.get(cmd.cardId)?.name ?? cmd.cardId;
       return noHits(
         log(
-          { ...removed, deckDestroyPending: false, pedestalUsed: true },
+          { ...clearEquippedIfGone(removed), deckDestroyPending: false, pedestalUsed: true },
           `${nm} is torn out of your deck forever.`,
         ),
       );
@@ -2213,16 +2991,16 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
 
     case "BEGIN_FIRST_TURN": {
       if (state.turn > 0) return noHits(state);
-      let s = ensureEquippedOnDeckTop({ ...state, turn: 1 });
+      let s = { ...state, turn: 1 };
       const n = playerDrawCountPerTurn(s);
-      s = drawFromPlayerDeck(s, n, true);
+      s = drawFromPlayerDeck(s, n);
       s = {
         ...s,
         player: {
           ...s.player,
           moveTokens: moveTokensGrantedPerTurn(s),
           knockbackTokens: knockbackTokensGrantedPerTurn(s),
-          knockbackPrimed: false,
+          knockbackPrimed: 0,
           movementCardsPlayedThisTurn: 0,
           scoutUsesThisTurn: 0,
           hasteThisTurn: false,
@@ -2234,7 +3012,47 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
     }
 
     case "CANCEL_PENDING": {
+      if (
+        state.dualWieldStage?.step === "choose_hand_attack" ||
+        state.dualWieldStage?.step === "choose_discard_attack"
+      ) {
+        return noHits(
+          log({ ...state, dualWieldStage: null, pending: null }, "Dual Wield cancelled."),
+        );
+      }
       if (!state.pending) return noHits(state);
+      if (
+        state.dualWieldStage?.step === "resolving_hand_attack"
+      ) {
+        return noHits({
+          ...state,
+          pending: null,
+          dualWieldStage: { step: "choose_hand_attack" },
+        });
+      }
+      if (
+        state.dualWieldStage?.step === "resolving_discard_attack" &&
+        "cardHandIndex" in state.pending
+      ) {
+        const idx = state.pending.cardHandIndex;
+        const hand = [...state.player.hand];
+        const cardId = hand[idx];
+        if (!cardId) return noHits(state);
+        hand.splice(idx, 1);
+        return noHits({
+          ...state,
+          player: {
+            ...state.player,
+            hand,
+            discardPile: [...state.player.discardPile, cardId],
+          },
+          pending: null,
+          dualWieldStage: {
+            step: "choose_discard_attack",
+            firstCardId: state.dualWieldStage.firstCardId,
+          },
+        });
+      }
       // If a lightning bolt chain has already dealt damage, discard the card on cancel.
       if (state.pending.kind === "play_lightning_bolt" && state.pending.hitIds.length > 0) {
         const p = state.pending;
@@ -2244,8 +3062,8 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           hand.splice(p.cardHandIndex, 1);
           return noHits(
             log(
-              { ...state, player: { ...state.player, hand, discardPile: [...state.player.discardPile, cardId] }, pending: null },
-              "Lightning chain cancelled — card discarded.",
+              { ...state, player: playerAfterPlayingCard(state, hand, cardId), pending: null },
+              "Lightning chain cancelled.",
             ),
           );
         }
@@ -2258,31 +3076,34 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       const idx = cmd.handIndex;
       const cardId = state.player.hand[idx];
       if (!cardId || state.player.equipped) return noHits(state);
-      if (state.cardDefs.get(cardId)?.effect.type === "bonus_chit") {
-        return noHits(log(state, "Bonus Cards can't be equipped."));
+      const effectType = state.cardDefs.get(cardId)?.effect.type;
+      if (effectType === "bonus_chit" || effectType === "penalty_destroy") {
+        return noHits(log(state, "Bonus and Penalty cards can't be equipped."));
       }
-      const hand = state.player.hand.filter((_, i) => i !== idx);
-      const drawPile = state.player.drawPile.filter((c) => c !== cardId);
-      const discardPile = state.player.discardPile.filter((c) => c !== cardId);
+      const hand = [...state.player.hand];
+      hand.splice(idx, 1);
       return noHits(
         log(
           {
             ...state,
-            player: { ...state.player, hand, equipped: cardId, drawPile, discardPile },
+            player: {
+              ...state.player,
+              hand,
+              drawPile: [cardId, ...state.player.drawPile],
+              equipped: cardId,
+            },
           },
-          `Equipped ${state.cardDefs.get(cardId)?.name ?? cardId}.`,
+          `Equipped ${state.cardDefs.get(cardId)?.name ?? cardId} — it is used for this turn and will be drawn at the start of every turn.`,
         ),
       );
     }
 
     case "UNEQUIP": {
       if (!state.player.equipped) return noHits(state);
-      const top = state.player.equipped;
-      const drawPile = [top, ...state.player.drawPile.filter((c) => c !== top)];
       return noHits(
         log(
-          { ...state, player: { ...state.player, equipped: null, drawPile } },
-          `Unequipped — ${state.cardDefs.get(top)?.name ?? top} placed on top of your deck.`,
+          { ...state, player: { ...state.player, equipped: null } },
+          "Card unequipped — it returns to your deck's normal cycle.",
         ),
       );
     }
@@ -2295,8 +3116,41 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       const def = state.cardDefs.get(cardId);
       if (!def) return noHits(state);
 
+      if (
+        state.dualWieldStage?.step === "choose_hand_attack" &&
+        !def.types.includes("Attack")
+      ) {
+        return noHits(log(state, "Dual Wield requires you to play an Attack."));
+      }
+
       if (def.effect.type === "bonus_chit") {
         return noHits(log(state, "Bonus Cards can't be played — discard one for a bonus action."));
+      }
+
+      if (def.effect.type === "penalty_destroy") {
+        const hand = [...state.player.hand];
+        hand.splice(idx, 1);
+        return noHits(
+          log(
+            { ...state, player: { ...state.player, hand } },
+            "Weariness is played and destroyed.",
+          ),
+        );
+      }
+
+      if (def.effect.type === "dual_wield") {
+        const hand = [...state.player.hand];
+        hand.splice(idx, 1);
+        return noHits(
+          log(
+            {
+              ...state,
+              player: playerAfterPlayingCard(state, hand, cardId),
+              dualWieldStage: { step: "choose_hand_attack" },
+            },
+            "Dual Wield — play an Attack from your hand.",
+          ),
+        );
       }
 
       if (state.player.hasteThisTurn) {
@@ -2312,8 +3166,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         let s = state;
         const hand = [...s.player.hand];
         hand.splice(idx, 1);
-        const discardPile = [...s.player.discardPile, cardId];
-        s = { ...s, player: { ...s.player, hand, discardPile } };
+        s = { ...s, player: playerAfterPlayingCard(s, hand, cardId) };
         s = drawFromPlayerDeck(s, def.effect.draw);
         const bonusId = "bonus_card";
         for (let i = 0; i < def.effect.bonusCount; i++) {
@@ -2331,15 +3184,14 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         let s = state;
         const hand = [...s.player.hand];
         hand.splice(idx, 1);
-        const discardPile = [...s.player.discardPile, cardId];
-        s = { ...s, player: { ...s.player, hand, discardPile } };
+        s = { ...s, player: playerAfterPlayingCard(s, hand, cardId) };
         s = drawFromPlayerDeck(s, def.effect.amount);
         return noHits(log(s, `Played ${def.name} — draw ${def.effect.amount}.`));
       }
 
       if (def.effect.type === "move") {
         const baseRange = def.effect.range + sprinterExtraMoveRange(state, def);
-        const range = state.player.hasteThisTurn ? baseRange * 2 : baseRange;
+        const range = hasteMovementRange(state, baseRange);
         return noHits({
           ...state,
           pending: { kind: "play_move", cardHandIndex: idx, range },
@@ -2400,19 +3252,19 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         const cardId = hand[idx];
         if (!cardId) return noHits(state);
         hand.splice(idx, 1);
-        const discardPile = [...s.player.discardPile, cardId];
-        const sprinterExtra =
-          s.player.movementCardsPlayedThisTurn === 0 && hasSkill(s, SID.MOB_SPRINTER) ? 1 : 0;
-        const maxRange = 1 + sprinterExtra;
+        const maxRange = hasteMovementRange(
+          s,
+          def.effect.move + sprinterExtraMoveRange(s, def),
+        );
         s = {
           ...s,
-          player: { ...s.player, hand, discardPile },
+          player: playerAfterPlayingCard(s, hand, cardId),
           pending: { kind: "discard_move1", maxRange, fromQuickstep: true },
         };
         s = drawFromPlayerDeck(s, def.effect.draw);
         const stepMsg =
           maxRange > 1
-            ? `Played ${def.name} — draw, then step up to ${maxRange} spaces (Sprinter).`
+            ? `Played ${def.name} — draw, then move up to ${maxRange} spaces.`
             : `Played ${def.name} — draw, then step 1 space.`;
         return noHits(log(s, stepMsg));
       }
@@ -2421,9 +3273,14 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         let s = state;
         const hand = [...s.player.hand];
         hand.splice(idx, 1);
-        const discardPile = [...s.player.discardPile, cardId];
         const defenseBonusThisTurn = s.player.defenseBonusThisTurn + def.effect.defenseBonus;
-        s = { ...s, player: { ...s.player, hand, discardPile, defenseBonusThisTurn } };
+        s = {
+          ...s,
+          player: {
+            ...playerAfterPlayingCard(s, hand, cardId),
+            defenseBonusThisTurn,
+          },
+        };
         return noHits(log(s, `Played ${def.name} — +${def.effect.defenseBonus} defense this turn.`));
       }
 
@@ -2431,8 +3288,13 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         let s = state;
         const hand = [...s.player.hand];
         hand.splice(idx, 1);
-        const discardPile = [...s.player.discardPile, cardId];
-        s = { ...s, player: { ...s.player, hand, discardPile, doublePunchThisTurn: true } };
+        s = {
+          ...s,
+          player: {
+            ...playerAfterPlayingCard(s, hand, cardId),
+            doublePunchThisTurn: true,
+          },
+        };
         return noHits(log(s, `Played ${def.name} — punches hit twice this turn.`));
       }
 
@@ -2449,9 +3311,13 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       }
 
       if (def.effect.type === "card_seeker") {
+        const range = hasteMovementRange(
+          state,
+          def.effect.move + sprinterExtraMoveRange(state, def),
+        );
         return noHits({
           ...state,
-          pending: { kind: "play_card_seeker", cardHandIndex: idx },
+          pending: { kind: "play_card_seeker", cardHandIndex: idx, range },
         });
       }
 
@@ -2461,9 +3327,14 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         }
         const hand = [...state.player.hand];
         hand.splice(idx, 1);
-        const discardPile = [...state.player.discardPile, cardId];
         const s = log(
-          { ...state, player: { ...state.player, hand, discardPile, hasteThisTurn: true } },
+          {
+            ...state,
+            player: {
+              ...playerAfterPlayingCard(state, hand, cardId),
+              hasteThisTurn: true,
+            },
+          },
           "Haste! Movement doubled this turn. Attack, Protection, Aid and Deck cards are locked.",
         );
         return noHits(s);
@@ -2472,15 +3343,21 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       if (def.effect.type === "stealthy_advance") {
         const hand = [...state.player.hand];
         hand.splice(idx, 1);
-        const discardPile = [...state.player.discardPile, cardId];
         const noise = Math.max(0, state.noise - def.effect.noiseReduction);
         const defenseBonusThisTurn =
           state.player.defenseBonusThisTurn + def.effect.defenseBonus;
         let s: GameState = {
           ...state,
           noise,
-          player: { ...state.player, hand, discardPile, defenseBonusThisTurn },
-          pending: { kind: "discard_move1", maxRange: def.effect.move, fromQuickstep: false },
+          player: {
+            ...playerAfterPlayingCard(state, hand, cardId),
+            defenseBonusThisTurn,
+          },
+          pending: {
+            kind: "discard_move1",
+            maxRange: hasteMovementRange(state, def.effect.move),
+            fromQuickstep: false,
+          },
         };
         s = log(
           s,
@@ -2543,7 +3420,110 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         });
       }
 
+      if (def.effect.type === "potion_of_harming") {
+        return noHits({
+          ...state,
+          pending: {
+            kind: "play_potion_of_harming",
+            cardHandIndex: idx,
+            range: def.effect.range,
+            damage: def.effect.damage,
+            cloudTurns: def.effect.cloudTurns,
+          },
+        });
+      }
+
+      if (def.effect.type === "mace_smash") {
+        return noHits({
+          ...state,
+          pending: {
+            kind: "play_mace_smash",
+            cardHandIndex: idx,
+            minDamage: def.effect.minDamage,
+            maxDamage: def.effect.maxDamage,
+            defensePierce: def.effect.defensePierce,
+          },
+        });
+      }
+
+      if (def.effect.type === "poisoned_blade") {
+        return noHits({
+          ...state,
+          pending: {
+            kind: "play_poisoned_blade",
+            cardHandIndex: idx,
+            minDamage: def.effect.minDamage,
+            maxDamage: def.effect.maxDamage,
+            poisonLevels: def.effect.poisonLevels,
+          },
+        });
+      }
+
+      if (def.effect.type === "loot_and_scoot") {
+        const range = hasteMovementRange(
+          state,
+          def.effect.move + sprinterExtraMoveRange(state, def),
+        );
+        return noHits({
+          ...state,
+          pending: {
+            kind: "play_loot_and_scoot",
+            cardHandIndex: idx,
+            range,
+            maxCoins: def.effect.maxCoins,
+          },
+        });
+      }
+
+      if (def.effect.type === "flying_kick") {
+        return noHits({
+          ...state,
+          pending: {
+            kind: "play_flying_kick",
+            cardHandIndex: idx,
+            move: def.effect.move,
+            minDamage: def.effect.minDamage,
+            maxDamage: def.effect.maxDamage,
+            knockback: def.effect.knockback,
+          },
+        });
+      }
+
+      if (def.effect.type === "great_sword") {
+        return noHits({
+          ...state,
+          pending: {
+            kind: "play_great_sword",
+            cardHandIndex: idx,
+            minDamage: def.effect.minDamage,
+            maxDamage: def.effect.maxDamage,
+            secondaryMinDamage: def.effect.secondaryMinDamage,
+            secondaryMaxDamage: def.effect.secondaryMaxDamage,
+          },
+        });
+      }
+
       return noHits(state);
+    }
+
+    case "RESOLVE_DUAL_WIELD_DISCARD": {
+      const stage = state.dualWieldStage;
+      if (!stage || stage.step !== "choose_discard_attack") return noHits(state);
+      const def = state.cardDefs.get(cmd.cardId);
+      if (!isPhysicalMeleeAttack(def) || cmd.cardId === stage.firstCardId) {
+        return noHits(log(state, "Choose another physical melee Attack."));
+      }
+      const discardIndex = state.player.discardPile.indexOf(cmd.cardId);
+      if (discardIndex < 0) return noHits(log(state, "That card is not in your discard pile."));
+      const discardPile = [...state.player.discardPile];
+      discardPile.splice(discardIndex, 1);
+      const hand = [...state.player.hand, cmd.cardId];
+      const staged: GameState = {
+        ...state,
+        player: { ...state.player, discardPile, hand },
+        dualWieldStage: { step: "resolving_discard_attack", firstCardId: stage.firstCardId },
+      };
+      return dispatchCore(staged, { type: "REQUEST_PLAY_CARD", handIndex: hand.length - 1 });
     }
 
     case "REQUEST_DISCARD_BONUS": {
@@ -2551,6 +3531,9 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       const idx = cmd.handIndex;
       const cardId = state.player.hand[idx];
       if (!cardId) return noHits(state);
+      if (state.cardDefs.get(cardId)?.effect.type === "penalty_destroy") {
+        return noHits(log(state, "Weariness cannot be used for bonus actions."));
+      }
       const hand = state.player.hand.filter((_, i) => i !== idx);
       const isBonus = state.cardDefs.get(cardId)?.effect.type === "bonus_chit";
       const discardPile = isBonus ? state.player.discardPile : [...state.player.discardPile, cardId];
@@ -2589,12 +3572,30 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       if (!state.pending) return noHits(state);
       const dest = { x: cmd.x, y: cmd.y };
       const from = { x: state.player.x, y: state.player.y };
+      if (
+        state.pending.kind === "play_melee" ||
+        state.pending.kind === "play_spear" ||
+        state.pending.kind === "play_knife" ||
+        state.pending.kind === "play_axe" ||
+        state.pending.kind === "discard_punch" ||
+        state.pending.kind === "play_magic_missile" ||
+        state.pending.kind === "play_knockback_punch" ||
+        state.pending.kind === "play_bow_attack" ||
+        state.pending.kind === "play_lightning_bolt" ||
+        state.pending.kind === "play_mace_smash" ||
+        state.pending.kind === "play_poisoned_blade" ||
+        state.pending.kind === "play_great_sword"
+      ) {
+        return resolvePlayerAttackAtTile(state, dest);
+      }
 
       const moveKinds =
         state.pending.kind === "play_move" ||
         state.pending.kind === "discard_move1" ||
         state.pending.kind === "move_token_step" ||
-        state.pending.kind === "play_card_seeker";
+        state.pending.kind === "play_card_seeker" ||
+        state.pending.kind === "play_loot_and_scoot" ||
+        state.pending.kind === "play_flying_kick";
       if (moveKinds && playerEntangled(state)) {
         return noHits(log(state, "Tangleweed holds you — kill it before you can move."));
       }
@@ -2609,9 +3610,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           let s: GameState = {
             ...state,
             player: {
-              ...state.player,
-              hand,
-              discardPile: [...state.player.discardPile, cardId],
+              ...playerAfterPlayingCard(state, hand, cardId),
               suppressNextMove: false,
             },
             pending: null,
@@ -2641,37 +3640,30 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const cardId = hand[p.cardHandIndex];
           if (!cardId) return noHits(state);
           hand.splice(p.cardHandIndex, 1);
-          const discardPile = [...state.player.discardPile, cardId];
           const raw = rollInt(3, 4);
           const dmg = incomingDamageToPlayer(state, raw);
           const hp = Math.max(0, state.player.hp - dmg);
           const px = state.player.x;
           const py = state.player.y;
           if (hp <= 0) {
-            return {
-              state: log(
+            return withHits(log(
                 {
                   ...state,
-                  player: { ...state.player, hand, discardPile, hp: 0 },
+                  player: { ...playerAfterPlayingCard(state, hand, cardId), hp: 0 },
                   phase: "defeat",
                   pending: null,
                 },
                 "The mimic's bite is fatal.",
-              ),
-              hits: [{ gridX: px, gridY: py, damage: dmg }],
-            };
+              ), [{ gridX: px, gridY: py, damage: dmg }],);
           }
           let s: GameState = {
             ...state,
-            player: { ...state.player, hand, discardPile, hp },
+            player: { ...playerAfterPlayingCard(state, hand, cardId), hp },
             pending: null,
           };
           s = awakenMimicOnTile(s, dest.x, dest.y);
           s = log(s, "The chest strikes — the Mimic wakes!");
-          return {
-            state: s,
-            hits: [{ gridX: px, gridY: py, damage: dmg }],
-          };
+          return withHits(s, [{ gridX: px, gridY: py, damage: dmg }],);
         }
 
         const brPlayMove = bridgeTileKeySet(state);
@@ -2680,13 +3672,12 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const cardIdW = handW[p.cardHandIndex];
           if (!cardIdW) return noHits(state);
           handW.splice(p.cardHandIndex, 1);
-          const discardPileW = [...state.player.discardPile, cardIdW];
           const rawW = state.danger;
           const dmgW = incomingDamageToPlayer(state, rawW);
           const hpW = Math.max(0, state.player.hp - dmgW);
           let sw: GameState = {
             ...state,
-            player: { ...state.player, hand: handW, discardPile: discardPileW, hp: hpW },
+            player: { ...playerAfterPlayingCard(state, handW, cardIdW), hp: hpW },
             pending: { kind: "water_escape", waterX: dest.x, waterY: dest.y },
           };
           sw = log(
@@ -2694,13 +3685,10 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
             `The water pulls you under — ${dmgW} damage! Discard a card and choose adjacent land to escape.`,
           );
           if (hpW <= 0) {
-            return {
-              state: log(
+            return withHits(log(
                 { ...sw, player: { ...sw.player, hp: 0 }, phase: "defeat", pending: null },
                 "You drown.",
-              ),
-              hits: [{ gridX: state.player.x, gridY: state.player.y, damage: dmgW }],
-            };
+              ), [{ gridX: state.player.x, gridY: state.player.y, damage: dmgW }],);
           }
           return withHits(sw, [{ gridX: state.player.x, gridY: state.player.y, damage: dmgW }]);
         }
@@ -2727,15 +3715,12 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         const cardId = hand[p.cardHandIndex];
         if (!cardId) return noHits(state);
         hand.splice(p.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
         let s: GameState = {
           ...state,
           player: {
-            ...state.player,
+            ...playerAfterPlayingCard(state, hand, cardId),
             x: dest.x,
             y: dest.y,
-            hand,
-            discardPile,
             movementCardsPlayedThisTurn: state.player.movementCardsPlayedThisTurn + 1,
           },
           pending: null,
@@ -2758,9 +3743,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
               {
                 ...state,
                 player: {
-                  ...state.player,
-                  hand,
-                  discardPile: [...state.player.discardPile, cardId],
+                  ...playerAfterPlayingCard(state, hand, cardId),
                   suppressNextMove: false,
                 },
                 pending: null,
@@ -2775,7 +3758,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           state.width,
           state.height,
           from,
-          1,
+          p.range,
           occ,
           rockKeySet(state),
           bridgeTileKeySet(state),
@@ -2792,37 +3775,30 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const cardId = hand[p.cardHandIndex];
           if (!cardId) return noHits(state);
           hand.splice(p.cardHandIndex, 1);
-          const discardPile = [...state.player.discardPile, cardId];
           const raw = rollInt(3, 4);
           const dmg = incomingDamageToPlayer(state, raw);
           const hp = Math.max(0, state.player.hp - dmg);
           const px = state.player.x;
           const py = state.player.y;
           if (hp <= 0) {
-            return {
-              state: log(
+            return withHits(log(
                 {
                   ...state,
-                  player: { ...state.player, hand, discardPile, hp: 0 },
+                  player: { ...playerAfterPlayingCard(state, hand, cardId), hp: 0 },
                   phase: "defeat",
                   pending: null,
                 },
                 "The mimic's bite is fatal.",
-              ),
-              hits: [{ gridX: px, gridY: py, damage: dmg }],
-            };
+              ), [{ gridX: px, gridY: py, damage: dmg }],);
           }
           let s: GameState = {
             ...state,
-            player: { ...state.player, hand, discardPile, hp },
+            player: { ...playerAfterPlayingCard(state, hand, cardId), hp },
             pending: null,
           };
           s = awakenMimicOnTile(s, dest.x, dest.y);
           s = log(s, "The chest strikes — the Mimic wakes!");
-          return {
-            state: s,
-            hits: [{ gridX: px, gridY: py, damage: dmg }],
-          };
+          return withHits(s, [{ gridX: px, gridY: py, damage: dmg }],);
         }
 
         const brSeek = bridgeTileKeySet(state);
@@ -2831,12 +3807,11 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const cardIdWs = handWs[p.cardHandIndex];
           if (!cardIdWs) return noHits(state);
           handWs.splice(p.cardHandIndex, 1);
-          const discardPileWs = [...state.player.discardPile, cardIdWs];
           const dmgWs = incomingDamageToPlayer(state, state.danger);
           const hpWs = Math.max(0, state.player.hp - dmgWs);
           let sws: GameState = {
             ...state,
-            player: { ...state.player, hand: handWs, discardPile: discardPileWs, hp: hpWs },
+            player: { ...playerAfterPlayingCard(state, handWs, cardIdWs), hp: hpWs },
             pending: { kind: "water_escape", waterX: dest.x, waterY: dest.y },
           };
           sws = log(
@@ -2844,13 +3819,10 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
             `The water pulls you under — ${dmgWs} damage! Discard a card and choose adjacent land to escape.`,
           );
           if (hpWs <= 0) {
-            return {
-              state: log(
+            return withHits(log(
                 { ...sws, player: { ...sws.player, hp: 0 }, phase: "defeat", pending: null },
                 "You drown.",
-              ),
-              hits: [{ gridX: state.player.x, gridY: state.player.y, damage: dmgWs }],
-            };
+              ), [{ gridX: state.player.x, gridY: state.player.y, damage: dmgWs }],);
           }
           return withHits(sws, [{ gridX: state.player.x, gridY: state.player.y, damage: dmgWs }]);
         }
@@ -2864,7 +3836,11 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
             pending: {
               kind: "enter_blocked_tile",
               dest,
-              resume: { kind: "play_card_seeker", cardHandIndex: p.cardHandIndex },
+              resume: {
+                kind: "play_card_seeker",
+                cardHandIndex: p.cardHandIndex,
+                range: p.range,
+              },
             },
           });
         }
@@ -2873,18 +3849,164 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         const cardId = hand[p.cardHandIndex];
         if (!cardId) return noHits(state);
         hand.splice(p.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
         const nm = state.cardDefs.get(cardId)?.name ?? cardId;
         let s: GameState = {
           ...state,
-          player: { ...state.player, x: dest.x, y: dest.y, hand, discardPile },
+          player: {
+            ...playerAfterPlayingCard(state, hand, cardId),
+            x: dest.x,
+            y: dest.y,
+            movementCardsPlayedThisTurn: state.player.movementCardsPlayedThisTurn + 1,
+          },
           pending: null,
         };
         s = revealAtPlayer(s);
-        s = log(s, `Played ${nm} — moved 1.`);
+        s = log(s, `Played ${nm} — moved.`);
         s = resolvePlayerEnterTile(s, dest.x, dest.y);
         s = spawnGroundCardLootInDiscovered(s, 2);
         return noHits(s);
+      }
+
+      if (state.pending.kind === "play_loot_and_scoot") {
+        const p = state.pending;
+        if (state.player.suppressNextMove) {
+          const hand = [...state.player.hand];
+          const cardId = hand[p.cardHandIndex];
+          if (!cardId) return noHits(state);
+          hand.splice(p.cardHandIndex, 1);
+          let s: GameState = {
+            ...state,
+            player: {
+              ...playerAfterPlayingCard(state, hand, cardId),
+              suppressNextMove: false,
+            },
+            pending: null,
+          };
+          s = spawnGroundCoinsInDungeon(s, rollInt(0, p.maxCoins));
+          return noHits(log(s, "The axe's weight cancels Loot and Scoot's movement."));
+        }
+        const occ = occupiedForPlayerMove(state);
+        const reach = reachableOrthogonal(
+          state.tiles,
+          state.width,
+          state.height,
+          from,
+          p.range,
+          occ,
+          rockKeySet(state),
+          bridgeTileKeySet(state),
+        );
+        if (
+          !reach.has(keyOf(dest)) ||
+          tileAt(state.tiles, dest) !== "floor"
+        ) {
+          return noHits(state);
+        }
+        const hand = [...state.player.hand];
+        const cardId = hand[p.cardHandIndex];
+        if (!cardId) return noHits(state);
+        hand.splice(p.cardHandIndex, 1);
+        const landedOnPot = state.pots.some((pot) => pot.x === dest.x && pot.y === dest.y);
+        let s: GameState = {
+          ...state,
+          player: {
+            ...playerAfterPlayingCard(state, hand, cardId),
+            x: dest.x,
+            y: dest.y,
+            movementCardsPlayedThisTurn: state.player.movementCardsPlayedThisTurn + 1,
+          },
+          pending: null,
+        };
+        s = spawnGroundCoinsInDungeon(s, rollInt(0, p.maxCoins));
+        s = revealAtPlayer(s);
+        s = resolvePlayerEnterTile(s, dest.x, dest.y);
+        if (landedOnPot) {
+          s = log(
+            { ...s, player: { ...s.player, gold: s.player.gold + 1 } },
+            "Loot and Scoot — +1 bonus gold from the pot.",
+          );
+        }
+        return noHits(s);
+      }
+
+      if (state.pending.kind === "play_flying_kick") {
+        const p = state.pending;
+        if (state.player.suppressNextMove) {
+          const consumed = consumePlayedCard(state, p.cardHandIndex);
+          if (!consumed) return noHits(state);
+          return noHits(
+            log(
+              {
+                ...consumed.state,
+                player: { ...consumed.state.player, suppressNextMove: false },
+              },
+              "The axe's weight cancels Flying Kick — nothing else happens.",
+            ),
+          );
+        }
+        const dxTotal = dest.x - from.x;
+        const dyTotal = dest.y - from.y;
+        const cardinal = (dxTotal === 0) !== (dyTotal === 0);
+        if (!cardinal || Math.abs(dxTotal) + Math.abs(dyTotal) !== p.move) return noHits(state);
+        const dx = Math.sign(dxTotal);
+        const dy = Math.sign(dyTotal);
+        const path = Array.from({ length: p.move }, (_, i) => ({
+          x: from.x + dx * (i + 1),
+          y: from.y + dy * (i + 1),
+        }));
+        const blocked = path.some(
+          (cell) =>
+            tileAt(state.tiles, cell) !== "floor" ||
+            state.rocks.some((r) => r.x === cell.x && r.y === cell.y) ||
+            state.chests.some((c) => c.x === cell.x && c.y === cell.y),
+        );
+        if (blocked) return noHits(log(state, "Flying Kick is blocked — nothing happens."));
+        const hand = [...state.player.hand];
+        const cardId = hand[p.cardHandIndex];
+        if (!cardId) return noHits(state);
+        hand.splice(p.cardHandIndex, 1);
+        let s: GameState = {
+          ...state,
+          player: playerAfterPlayingCard(state, hand, cardId),
+          pending: null,
+        };
+        const raw = weaponAttackRollRaw(s, cardId, p.minDamage, p.maxDamage);
+        const hits: HitVisual[] = [];
+        const survivors: string[] = [];
+        for (const cell of path) {
+          if (!hasAttackTargetAt(s, cell.x, cell.y)) continue;
+          const result = damageAttackTargetsAt(s, cell, raw, "melee_slash");
+          s = result.state;
+          hits.push(...result.hits);
+          survivors.push(...result.survivorMonsterIds);
+        }
+        const afterCombat = s;
+        const knockMoves: TurnAnimEvent[] = [];
+        for (const id of survivors) {
+          s = tryKnockMonsterInDirection(s, id, dx, dy, p.knockback, knockMoves);
+        }
+        if (!s.monsters.some((m) => m.hp > 0 && m.x === dest.x && m.y === dest.y)) {
+          s = {
+            ...s,
+            player: {
+              ...s.player,
+              x: dest.x,
+              y: dest.y,
+              movementCardsPlayedThisTurn: state.player.movementCardsPlayedThisTurn + 1,
+            },
+          };
+          s = revealAtPlayer(s);
+          s = resolvePlayerEnterTile(s, dest.x, dest.y);
+        } else {
+          s = log(s, "A surviving target stops the kick short.");
+        }
+        s = consumeStrengthGemIfPhysical(s, cardId);
+        s = log(s, "Flying Kick!");
+        return {
+          state: s,
+          hits,
+          anims: [...animsFromHits(hits, afterCombat), ...knockMoves],
+        };
       }
 
       if (state.pending.kind === "discard_move1") {
@@ -2931,21 +4053,15 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const px = s.player.x;
           const py = s.player.y;
           if (hp <= 0) {
-            return {
-              state: log(
+            return withHits(log(
                 { ...s, player: { ...s.player, hp: 0 }, phase: "defeat" },
                 "The mimic's bite is fatal.",
-              ),
-              hits: [{ gridX: px, gridY: py, damage: dmg }],
-            };
+              ), [{ gridX: px, gridY: py, damage: dmg }],);
           }
           s = { ...s, player: { ...s.player, hp } };
           s = awakenMimicOnTile(s, dest.x, dest.y);
           s = log(s, "The chest strikes — the Mimic wakes!");
-          return {
-            state: s,
-            hits: [{ gridX: px, gridY: py, damage: dmg }],
-          };
+          return withHits(s, [{ gridX: px, gridY: py, damage: dmg }],);
         }
 
         const brDm = bridgeTileKeySet(state);
@@ -2962,13 +4078,10 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
             `The water pulls you under — ${dmgD} damage! Discard a card and choose adjacent land to escape.`,
           );
           if (hpD <= 0) {
-            return {
-              state: log(
+            return withHits(log(
                 { ...sd, player: { ...sd.player, hp: 0 }, phase: "defeat", pending: null },
                 "You drown.",
-              ),
-              hits: [{ gridX: state.player.x, gridY: state.player.y, damage: dmgD }],
-            };
+              ), [{ gridX: state.player.x, gridY: state.player.y, damage: dmgD }],);
           }
           return withHits(sd, [{ gridX: state.player.x, gridY: state.player.y, damage: dmgD }]);
         }
@@ -3006,7 +4119,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         s = revealAtPlayer(s);
         const moveMsg = dm.fromQuickstep
           ? dm.maxRange > 1
-            ? "Quickstep — moved (Sprinter bonus range)."
+            ? `Quickstep — moved up to ${dm.maxRange} spaces.`
             : "Quickstep — stepped."
           : "Bonus move — stepped 1 space.";
         s = log(s, moveMsg);
@@ -3034,7 +4147,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           state.width,
           state.height,
           from,
-          1,
+          hasteMovementRange(state, 1),
           occ,
           rockKeySet(state),
           bridgeTileKeySet(state),
@@ -3053,8 +4166,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const px = state.player.x;
           const py = state.player.y;
           if (hp <= 0) {
-            return {
-              state: log(
+            return withHits(log(
                 {
                   ...state,
                   player: { ...state.player, hp: 0 },
@@ -3062,9 +4174,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
                   pending: null,
                 },
                 "The mimic's bite is fatal.",
-              ),
-              hits: [{ gridX: px, gridY: py, damage: dmg }],
-            };
+              ), [{ gridX: px, gridY: py, damage: dmg }],);
           }
           let s: GameState = {
             ...state,
@@ -3073,10 +4183,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           };
           s = awakenMimicOnTile(s, dest.x, dest.y);
           s = log(s, "The chest strikes — the Mimic wakes!");
-          return {
-            state: s,
-            hits: [{ gridX: px, gridY: py, damage: dmg }],
-          };
+          return withHits(s, [{ gridX: px, gridY: py, damage: dmg }],);
         }
 
         const brTok = bridgeTileKeySet(state);
@@ -3097,13 +4204,10 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
             `The water pulls you under — ${dmgT} damage! Discard a card and choose adjacent land to escape.`,
           );
           if (hpT <= 0) {
-            return {
-              state: log(
+            return withHits(log(
                 { ...st, player: { ...st.player, hp: 0 }, phase: "defeat", pending: null },
                 "You drown.",
-              ),
-              hits: [{ gridX: state.player.x, gridY: state.player.y, damage: dmgT }],
-            };
+              ), [{ gridX: state.player.x, gridY: state.player.y, damage: dmgT }],);
           }
           return withHits(st, [{ gridX: state.player.x, gridY: state.player.y, damage: dmgT }]);
         }
@@ -3151,7 +4255,6 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         const cardId = hand[p.cardHandIndex];
         if (!cardId) return noHits(state);
         hand.splice(p.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
 
         const hits: HitVisual[] = [
           {
@@ -3162,7 +4265,11 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
             fx: playerAttackFx(state, "fireball"),
           },
         ];
-        let s: GameState = { ...state, player: { ...state.player, hand, discardPile }, pending: null };
+        let s: GameState = {
+          ...state,
+          player: playerAfterPlayingCard(state, hand, cardId),
+          pending: null,
+        };
         const dmg = magicAttackRollRaw(s, cardId, p.minDamage, p.maxDamage);
         const fireLvls = rollInt(p.minFire, p.maxFire);
 
@@ -3215,12 +4322,71 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
               hits.push({ gridX: tx, gridY: ty, damage: finalDmg });
               if (hp <= 0) {
                 s = log(s, `${defM?.name ?? "Enemy"} consumed by fire!`);
-                s = applyMonsterKillRewards(s, target.defId);
+                s = applyMonsterKillRewards(s, target.defId, target.x, target.y);
               }
             }
           }
         }
         s = log(s, `Fireball! ${dmg} damage in a 3×3 blast, ${fireLvls} Fire level(s) inflicted.`);
+        return withHits(s, hits);
+      }
+
+      if (state.pending.kind === "play_potion_of_harming") {
+        const p = state.pending;
+        const P = { x: state.player.x, y: state.player.y };
+        if (chebyshev(P, dest) > p.range) return noHits(log(state, "Target is out of range."));
+        if (tileAt(state.tiles, dest) === "wall") return noHits(log(state, "Cannot target a wall."));
+        const consumed = consumePlayedCard(state, p.cardHandIndex);
+        if (!consumed) return noHits(state);
+        let s = consumed.state;
+        const hits: HitVisual[] = [
+          {
+            gridX: dest.x,
+            gridY: dest.y,
+            damage: 0,
+            showDamage: false,
+            fx: { kind: "potion_harming", fromX: P.x, fromY: P.y },
+          },
+        ];
+        for (const mon of s.monsters.filter((m) => m.hp > 0 && m.x === dest.x && m.y === dest.y)) {
+          const hp = Math.max(0, mon.hp - p.damage);
+          s = { ...s, monsters: patchMonsterHp(s.monsters, mon.id, hp) };
+          hits.push({ gridX: dest.x, gridY: dest.y, damage: p.damage });
+          if (hp <= 0) {
+            s = log(s, `${s.monsterDefs.get(mon.defId)?.name ?? "Enemy"} defeated.`);
+            s = applyMonsterKillRewards(s, mon.defId, mon.x, mon.y);
+          } else {
+            s = log(s, `Potion of Harming hits for ${p.damage}.`);
+          }
+        }
+        for (const tw of s.tangleweeds.filter((t) => t.hp > 0 && t.x === dest.x && t.y === dest.y)) {
+          const hp = Math.max(0, tw.hp - p.damage);
+          s = {
+            ...s,
+            tangleweeds: s.tangleweeds.map((t) => (t.id === tw.id ? { ...t, hp } : t)),
+          };
+          hits.push({ gridX: dest.x, gridY: dest.y, damage: p.damage });
+        }
+        if (s.player.x === dest.x && s.player.y === dest.y) {
+          const dmg = incomingDamageToPlayer(s, p.damage);
+          const hp = Math.max(0, s.player.hp - dmg);
+          s = { ...s, player: { ...s.player, hp } };
+          hits.push({ gridX: dest.x, gridY: dest.y, damage: dmg });
+          s = log(s, `You are caught in the potion blast — ${dmg} damage!`);
+          if (hp <= 0) return withHits({ ...s, phase: "defeat" }, hits);
+        }
+        const clouds = s.harmingClouds.filter((c) => !(c.x === dest.x && c.y === dest.y));
+        clouds.push({
+          id: nextHarmingCloudId(s),
+          x: dest.x,
+          y: dest.y,
+          turnsLeft: p.cloudTurns,
+        });
+        s = {
+          ...s,
+          harmingClouds: clouds,
+        };
+        s = log(s, `A harming cloud settles for ${p.cloudTurns} turns.`);
         return withHits(s, hits);
       }
 
@@ -3240,18 +4406,21 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         if (extraIdx === resume.cardHandIndex) {
           return noHits(log(state, "Pick a different card for the extra cost."));
         }
+        const playedId = state.player.hand[resume.cardHandIndex];
+        const extraId = state.player.hand[extraIdx];
+        if (!playedId || !extraId) return noHits(state);
         const { nextHand, removed } = removeHandIndices(state.player.hand, [
           resume.cardHandIndex,
           extraIdx,
         ]);
         if (removed.length !== 2) return noHits(state);
-        const discardPile = [...state.player.discardPile, ...removed];
+        const playedPlayer = playerAfterPlayingCard(state, nextHand, playedId);
+        const discardPile = [...playedPlayer.discardPile, extraId];
         if (resume.kind === "play_move") {
           let s: GameState = {
             ...state,
             player: {
-              ...state.player,
-              hand: nextHand,
+              ...playedPlayer,
               discardPile,
               x: dest.x,
               y: dest.y,
@@ -3267,11 +4436,11 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         let s: GameState = {
           ...state,
           player: {
-            ...state.player,
-            hand: nextHand,
+            ...playedPlayer,
             discardPile,
             x: dest.x,
             y: dest.y,
+            movementCardsPlayedThisTurn: state.player.movementCardsPlayedThisTurn + 1,
           },
           pending: null,
         };
@@ -3334,567 +4503,14 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
 
     case "CONFIRM_TARGET_MONSTER": {
       if (!state.pending) return noHits(state);
-      const mid = cmd.monsterInstanceId;
-      const mon = state.monsters.find((m) => m.id === mid && m.hp > 0);
-      if (!mon) return noHits(state);
-      if (state.fogOfWar && !state.discovered.has(keyOf(mon))) return noHits(state);
-
-      if (state.pending.kind === "play_melee") {
-        const p = state.pending;
-        if (manhattan({ x: state.player.x, y: state.player.y }, mon) !== 1) return noHits(state);
-        const hand = [...state.player.hand];
-        const cardId = hand[p.cardHandIndex];
-        if (!cardId) return noHits(state);
-        hand.splice(p.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
-        const raw = weaponAttackRollRaw(state, cardId, p.minDamage, p.maxDamage);
-        const def = state.monsterDefs.get(mon.defId);
-        const defVal = monsterDefenseForIncoming(mon, def);
-        const dmg = applyDefense(raw, defVal);
-        const hp = Math.max(0, mon.hp - dmg);
-        const monsters = patchMonsterHp(state.monsters, mon.id, hp);
-        let s = log(
-          { ...state, player: { ...state.player, hand, discardPile }, monsters, pending: null },
-          `You strike for ${dmg} damage.`,
-        );
-        if (hp <= 0) {
-          s = log(s, `${def?.name ?? "Enemy"} defeated.`);
-          s = applyMonsterKillRewards(s, mon.defId);
-        }
-        let kbPending = state.player.knockbackPrimed;
-        s = { ...s, player: { ...s.player, knockbackPrimed: false } };
-        if (kbPending && hp > 0) {
-          const cur = s.monsters.find((m) => m.id === mon.id && m.hp > 0);
-          if (cur) s = tryKnockMonsterFromPlayer(s, cur);
-        }
-        return withHits(s, [meleeHitAt(s, mon.x, mon.y, dmg)]);
-      }
-
-      if (state.pending.kind === "play_spear") {
-        const p = state.pending;
-        const P: Point = { x: state.player.x, y: state.player.y };
-        const d = manhattan(P, mon);
-        if (d !== 1 && d !== 2) return noHits(state);
-        const dx = Math.sign(mon.x - P.x);
-        const dy = Math.sign(mon.y - P.y);
-        if (dx !== 0 && dy !== 0) return noHits(state);
-
-        const hand = [...state.player.hand];
-        const cardId = hand[p.cardHandIndex];
-        if (!cardId) return noHits(state);
-        hand.splice(p.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
-        let s: GameState = {
-          ...state,
-          player: { ...state.player, hand, discardPile },
-          pending: null,
-        };
-
-        const raw = weaponAttackRollRaw(state, cardId, p.minDamage, p.maxDamage);
-        const hits: HitVisual[] = [];
-        let kbPending = state.player.knockbackPrimed;
-
-        const strike = (target: MonsterInstance) => {
-          const mdef = s.monsterDefs.get(target.defId);
-          const dmg = applyDefense(raw, monsterDefenseForIncoming(target, mdef));
-          const hp = Math.max(0, target.hp - dmg);
-          s = { ...s, monsters: patchMonsterHp(s.monsters, target.id, hp) };
-          hits.push(meleeHitAt(s, target.x, target.y, dmg));
-          if (hp <= 0) {
-            s = log(s, `${mdef?.name ?? "Enemy"} defeated.`);
-            s = applyMonsterKillRewards(s, target.defId);
-          }
-          if (kbPending) {
-            kbPending = false;
-            s = { ...s, player: { ...s.player, knockbackPrimed: false } };
-            if (hp > 0) {
-              const cur = s.monsters.find((m) => m.id === target.id && m.hp > 0);
-              if (cur) s = tryKnockMonsterFromPlayer(s, cur);
-            }
-          }
-        };
-
-        strike(mon);
-
-        const m2pos = { x: mon.x + dx, y: mon.y + dy };
-        const m2 = s.monsters.find((m) => m.hp > 0 && m.x === m2pos.x && m.y === m2pos.y);
-        if (m2) strike(m2);
-
-        s = log(s, m2 ? "The spear pierces the line!" : "You thrust with the spear.");
-        return withHits(s, hits);
-      }
-
-      if (state.pending.kind === "play_knife") {
-        const p = state.pending;
-        if (manhattan({ x: state.player.x, y: state.player.y }, mon) !== 1) return noHits(state);
-        const hand = [...state.player.hand];
-        const cardId = hand[p.cardHandIndex];
-        if (!cardId) return noHits(state);
-        hand.splice(p.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
-        const raw = weaponAttackRollRaw(state, cardId, p.minDamage, p.maxDamage);
-        const defM = state.monsterDefs.get(mon.defId);
-        const dmg = applyDefense(raw, monsterDefenseForIncoming(mon, defM));
-        const hp = Math.max(0, mon.hp - dmg);
-        const monsters = patchMonsterHp(state.monsters, mon.id, hp);
-        let s = log(
-          { ...state, player: { ...state.player, hand, discardPile }, monsters, pending: null },
-          `Knife for ${dmg} damage.`,
-        );
-        if (hp <= 0) {
-          s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
-          s = applyMonsterKillRewards(s, mon.defId);
-        }
-        let kbPending = state.player.knockbackPrimed;
-        s = { ...s, player: { ...s.player, knockbackPrimed: false } };
-        if (kbPending && hp > 0) {
-          const cur = s.monsters.find((m) => m.id === mon.id && m.hp > 0);
-          if (cur) s = tryKnockMonsterFromPlayer(s, cur);
-        }
-        s = drawFromPlayerDeck(s, 1);
-        s = log(s, "You draw a card.");
-        return withHits(s, [meleeHitAt(s, mon.x, mon.y, dmg)]);
-      }
-
-      if (state.pending.kind === "play_axe") {
-        const p = state.pending;
-        if (manhattan({ x: state.player.x, y: state.player.y }, mon) !== 1) return noHits(state);
-        const hand = [...state.player.hand];
-        const cardId = hand[p.cardHandIndex];
-        if (!cardId) return noHits(state);
-        hand.splice(p.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
-        const raw = weaponAttackRollRaw(state, cardId, p.minDamage, p.maxDamage);
-        const defM = state.monsterDefs.get(mon.defId);
-        const dmg = applyDefense(raw, monsterDefenseForIncoming(mon, defM));
-        const hp = Math.max(0, mon.hp - dmg);
-        const monsters = patchMonsterHp(state.monsters, mon.id, hp);
-        let s = log(
-          {
-            ...state,
-            player: {
-              ...state.player,
-              hand,
-              discardPile,
-              suppressNextMove: true,
-            },
-            monsters,
-            pending: null,
-          },
-          `Axe cleaves for ${dmg} damage — your next move will fail.`,
-        );
-        if (hp <= 0) {
-          s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
-          s = applyMonsterKillRewards(s, mon.defId);
-        }
-        let kbPending = state.player.knockbackPrimed;
-        s = { ...s, player: { ...s.player, knockbackPrimed: false } };
-        if (kbPending && hp > 0) {
-          const cur = s.monsters.find((m) => m.id === mon.id && m.hp > 0);
-          if (cur) s = tryKnockMonsterFromPlayer(s, cur);
-        }
-        return withHits(s, [meleeHitAt(s, mon.x, mon.y, dmg)]);
-      }
-
-      if (state.pending.kind === "play_magic_missile") {
-        const p = state.pending;
-        const from: Point = { x: state.player.x, y: state.player.y };
-        if (!magicMissilePathClear(state.tiles, state.monsters, from, mon)) return noHits(state);
-        const hand = [...state.player.hand];
-        const cardId = hand[p.cardHandIndex];
-        if (!cardId) return noHits(state);
-        hand.splice(p.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
-        const dmg = magicAttackRollRaw(state, cardId, p.minDamage, p.maxDamage);
-        const defM = state.monsterDefs.get(mon.defId);
-        const hp = Math.max(0, mon.hp - dmg);
-        const monsters = patchMonsterHp(state.monsters, mon.id, hp);
-        let s = log(
-          {
-            ...state,
-            player: { ...state.player, hand, discardPile },
-            monsters,
-            pending: null,
-          },
-          `Magic Missile hits for ${dmg} (ignores defense).`,
-        );
-        if (hp <= 0) {
-          s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
-          s = applyMonsterKillRewards(s, mon.defId);
-        }
-        return withHits(s, [hitAt(s, mon.x, mon.y, dmg, "magic_missile")]);
-      }
-
-      if (state.pending.kind === "discard_punch") {
-        if (manhattan({ x: state.player.x, y: state.player.y }, mon) !== 1) return noHits(state);
-        const defM = state.monsterDefs.get(mon.defId);
-        const defVal = monsterDefenseForIncoming(mon, defM);
-        const strikes = state.player.doublePunchThisTurn ? 2 : 1;
-        let s: GameState = { ...state, pending: null };
-        const hits: HitVisual[] = [];
-        const dmgParts: number[] = [];
-        for (let i = 0; i < strikes; i++) {
-          const cur = s.monsters.find((m) => m.id === mon.id && m.hp > 0);
-          if (!cur) break;
-          const raw = rollInt(1, 2) + attackStrengthBonus(s) + heavyPunchBonus(s);
-          const dmg = applyDefense(raw, defVal);
-          const hp = Math.max(0, cur.hp - dmg);
-          s = { ...s, monsters: patchMonsterHp(s.monsters, mon.id, hp) };
-          hits.push(meleeHitAt(s, cur.x, cur.y, dmg));
-          dmgParts.push(dmg);
-          if (hp <= 0) {
-            s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
-            s = applyMonsterKillRewards(s, mon.defId);
-            break;
-          }
-        }
-        let msg: string;
-        if (strikes === 2 && dmgParts.length === 2) {
-          msg = `Double punch — ${dmgParts[0]} and ${dmgParts[1]} damage.`;
-        } else if (strikes === 2 && dmgParts.length === 1) {
-          msg = `Double punch — ${dmgParts[0]} damage.`;
-        } else {
-          msg = `Punch for ${dmgParts[0]!} damage.`;
-        }
-        s = log(s, msg);
-        let kbPending = state.player.knockbackPrimed;
-        s = { ...s, player: { ...s.player, knockbackPrimed: false } };
-        if (kbPending) {
-          const live = s.monsters.find((m) => m.id === mon.id && m.hp > 0);
-          if (live) s = tryKnockMonsterFromPlayer(s, live);
-        }
-        return withHits(s, hits);
-      }
-
-      if (state.pending.kind === "play_knockback_punch") {
-        const p = state.pending;
-        const P = { x: state.player.x, y: state.player.y };
-        if (manhattan(P, mon) !== 1) return noHits(state);
-        const hand = [...state.player.hand];
-        const cardId = hand[p.cardHandIndex];
-        if (!cardId) return noHits(state);
-        hand.splice(p.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
-        const defM = state.monsterDefs.get(mon.defId);
-        const defVal = monsterDefenseForIncoming(mon, defM);
-        const strikes = state.player.doublePunchThisTurn ? 2 : 1;
-        let s: GameState = {
-          ...state,
-          player: { ...state.player, hand, discardPile },
-          pending: null,
-        };
-        const hits: HitVisual[] = [];
-        const dmgParts: number[] = [];
-        let lastAliveId: string | null = mon.id;
-        for (let i = 0; i < strikes; i++) {
-          const cur = s.monsters.find((m) => m.id === mon.id && m.hp > 0);
-          if (!cur) {
-            lastAliveId = null;
-            break;
-          }
-          const raw = weaponAttackRollRaw(s, cardId, p.minDamage, p.maxDamage);
-          const dmg = applyDefense(raw, defVal);
-          const hp = Math.max(0, cur.hp - dmg);
-          s = { ...s, monsters: patchMonsterHp(s.monsters, mon.id, hp) };
-          hits.push(meleeHitAt(s, cur.x, cur.y, dmg));
-          dmgParts.push(dmg);
-          if (hp <= 0) {
-            s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
-            s = applyMonsterKillRewards(s, mon.defId);
-            lastAliveId = null;
-            break;
-          }
-        }
-        if (strikes === 2 && dmgParts.length === 2) {
-          s = log(s, `Knockback Punch (Flurry) — ${dmgParts[0]} and ${dmgParts[1]} damage.`);
-        } else {
-          s = log(s, `Knockback Punch — ${dmgParts[0]!} damage.`);
-        }
-        if (lastAliveId) {
-          s = tryKnockMonsterFromPlayerN(s, lastAliveId, p.knockback);
-        }
-        return withHits(s, hits);
-      }
-
-      if (state.pending.kind === "play_bow_attack") {
-        const p = state.pending;
-        const P = { x: state.player.x, y: state.player.y };
-        if (manhattan(P, mon) <= 1) return noHits(log(state, "The bow cannot hit targets right next to you."));
-        if (chebyshev(P, { x: mon.x, y: mon.y }) > p.range)
-          return noHits(log(state, "Target is out of bow range."));
-        if (!lineOfSightClear(state.tiles, P, { x: mon.x, y: mon.y }))
-          return noHits(log(state, "No line of sight to target."));
-        const hand = [...state.player.hand];
-        const cardId = hand[p.cardHandIndex];
-        if (!cardId) return noHits(state);
-        hand.splice(p.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
-        const raw = weaponAttackRollRaw(state, cardId, p.minDamage, p.maxDamage);
-        const defM = state.monsterDefs.get(mon.defId);
-        const dmg = applyDefense(raw, monsterDefenseForIncoming(mon, defM));
-        const hp = Math.max(0, mon.hp - dmg);
-        let s: GameState = {
-          ...state,
-          player: { ...state.player, hand, discardPile },
-          monsters: patchMonsterHp(state.monsters, mon.id, hp),
-          pending: null,
-        };
-        s = log(s, `Bow shot — ${dmg} damage.`);
-        if (hp <= 0) {
-          s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
-          s = applyMonsterKillRewards(s, mon.defId);
-        }
-        return withHits(s, [hitAt(s, mon.x, mon.y, dmg, "arrow")]);
-      }
-
-      if (state.pending.kind === "play_lightning_bolt") {
-        const p = state.pending;
-        const P = { x: state.player.x, y: state.player.y };
-        // range for the current hop always equals nextDamage (5→4→3→2→1)
-        const rangeForThisHop = p.nextDamage;
-        const lastHit =
-          p.hitIds.length === 0
-            ? P
-            : (() => {
-                const prev = state.monsters.find((m) => m.id === p.hitIds[p.hitIds.length - 1]);
-                return prev ? { x: prev.x, y: prev.y } : P;
-              })();
-        if (p.hitIds.includes(mon.id)) return noHits(log(state, "Lightning cannot hit the same target twice."));
-        if (chebyshev(lastHit, { x: mon.x, y: mon.y }) > rangeForThisHop)
-          return noHits(log(state, "Target is out of chain range."));
-        const cardIdBolt = state.player.hand[p.cardHandIndex];
-        const rawBolt = p.nextDamage + lightningBoltSkillDamageBonus(state, cardIdBolt);
-        const defM = state.monsterDefs.get(mon.defId);
-        const dmg = Math.max(0, applyDefense(rawBolt, 0)); // lightning ignores defense
-        const hp = Math.max(0, mon.hp - dmg);
-        const newHitIds = [...p.hitIds, mon.id];
-        let s: GameState = {
-          ...state,
-          monsters: patchMonsterHp(state.monsters, mon.id, hp),
-        };
-        s = log(s, `Lightning Bolt — ${dmg} damage to ${defM?.name ?? "enemy"}!`);
-        if (hp <= 0) {
-          s = log(s, `${defM?.name ?? "Enemy"} defeated.`);
-          s = applyMonsterKillRewards(s, mon.defId);
-        }
-        const nextDamage = p.nextDamage - 1;
-        if (nextDamage <= 0) {
-          const hand = [...s.player.hand];
-          const cardId = hand[p.cardHandIndex];
-          if (cardId) {
-            hand.splice(p.cardHandIndex, 1);
-            s = { ...s, player: { ...s.player, hand, discardPile: [...s.player.discardPile, cardId] }, pending: null };
-          }
-          s = log(s, "Lightning chain ends.");
-        } else {
-          const curMon = s.monsters.find((m) => m.id === mon.id && m.hp > 0);
-          const chainOrigin = curMon ? { x: curMon.x, y: curMon.y } : { x: mon.x, y: mon.y };
-          // next hop range equals next hop damage
-          const hasNextTarget = s.monsters.some(
-            (m) => m.hp > 0 && !newHitIds.includes(m.id) && chebyshev(chainOrigin, { x: m.x, y: m.y }) <= nextDamage,
-          );
-          if (!hasNextTarget) {
-            const hand = [...s.player.hand];
-            const cardId = hand[p.cardHandIndex];
-            if (cardId) {
-              hand.splice(p.cardHandIndex, 1);
-              s = { ...s, player: { ...s.player, hand, discardPile: [...s.player.discardPile, cardId] }, pending: null };
-            }
-            s = log(s, "No targets in range — lightning chain ends.");
-          } else {
-            s = { ...s, pending: { kind: "play_lightning_bolt", cardHandIndex: p.cardHandIndex, nextDamage, chainRange: p.chainRange, hitIds: newHitIds } };
-            const cardIdNext = s.player.hand[p.cardHandIndex];
-            const nextDmgShown = nextDamage + lightningBoltSkillDamageBonus(s, cardIdNext);
-            s = log(s, `Lightning chains — choose next target within ${nextDamage} for ${nextDmgShown} damage.`);
-          }
-        }
-        return withHits(s, [
-          {
-            gridX: mon.x,
-            gridY: mon.y,
-            damage: dmg,
-            fx: { kind: "magic_missile", fromX: lastHit.x, fromY: lastHit.y },
-          },
-        ]);
-      }
-
-      return noHits(state);
+      const mon = state.monsters.find((m) => m.id === cmd.monsterInstanceId && m.hp > 0);
+      return mon ? resolvePlayerAttackAtTile(state, { x: mon.x, y: mon.y }) : noHits(state);
     }
 
     case "CONFIRM_TARGET_POT": {
       if (!state.pending) return noHits(state);
       const pot = state.pots.find((p) => p.id === cmd.potId);
-      if (!pot) return noHits(state);
-      if (state.fogOfWar && !state.discovered.has(keyOf(pot))) return noHits(state);
-      const P: Point = { x: state.player.x, y: state.player.y };
-
-      if (state.pending.kind === "play_melee") {
-        const pv = state.pending;
-        if (manhattan(P, pot) !== 1) return noHits(state);
-        const hand = [...state.player.hand];
-        const cardId = hand[pv.cardHandIndex];
-        if (!cardId) return noHits(state);
-        hand.splice(pv.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
-        let s: GameState = {
-          ...state,
-          player: { ...state.player, hand, discardPile },
-          pending: null,
-        };
-        s = log(s, "You shatter the pot with your strike.");
-        s = breakPotFromAttack(s, pot.x, pot.y);
-        return withHits(s, [meleeHitAt(s, pot.x, pot.y, 1)]);
-      }
-
-      if (state.pending.kind === "play_spear") {
-        const p = state.pending;
-        const d = manhattan(P, pot);
-        if (d !== 1 && d !== 2) return noHits(state);
-        const dx = Math.sign(pot.x - P.x);
-        const dy = Math.sign(pot.y - P.y);
-        if (dx !== 0 && dy !== 0) return noHits(state);
-        const hand = [...state.player.hand];
-        const cardId = hand[p.cardHandIndex];
-        if (!cardId) return noHits(state);
-        hand.splice(p.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
-        let s: GameState = {
-          ...state,
-          player: { ...state.player, hand, discardPile },
-          pending: null,
-        };
-        s = log(s, "Your spear splinters the pot.");
-        s = breakPotFromAttack(s, pot.x, pot.y);
-        return withHits(s, [meleeHitAt(s, pot.x, pot.y, 1)]);
-      }
-
-      if (state.pending.kind === "play_knife") {
-        const p = state.pending;
-        if (manhattan(P, pot) !== 1) return noHits(state);
-        const hand = [...state.player.hand];
-        const cardId = hand[p.cardHandIndex];
-        if (!cardId) return noHits(state);
-        hand.splice(p.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
-        let s: GameState = {
-          ...state,
-          player: { ...state.player, hand, discardPile },
-          pending: null,
-        };
-        s = log(s, "You stab the pot.");
-        s = breakPotFromAttack(s, pot.x, pot.y);
-        s = drawFromPlayerDeck(s, 1);
-        s = log(s, "You draw a card.");
-        return withHits(s, [meleeHitAt(s, pot.x, pot.y, 1)]);
-      }
-
-      if (state.pending.kind === "play_axe") {
-        const p = state.pending;
-        if (manhattan(P, pot) !== 1) return noHits(state);
-        const hand = [...state.player.hand];
-        const cardId = hand[p.cardHandIndex];
-        if (!cardId) return noHits(state);
-        hand.splice(p.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
-        let s: GameState = {
-          ...state,
-          player: {
-            ...state.player,
-            hand,
-            discardPile,
-            suppressNextMove: true,
-          },
-          pending: null,
-        };
-        s = log(s, "The axe smashes the pot — your next move will fail.");
-        s = breakPotFromAttack(s, pot.x, pot.y);
-        return withHits(s, [meleeHitAt(s, pot.x, pot.y, 1)]);
-      }
-
-      if (state.pending.kind === "play_magic_missile") {
-        const p = state.pending;
-        if (
-          !magicMissilePathClearToPoint(
-            state.tiles,
-            state.monsters,
-            state.pots,
-            P,
-            pot.x,
-            pot.y,
-          )
-        ) {
-          return noHits(state);
-        }
-        const hand = [...state.player.hand];
-        const cardId = hand[p.cardHandIndex];
-        if (!cardId) return noHits(state);
-        hand.splice(p.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
-        let s: GameState = {
-          ...state,
-          player: { ...state.player, hand, discardPile },
-          pending: null,
-        };
-        s = log(s, "Magic Missile shatters the pot.");
-        s = breakPotFromAttack(s, pot.x, pot.y);
-        return withHits(s, [hitAt(s, pot.x, pot.y, 1, "magic_missile")]);
-      }
-
-      if (state.pending.kind === "discard_punch") {
-        if (manhattan(P, pot) !== 1) return noHits(state);
-        let s: GameState = { ...state, pending: null };
-        s = log(s, "You punch the pot apart.");
-        s = breakPotFromAttack(s, pot.x, pot.y);
-        return withHits(s, [meleeHitAt(s, pot.x, pot.y, 1)]);
-      }
-
-      return noHits(state);
-    }
-
-    case "USE_BREAD": {
-      if (state.phase !== "player" || state.pending) return noHits(state);
-      if (state.player.bread <= 0) return noHits(log(state, "You have no bread."));
-      if (state.player.hp >= state.player.maxHp) {
-        return noHits(log(state, "You're not hungry."));
-      }
-      let heal = 2;
-      heal += breadHealBonus(state);
-      heal = Math.min(heal, state.player.maxHp - state.player.hp);
-      return noHits(
-        log(
-          {
-            ...state,
-            player: {
-              ...state.player,
-              bread: state.player.bread - 1,
-              hp: state.player.hp + heal,
-            },
-          },
-          `You eat bread and recover ${heal} HP.`,
-        ),
-      );
-    }
-
-    case "USE_HERB": {
-      if (state.phase !== "player" || state.pending) return noHits(state);
-      if (state.player.herb <= 0) return noHits(log(state, "You have no healing herbs."));
-      if (state.player.hp >= state.player.maxHp) {
-        return noHits(log(state, "You're at full health."));
-      }
-      const heal = 1;
-      return noHits(
-        log(
-          {
-            ...state,
-            player: {
-              ...state.player,
-              herb: state.player.herb - 1,
-              hp: Math.min(state.player.maxHp, state.player.hp + heal),
-            },
-          },
-          `You use a healing herb and recover ${heal} HP.`,
-        ),
-      );
+      return pot ? resolvePlayerAttackAtTile(state, { x: pot.x, y: pot.y }) : noHits(state);
     }
 
     case "CONFIRM_WATER_ESCAPE": {
@@ -3942,57 +4558,103 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
     case "CONFIRM_TARGET_TANGLEWEED": {
       if (!state.pending) return noHits(state);
       const tw = state.tangleweeds.find((x) => x.id === cmd.tangleweedId && x.hp > 0);
-      if (!tw) return noHits(state);
-      if (manhattan({ x: state.player.x, y: state.player.y }, tw) > 1) return noHits(state);
+      return tw ? resolvePlayerAttackAtTile(state, { x: tw.x, y: tw.y }) : noHits(state);
+    }
 
-      if (state.pending.kind === "play_melee") {
-        const pv = state.pending;
-        const hand = [...state.player.hand];
-        const cardId = hand[pv.cardHandIndex];
-        if (!cardId) return noHits(state);
-        hand.splice(pv.cardHandIndex, 1);
-        const discardPile = [...state.player.discardPile, cardId];
-        const raw = weaponAttackRollRaw(state, cardId, pv.minDamage, pv.maxDamage);
-        const dmg = raw;
-        const hp = Math.max(0, tw.hp - dmg);
-        const tangleweeds = state.tangleweeds.map((x) => (x.id === tw.id ? { ...x, hp } : x));
-        let s = log(
+    case "USE_BREAD": {
+      if (state.phase !== "player" || state.pending) return noHits(state);
+      if (state.player.bread <= 0) return noHits(log(state, "You have no bread."));
+      if (state.player.hp >= state.player.maxHp) return noHits(log(state, "You're not hungry."));
+      let heal = 2;
+      heal += breadHealBonus(state);
+      heal = Math.min(heal, state.player.maxHp - state.player.hp);
+      return noHits(
+        log(
           {
             ...state,
-            player: { ...state.player, hand, discardPile },
-            tangleweeds,
-            pending: null,
+            player: {
+              ...state.player,
+              bread: state.player.bread - 1,
+              hp: state.player.hp + heal,
+            },
           },
-          hp <= 0 ? "You clear the tangleweed." : `You cut the tangleweed for ${dmg} damage.`,
-        );
-        return withHits(s, [meleeHitAt(s, tw.x, tw.y, dmg)]);
-      }
+          `You eat bread and recover ${heal} HP.`,
+        ),
+      );
+    }
 
-      if (state.pending.kind === "discard_punch") {
-        const strikes = state.player.doublePunchThisTurn ? 2 : 1;
-        let s: GameState = { ...state, pending: null };
-        const hits: HitVisual[] = [];
-        let cleared = false;
-        for (let i = 0; i < strikes; i++) {
-          const cur = s.tangleweeds.find((x) => x.id === tw.id && x.hp > 0);
-          if (!cur) break;
-          const raw = rollInt(1, 2) + attackStrengthBonus(s) + heavyPunchBonus(s);
-          const hp = Math.max(0, cur.hp - raw);
-          s = {
-            ...s,
-            tangleweeds: s.tangleweeds.map((x) => (x.id === tw.id ? { ...x, hp } : x)),
-          };
-          hits.push(meleeHitAt(s, cur.x, cur.y, raw));
-          if (hp <= 0) {
-            cleared = true;
-            break;
-          }
+    case "USE_HERB": {
+      if (state.phase !== "player" || state.pending) return noHits(state);
+      if (state.player.herb <= 0) return noHits(log(state, "You have no healing herbs."));
+      if (state.player.hp >= state.player.maxHp) return noHits(log(state, "You're at full health."));
+      return noHits(
+        log(
+          {
+            ...state,
+            player: {
+              ...state.player,
+              herb: state.player.herb - 1,
+              hp: Math.min(state.player.maxHp, state.player.hp + 1),
+            },
+          },
+          "You use a healing herb and recover 1 HP.",
+        ),
+      );
+    }
+
+    case "USE_GEM": {
+      if (state.phase !== "player" || state.pending) return noHits(state);
+      const count = state.player.gems[cmd.gemId] ?? 0;
+      if (count <= 0) return noHits(log(state, "You don't have that gem."));
+      const gems = { ...state.player.gems, [cmd.gemId]: count - 1 };
+      let s: GameState = { ...state, player: { ...state.player, gems } };
+      switch (cmd.gemId) {
+        case "strength":
+          return noHits(
+            log(
+              {
+                ...s,
+                player: { ...s.player, nextPhysicalAttackMultiplier: 1.5 },
+              },
+              "Gem of Strength — your next physical attack deals ×1.5 damage.",
+            ),
+          );
+        case "speed":
+          return noHits(
+            log(
+              { ...s, player: { ...s.player, nextMoveDoubled: true } },
+              "Gem of Speed — your next movement is doubled.",
+            ),
+          );
+        case "luck":
+          return noHits(
+            log(
+              {
+                ...s,
+                chanceMode: "highest",
+                player: {
+                  ...s.player,
+                  gemLuckRestore: s.player.gemLuckRestore ?? s.chanceMode,
+                },
+              },
+              "Gem of Luck — Chance is Highest for the rest of this turn.",
+            ),
+          );
+        case "cards":
+          s = drawFromPlayerDeck(s, 2);
+          return noHits(log(s, "Gem of Cards — draw 2."));
+        case "healing": {
+          const heal = Math.max(1, Math.floor(s.player.maxHp * 0.1));
+          const hp = Math.min(s.player.maxHp, s.player.hp + heal);
+          return noHits(
+            log(
+              { ...s, player: { ...s.player, hp } },
+              `Gem of Healing — recover ${heal} HP.`,
+            ),
+          );
         }
-        s = log(s, cleared ? "You punch through the tangleweed." : "You punch the tangleweed.");
-        return withHits(s, hits);
       }
-
-      return noHits(state);
+      return noHits(s);
     }
 
     case "USE_MOVE_TOKEN": {
@@ -4011,10 +4673,10 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
             player: {
               ...state.player,
               knockbackTokens: state.player.knockbackTokens - 1,
-              knockbackPrimed: true,
+              knockbackPrimed: state.player.knockbackPrimed + 1,
             },
           },
-          "Knockback primed — your next weapon hit may push the enemy back.",
+          `Knockback +${state.player.knockbackPrimed + 1} primed for your next Melee attack.`,
         ),
       );
     }
@@ -4032,7 +4694,6 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       }
 
       let s = discardHand(state);
-      s = ensureEquippedOnDeckTop(s);
       s = tickPlayerFire(s);
       if (s.phase === "defeat") return noHits(s);
       let dungeonHits: HitVisual[] = [];
@@ -4041,21 +4702,32 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         const collapsed = applyPendingCollapse(s);
         s = collapsed.state;
         dungeonHits = [...dungeonHits, ...collapsed.hits];
-        if (s.phase === "defeat") return { state: s, hits: dungeonHits };
+        if (s.phase === "defeat") {
+          return { state: s, hits: dungeonHits, anims: animsFromHits(dungeonHits, s) };
+        }
         s = applyFloodingTick(s);
         if (!s.gauntletCommenced) {
           const drawn = drawDungeonTop(s);
           s = drawn.state;
           dungeonHits = [...dungeonHits, ...drawn.hits];
         }
-        if (s.phase === "defeat") return { state: s, hits: dungeonHits };
-        const { state: afterMon, hits: monHits } = runMonsterPhase(s);
-        if (afterMon.phase === "defeat") return { state: afterMon, hits: [...dungeonHits, ...monHits] };
+        if (s.phase === "defeat") {
+          return { state: s, hits: dungeonHits, anims: animsFromHits(dungeonHits, s) };
+        }
+        const stateAfterDungeon = s;
+        const { state: afterMon, hits: monHits, anims: monAnims } = runMonsterPhase(s);
+        if (afterMon.phase === "defeat") {
+          const merged = mergeAnimResults(dungeonHits, stateAfterDungeon, monAnims, monHits, afterMon);
+          return { state: afterMon, ...merged };
+        }
         const cleared = processGauntletVictory(afterMon);
         if (cleared.phase === "peace") {
-          return { state: cleared, hits: [...dungeonHits, ...monHits] };
+          const merged = mergeAnimResults(dungeonHits, stateAfterDungeon, monAnims, monHits, cleared);
+          return { state: cleared, ...merged };
         }
-        return { state: beginNextPlayerTurn(cleared), hits: [...dungeonHits, ...monHits] };
+        const nextTurn = beginNextPlayerTurn(cleared);
+        const merged = mergeAnimResults(dungeonHits, stateAfterDungeon, monAnims, monHits, nextTurn);
+        return { state: nextTurn, ...merged };
       } finally {
         popRollChanceContext();
       }
@@ -4069,13 +4741,64 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
   }
 }
 
+function advanceDualWieldAfterFirstAttack(s: GameState, firstCardId: string): GameState {
+  const hasChoice = s.player.discardPile.some(
+    (id) => id !== firstCardId && isPhysicalMeleeAttack(s.cardDefs.get(id)),
+  );
+  return log(
+    {
+      ...s,
+      dualWieldStage: hasChoice
+        ? { step: "choose_discard_attack", firstCardId }
+        : null,
+    },
+    hasChoice
+      ? "Dual Wield — choose a physical melee Attack from your discard pile."
+      : "Dual Wield ends — no other physical melee Attack is in your discard pile.",
+  );
+}
+
 export function dispatch(state: GameState, cmd: GameCommand): DispatchResult {
   pushRollChanceContext(state, "player");
   try {
+    const firstCardId =
+      cmd.type === "REQUEST_PLAY_CARD" ? state.player.hand[cmd.handIndex] : undefined;
     const r = dispatchCore(state, cmd);
-    let s = processGauntletVictory(r.state);
+    let s = r.state;
+    if (
+      state.dualWieldStage?.step === "choose_hand_attack" &&
+      cmd.type === "REQUEST_PLAY_CARD" &&
+      firstCardId &&
+      state.cardDefs.get(firstCardId)?.types.includes("Attack")
+    ) {
+      if (s.pending) {
+        s = {
+          ...s,
+          dualWieldStage: { step: "resolving_hand_attack", firstCardId },
+        };
+      } else if (
+        s.dualWieldStage?.step === "choose_hand_attack" &&
+        s.player.hand.length < state.player.hand.length
+      ) {
+        // Instant-resolve Attack (e.g. Flurry) — move straight to discard choice.
+        s = advanceDualWieldAfterFirstAttack(s, firstCardId);
+      }
+    } else if (
+      s.dualWieldStage?.step === "resolving_hand_attack" &&
+      !s.pending
+    ) {
+      s = advanceDualWieldAfterFirstAttack(s, s.dualWieldStage.firstCardId);
+    } else if (
+      s.dualWieldStage?.step === "resolving_discard_attack" &&
+      !s.pending
+    ) {
+      s = log({ ...s, dualWieldStage: null }, "Dual Wield complete.");
+    }
+    s = processGauntletVictory(s);
     s = maybeEliteTeleportAll(s);
-    return { state: s, hits: r.hits };
+    const hits = r.hits;
+    const anims = finalizeAnims(state, s, hits, r.anims, cmd);
+    return { state: s, hits, anims };
   } finally {
     popRollChanceContext();
   }

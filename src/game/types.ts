@@ -19,6 +19,8 @@ export interface CardDef {
   rarity: string;
   description: string;
   types: CardType[];
+  /** Internal gameplay traits used across effects and skills; not player-facing card types. */
+  tags?: CardTag[];
   effect:
     | { type: "move"; range: number }
     | { type: "melee_attack"; minDamage: number; maxDamage: number }
@@ -38,8 +40,24 @@ export interface CardDef {
     | { type: "lightning_bolt"; startDamage: number; startRange: number; chainRange: number }
     | { type: "haste" }
     | { type: "stealthy_advance"; move: number; noiseReduction: number; defenseBonus: number }
-    | { type: "fireball"; minDamage: number; maxDamage: number; range: number; minFire: number; maxFire: number };
+    | { type: "fireball"; minDamage: number; maxDamage: number; range: number; minFire: number; maxFire: number }
+    | { type: "mace_smash"; minDamage: number; maxDamage: number; defensePierce: number }
+    | { type: "penalty_destroy" }
+    | { type: "poisoned_blade"; minDamage: number; maxDamage: number; poisonLevels: number }
+    | { type: "loot_and_scoot"; move: number; maxCoins: number }
+    | { type: "dual_wield" }
+    | { type: "flying_kick"; move: number; minDamage: number; maxDamage: number; knockback: number }
+    | {
+        type: "great_sword";
+        minDamage: number;
+        maxDamage: number;
+        secondaryMinDamage: number;
+        secondaryMaxDamage: number;
+      }
+    | { type: "potion_of_harming"; range: number; damage: number; cloudTurns: number };
 }
+
+export type CardTag = "punch" | "physical attack" | "ranged" | "melee";
 
 export type CardType =
   | "Move"
@@ -48,7 +66,9 @@ export type CardType =
   | "Aid"
   | "Skill"
   | "Protection"
-  | "Magic";
+  | "Magic"
+  | "Alchemy"
+  | "Penalty";
 
 /** UI / Deck Builder: pick a type from this list. */
 export const CARD_TYPE_ORDER: CardType[] = [
@@ -59,9 +79,243 @@ export const CARD_TYPE_ORDER: CardType[] = [
   "Skill",
   "Protection",
   "Magic",
+  "Alchemy",
 ];
 
 export type SkeletonWeapon = "sword" | "spear" | "axe" | "scimitar";
+
+/** Distance metric for ATBMB attack range and tile prefs. */
+export type AtbmbMetric = "manhattan" | "chebyshev";
+
+/** Movement neighborhood for ATBMB move abilities. */
+export type AtbmbMoveStyle = "ortho" | "any8";
+
+/**
+ * How a tile preference set is derived from the world.
+ * Prefs are evaluated at runtime — they are not floor-gen stamps.
+ */
+export type AtbmbTilePref =
+  | { kind: "adjacent_to_player"; metric: AtbmbMetric }
+  | { kind: "distance_to_player"; metric: AtbmbMetric; min: number; max: number }
+  /** Cardinal + shape from the player (same row or column), inclusive distance band. */
+  | { kind: "plus_from_player"; min: number; max: number }
+  /** Queen-line from the player (row, column, or diagonal). */
+  | {
+      kind: "queen_line_from_player";
+      /** Require clear projectile path (default true). */
+      requireClear?: boolean;
+      /** Minimum Chebyshev distance (default 1). Use 2 to exclude adjacency. */
+      minChebyshev?: number;
+      /** Maximum Chebyshev distance (inclusive). */
+      maxChebyshev?: number;
+      /** Maximum Manhattan distance (inclusive). */
+      maxManhattan?: number;
+    }
+  /**
+   * Bow / fireball style: Chebyshev (or Manhattan) radius with any-angle LOS.
+   * Walls block; other monsters do not (same as `lineOfSightClear`).
+   */
+  | {
+      kind: "los_in_radius_from_player";
+      metric: AtbmbMetric;
+      max: number;
+      /** Minimum distance (default 1). Bow uses Manhattan > 1 via minManhattan. */
+      min?: number;
+      /** If set, also require Manhattan distance ≥ this (Bow excludes ortho-adjacent). */
+      minManhattan?: number;
+    }
+  | { kind: "water" }
+  | { kind: "floor" }
+  /** Any tile that is not water (bridges count as water). */
+  | { kind: "not_water" }
+  | { kind: "same_room_as_player" }
+  | { kind: "clear_queen_ray_to_player" }
+  | { kind: "harming_cloud" }
+  /** Tiles on a coiled slime's leap path (leapDir × up to 2 steps). */
+  | { kind: "slime_leap_path" }
+  /** Diagonally adjacent to the player (Chebyshev corner). */
+  | { kind: "diagonal_adjacent_to_player" }
+  /** Room tiles marked by a pending Collapse dungeon card. */
+  | { kind: "pending_collapse" }
+  /** Cells marked by Targeted Collapse. */
+  | { kind: "pending_targeted_collapse" }
+  /** Floor tiles in the room currently marked for Flooding. */
+  | { kind: "flooding_room" }
+  /**
+   * Tile from which vine whip can reach the player (Manhattan band + queen-line
+   * clear path; same rules as Vineshon's whip).
+   */
+  | { kind: "vine_whip_range_to_player"; maxManhattan?: number }
+  /**
+   * Orthogonally or diagonally adjacent to any living entity with fireLevels ≥ 1
+   * (player or monster).
+   */
+  | { kind: "adjacent_to_fire" };
+
+export interface AtbmbTilePrefs {
+  favored?: AtbmbTilePref[];
+  secondary?: AtbmbTilePref[];
+  tertiary?: AtbmbTilePref[];
+  bad?: AtbmbTilePref[];
+}
+
+export type AtbmbAbilityKind =
+  | "move"
+  | "melee"
+  | "weapon_melee"
+  | "ranged_queen"
+  | "fire_arrow"
+  | "load_bow"
+  | "vine_whip"
+  | "swim"
+  | "prepare_leap"
+  | "leap"
+  | "disguise"
+  | "custom";
+
+/** Seek target when executing a move ability. */
+export type AtbmbMoveSeek =
+  | "favored"
+  | "secondary"
+  | "tertiary"
+  | "away_from_bad"
+  | "toward_player"
+  | "away_from_player";
+
+export interface AtbmbAbilityDef {
+  id: string;
+  kind: AtbmbAbilityKind;
+  /** Max uses this turn (default 1). */
+  uses?: number;
+  params?: {
+    steps?: number;
+    minDamage?: number;
+    maxDamage?: number;
+    rangeMetric?: AtbmbMetric;
+    rangeMin?: number;
+    rangeMax?: number;
+    knockback?: number;
+    /** For prepare_leap / weapon_melee — state id to enter. */
+    nextState?: string;
+    /**
+     * When true with `nextState`, keep resolving this turn in the new state's
+     * decision tree (same ability budget). When false/omitted, only switch state
+     * for next turn (e.g. slime prepare → leap next turn).
+     */
+    continueInNewState?: boolean;
+    /** For kind "custom" — handler lookup key. */
+    customId?: string;
+  };
+}
+
+export interface AtbmbWhen {
+  onFavoredTile?: boolean;
+  /** True when standing on a disliked / bad tile. */
+  onBadTile?: boolean;
+  inAttackRange?: boolean;
+  /** Clear queen-ray magic-missile shot to the player. */
+  clearQueenRayToPlayer?: boolean;
+  /** Clear any-angle LOS to the player (Bow / fireball style). */
+  clearLosToPlayer?: boolean;
+  /** Skeleton weapon (or generic) can currently melee the player. */
+  canWeaponMelee?: boolean;
+  /**
+   * True when standing in a non-corridor room that the player has not discovered
+   * (no floor tiles of that room are in `discovered`).
+   */
+  inUndiscoveredNonCorridorRoom?: boolean;
+  hpFractionBelow?: number;
+  hpFractionAbove?: number;
+  flagTrue?: string;
+  flagFalse?: string;
+}
+
+export interface AtbmbAction {
+  ability: string;
+  /** Move abilities: which preference tier to approach (default favored). */
+  seek?: AtbmbMoveSeek;
+  /** If true, failure does not stop the rule's remaining actions. */
+  optional?: boolean;
+}
+
+/**
+ * One node in a state's decision tree.
+ * Rules are evaluated in order; each matching rule tries its actions
+ * until abilities are exhausted or blocked.
+ */
+export interface AtbmbRule {
+  id?: string;
+  when?: AtbmbWhen;
+  actions: AtbmbAction[];
+  /** Shuffle action order before trying (e.g. Dust Rat adjacent move/attack). */
+  shuffleActions?: boolean;
+}
+
+export interface AtbmbAttackRange {
+  metric: AtbmbMetric;
+  min?: number;
+  max: number;
+}
+
+export interface AtbmbStateDef {
+  id: string;
+  /** Used by `inAttackRange` and default melee checks. */
+  attackRange?: AtbmbAttackRange;
+  tilePrefs?: AtbmbTilePrefs;
+  /** Per-weapon overrides merged onto `tilePrefs` (favored/secondary replace; bad concatenates). */
+  weaponTilePrefs?: Partial<Record<SkeletonWeapon, AtbmbTilePrefs>>;
+  decide: AtbmbRule[];
+  /** Optional state transition after this state's decision phase finishes. */
+  nextState?: string;
+}
+
+/** Data-driven ATBMB profile attached to a MonsterDef. */
+export interface AtbmbDef {
+  initialState: string;
+  /**
+   * Forced state at the start of each turn (e.g. skeleton always begins in Attack).
+   * Applied before the decision tree runs.
+   */
+  turnStartState?: string;
+  /**
+   * Derive state from Manhattan distance to the player at turn start and again
+   * after each decision phase (so a mid-turn pull can switch Distant → Close).
+   */
+  stateByPlayerDistance?: {
+    /** Inclusive max Manhattan for `closeState` (default 2). */
+    closeMax?: number;
+    closeState: string;
+    distantState: string;
+  };
+  /**
+   * Derive state from whether the monster stands on water (checked each phase).
+   */
+  stateByTerrain?: {
+    waterState: string;
+    dryState: string;
+  };
+  /**
+   * Derive state from current HP fraction (checked each phase).
+   * Fleeing when `hp / maxHp <= fleeingAtOrBelow` (default 0.5).
+   */
+  stateByHpFraction?: {
+    fleeingAtOrBelow?: number;
+    attackingState: string;
+    fleeingState: string;
+  };
+  moveStyle: AtbmbMoveStyle;
+  /**
+   * Cap on successful ability uses this turn (e.g. 1 = move OR attack, not both).
+   * Omit for unlimited (each ability still has its own `uses` budget).
+   */
+  maxActionsPerTurn?: number;
+  /**
+   * When true, only one ability kind may succeed per turn (e.g. move×2 OR load OR fire).
+   */
+  oneAbilityKindPerTurn?: boolean;
+  abilities: AtbmbAbilityDef[];
+  states: AtbmbStateDef[];
+}
 
 export interface MonsterDef {
   id: string;
@@ -73,6 +327,8 @@ export interface MonsterDef {
   /** Gauntlet / scaling budget (bats 2, most 3, skeletons 4). */
   power: number;
   description: string;
+  /** Advanced Tile-Based Monster Behavior (optional; falls back to legacy AI). */
+  ai?: AtbmbDef;
 }
 
 export type DungeonCardEffect =
@@ -121,7 +377,9 @@ export interface MonsterInstance {
   level: number;
   /** Rockling only: rolled 1–2 at spawn; overrides MonsterDef.defense for incoming hits. */
   defenseOverride?: number;
-  /** Slime only: null = not preparing; Point = leaps here next turn. */
+  /** Slime: orthogonal unit vector for a prepared leap (telegraph arrow). */
+  leapDir?: Point | null;
+  /** @deprecated Prefer leapDir; kept for older leap telegraphs. */
   leapTarget?: Point | null;
   skeletonWeapon?: SkeletonWeapon;
   bowLoaded?: boolean;
@@ -130,6 +388,8 @@ export interface MonsterInstance {
   douvlonPairId?: string;
   /** Stacked Fire levels; decremented each turn after the monster acts, dealing 20% max HP damage. */
   fireLevels?: number;
+  /** Poison ticks after this creature acts; moving increases its nonlethal damage. */
+  poisonLevels?: number;
   /** Elite Skeleton only: true once the low-HP teleport has already fired (prevents repeat). */
   eliteTeleported?: boolean;
   /** Elite Skeleton only: true when spawned inside the gauntlet wave (constrains teleport destination). */
@@ -144,6 +404,10 @@ export interface MonsterInstance {
   blackShieldActive?: boolean;
   /** Drosir and other aquatic monsters: only move on water; treat bridges as water. */
   aquatic?: boolean;
+  /** ATBMB: current behavior state id (from MonsterDef.ai.states). */
+  aiStateId?: string;
+  /** ATBMB: generic flags / counters (bow loaded, telegraph, etc.). */
+  aiFlags?: Record<string, boolean | number>;
 }
 
 export interface PotInstance {
@@ -187,6 +451,8 @@ export interface TangleweedPropInstance {
   hp: number;
   /** Monster instance id of the owning tangleweed_bloom. */
   bloomId: string;
+  /** True when no orthogonal vine path connects this segment to its living bloom. */
+  withered?: boolean;
 }
 
 /** Dropped loot; may share a tile with monsters (not with pots/chests). */
@@ -204,7 +470,7 @@ export interface GroundLootInstance {
 export type EnterBlockedResume =
   | { kind: "play_move"; cardHandIndex: number; range: number }
   | { kind: "discard_move1"; maxRange: number; fromQuickstep: boolean }
-  | { kind: "play_card_seeker"; cardHandIndex: number }
+  | { kind: "play_card_seeker"; cardHandIndex: number; range: number }
   | { kind: "move_token_step" };
 
 export type PendingIntent =
@@ -216,7 +482,8 @@ export type PendingIntent =
   | { kind: "discard_move1"; maxRange: number; fromQuickstep: boolean }
   | { kind: "discard_punch" }
   | { kind: "play_magic_missile"; cardHandIndex: number; minDamage: number; maxDamage: number }
-  | { kind: "play_card_seeker"; cardHandIndex: number }
+  | { kind: "play_card_seeker"; cardHandIndex: number; range: number }
+  | { kind: "play_loot_and_scoot"; cardHandIndex: number; range: number; maxCoins: number }
   | { kind: "move_token_step" }
   | { kind: "enter_blocked_tile"; dest: Point; resume: EnterBlockedResume }
   | { kind: "water_escape"; waterX: number; waterY: number }
@@ -229,7 +496,44 @@ export type PendingIntent =
       chainRange: number;
       hitIds: string[];
     }
-  | { kind: "play_fireball"; cardHandIndex: number; minDamage: number; maxDamage: number; range: number; minFire: number; maxFire: number };
+  | { kind: "play_fireball"; cardHandIndex: number; minDamage: number; maxDamage: number; range: number; minFire: number; maxFire: number }
+  | {
+      kind: "play_mace_smash";
+      cardHandIndex: number;
+      minDamage: number;
+      maxDamage: number;
+      defensePierce: number;
+    }
+  | {
+      kind: "play_poisoned_blade";
+      cardHandIndex: number;
+      minDamage: number;
+      maxDamage: number;
+      poisonLevels: number;
+    }
+  | {
+      kind: "play_flying_kick";
+      cardHandIndex: number;
+      move: number;
+      minDamage: number;
+      maxDamage: number;
+      knockback: number;
+    }
+  | {
+      kind: "play_great_sword";
+      cardHandIndex: number;
+      minDamage: number;
+      maxDamage: number;
+      secondaryMinDamage: number;
+      secondaryMaxDamage: number;
+    }
+  | {
+      kind: "play_potion_of_harming";
+      cardHandIndex: number;
+      range: number;
+      damage: number;
+      cloudTurns: number;
+    };
 
 export interface StairFeaturePositions {
   pedestal: Point;
@@ -237,6 +541,33 @@ export interface StairFeaturePositions {
   exitDoorCells: Point[];
   cornerTile: Point;
 }
+
+export type ShiftyGemId = "strength" | "speed" | "luck" | "cards" | "healing";
+
+export type ShiftyListingKind = "card" | "bread" | "herb" | "gem";
+
+export interface ShiftyListing {
+  id: string;
+  kind: ShiftyListingKind;
+  name: string;
+  basePrice: number;
+  price: number;
+  stock: number;
+  cardId?: string;
+  gemId?: ShiftyGemId;
+}
+
+export type ShiftyDialogueChoice = { id: string; label: string };
+
+export type ShiftyMerchantState = {
+  merchantId: "shifty";
+  leftShopThisFloor: boolean;
+  phase: "idle" | "dialogue" | "shop" | "confirm";
+  dialogueText: string;
+  dialogueChoices: ShiftyDialogueChoice[];
+  listings: ShiftyListing[];
+  selectedListingId: string | null;
+};
 
 export interface GameState {
   phase: Phase;
@@ -259,6 +590,20 @@ export interface GameState {
     bread: number;
     /** Healing Herb: use for +1 HP (held like bread). */
     herb: number;
+    /** Consumable gems from merchants. */
+    gems: {
+      strength: number;
+      speed: number;
+      luck: number;
+      cards: number;
+      healing: number;
+    };
+    /** Gem of Strength: next physical attack damage ×1.5 (floored). */
+    nextPhysicalAttackMultiplier: number;
+    /** Gem of Speed: next movement range is doubled. */
+    nextMoveDoubled: boolean;
+    /** Gem of Luck: restore chanceMode at end of turn. */
+    gemLuckRestore: ChanceMode | null;
     drawPile: string[];
     discardPile: string[];
     hand: string[];
@@ -267,7 +612,7 @@ export interface GameState {
     suppressNextMove: boolean;
     /** Parry and similar: subtracts from incoming monster damage this turn (until your next draw). */
     defenseBonusThisTurn: number;
-    /** Flurry of Blows: bonus punches this turn hit twice. */
+    /** Flurry of Blows: discard punches and played cards tagged `punch` hit twice this turn. */
     doublePunchThisTurn: boolean;
     /** 1-based; XP bar uses expToNextLevel(level). */
     level: number;
@@ -278,8 +623,8 @@ export interface GameState {
     /** Spend to step 1 orthogonal space (cleared at end of turn). */
     moveTokens: number;
     knockbackTokens: number;
-    /** After spending a knockback token; next weapon hit pushes if possible. */
-    knockbackPrimed: boolean;
+    /** Tokens committed to the next melee attack; each adds one tile of knockback. */
+    knockbackPrimed: number;
     movementCardsPlayedThisTurn: number;
     scoutUsesThisTurn: number;
     /** Haste card: all movement this turn moves twice as far; Attack/Protection/Aid/Deck cards are blocked. */
@@ -303,6 +648,8 @@ export interface GameState {
   floodingRoomId: number | null;
   /** Stalactites Fall: tiles that deal damage at start of next player turn. */
   pendingStalactites: Point[];
+  /** Potion of Harming clouds: damage on enter; expire after turnsLeft player turns. */
+  harmingClouds: { id: string; x: number; y: number; turnsLeft: number }[];
   /** Tangleweed obstacles (Overgrown). */
   tangleweeds: TangleweedPropInstance[];
   /** Count of times each theme was picked this run (weighted re-roll). */
@@ -316,6 +663,13 @@ export interface GameState {
   monsterDefs: Map<string, MonsterDef>;
   dungeonCardDefs: Map<string, DungeonCardDef>;
   pending: PendingIntent | null;
+  /** Dual Wield's staged first-hand-attack and second-discard-attack sequence. */
+  dualWieldStage:
+    | null
+    | { step: "choose_hand_attack" }
+    | { step: "resolving_hand_attack"; firstCardId: string }
+    | { step: "choose_discard_attack"; firstCardId: string }
+    | { step: "resolving_discard_attack"; firstCardId: string };
   /** Chest opened: pick one of three cards to add to discard, or resolve with neither. */
   chestOffer: null | { cards: [string, string, string] };
   /** Pot / ground card finds: take into discard or decline (queue if several). */
@@ -329,6 +683,10 @@ export interface GameState {
   gauntletCommenced: boolean;
   /** Set when the last gauntlet monster dies: stair room attached, peace mode, deck shuffled. */
   stairFeatures: null | StairFeaturePositions;
+  /** True after first conversation with Shifty this run. */
+  shiftyMet: boolean;
+  /** Active stair-room merchant UI/stock (null if none spawned). */
+  merchantState: ShiftyMerchantState | null;
   /** Card pedestal in the stair room (after peace). */
   pedestalUsed: boolean;
   pedestalOffer: null | { cards: [string, string, string] };
@@ -350,6 +708,10 @@ export interface GameState {
   chanceMode: ChanceMode;
   /** If true, only player-origin rolls use `chanceMode`; world rolls (dungeon, monsters) stay random. */
   chancePlayerOnly: boolean;
+  /** Developer editor mode: reveals the floor and allows inspecting dungeon deck order. */
+  editorMode: boolean;
+  /** Normal health and fog settings restored when editor mode is disabled. */
+  editorModeBackup: { hp: number; maxHp: number; fogOfWar: boolean } | null;
   log: string[];
   turn: number;
 }
@@ -360,12 +722,20 @@ export type AttackFxKind =
   | "arrow"
   | "fireball"
   | "douvlon_orb"
-  | "melee_slash";
+  | "melee_slash"
+  | "potion_harming"
+  | "vine_whip";
 
 export interface AttackFx {
   kind: AttackFxKind;
   fromX: number;
   fromY: number;
+  /**
+   * Vine whip: tile the tip retracts toward while the target is pulled
+   * (player pull destination). Tip starts at the HitVisual cell.
+   */
+  tipToX?: number;
+  tipToY?: number;
 }
 
 export interface HitVisual {
@@ -378,7 +748,42 @@ export interface HitVisual {
   fx?: AttackFx;
 }
 
-export type DispatchResult = { state: GameState; hits: HitVisual[] };
+/** Ordered presentation beats played after a dispatch resolves. */
+export type TurnAnimEvent =
+  | {
+      kind: "move";
+      /** `"player"` or a monster instance id. */
+      entityId: string;
+      fromX: number;
+      fromY: number;
+      toX: number;
+      toY: number;
+    }
+  | {
+      kind: "attack";
+      hits: HitVisual[];
+      /** Game state after this attack’s damage/death should be shown. */
+      stateAfter: GameState;
+    }
+  | {
+      /** Several moves (and optional hits) presented together — e.g. slime leap. */
+      kind: "simultaneous";
+      moves: Array<{
+        entityId: string;
+        fromX: number;
+        fromY: number;
+        toX: number;
+        toY: number;
+      }>;
+      hits: HitVisual[];
+      stateAfter: GameState;
+    };
+
+export type DispatchResult = {
+  state: GameState;
+  hits: HitVisual[];
+  anims: TurnAnimEvent[];
+};
 
 export type GameCommand =
   | { type: "BEGIN_FIRST_TURN" }
@@ -398,12 +803,16 @@ export type GameCommand =
       value: number;
     }
   | { type: "DEV_CARD"; cardId: string; action: "add" | "remove" }
+  | { type: "DEV_DECK"; action: "clear" | "reshuffle" | "reset" }
   | { type: "DEV_DUNGEON_TOP"; cardId: string }
   | { type: "DEV_GOTO_FLOOR"; depth: number }
   | { type: "DEV_SET_THEME"; theme: FloorTheme }
   | { type: "DEV_SUMMON"; defId: string; level: number }
   | { type: "DEV_CHANCE"; mode: ChanceMode; playerOnly: boolean }
+  | { type: "DEV_EDITOR"; enabled: boolean }
+  | { type: "DEV_EDITOR_CELL_ACTION"; x: number; y: number }
   | { type: "REQUEST_PLAY_CARD"; handIndex: number }
+  | { type: "RESOLVE_DUAL_WIELD_DISCARD"; cardId: string }
   | { type: "REQUEST_DISCARD_BONUS"; handIndex: number; bonus: "move1" | "punch" | "investigate" }
   | { type: "REQUEST_EQUIP"; handIndex: number }
   | { type: "UNEQUIP" }
@@ -415,6 +824,7 @@ export type GameCommand =
   | { type: "CANCEL_PENDING" }
   | { type: "USE_BREAD" }
   | { type: "USE_HERB" }
+  | { type: "USE_GEM"; gemId: "strength" | "speed" | "luck" | "cards" | "healing" }
   | { type: "CONFIRM_WATER_ESCAPE"; destX: number; destY: number; handIndex: number }
   | { type: "CANCEL_WATER_ESCAPE" }
   | { type: "END_TURN" }
@@ -422,6 +832,10 @@ export type GameCommand =
   | { type: "RESOLVE_CARD_PICKUP"; accept: boolean }
   | { type: "DISMISS_DUNGEON_TOAST" }
   | { type: "PEACE_MOVE_TO"; x: number; y: number }
+  | { type: "TALK_TO_MERCHANT" }
+  | { type: "RESOLVE_MERCHANT_DIALOGUE"; choiceId: string }
+  | { type: "SELECT_MERCHANT_ITEM"; listingId: string }
+  | { type: "CLOSE_MERCHANT_SHOP" }
   | { type: "RESOLVE_PEDESTAL_PICK"; pickIndex: number | null }
   | { type: "RESOLVE_DECK_DESTROY"; cardId: string | null }
   | { type: "UNLOCK_SKILL"; skillId: string }

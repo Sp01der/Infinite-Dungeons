@@ -11,6 +11,8 @@ export type AttackFxFrames = {
   fireballExplosion: Texture[];
   fireOverlays: [Texture, Texture, Texture, Texture, Texture];
   meleeSlash: [Texture, Texture, Texture];
+  potionHarming: Texture;
+  vineWhipSegment: Texture;
 };
 
 const CELL = 16;
@@ -23,7 +25,7 @@ function cellRect(col: number, row: number): Rectangle {
 
 /** Load the attack and elemental-status sheets into named frame textures. */
 export async function loadAttackFxFrames(url = "/assets/attack_fx.png"): Promise<AttackFxFrames> {
-  const [sheet, explosionSheet, statusSheet] = await Promise.all([
+  const [sheet, explosionSheet, statusSheet, potionHarming, vineWhipSegment] = await Promise.all([
     Assets.load<Texture>({
       src: url,
       data: { scaleMode: "nearest" },
@@ -36,10 +38,20 @@ export async function loadAttackFxFrames(url = "/assets/attack_fx.png"): Promise
       src: "/assets/elemental_status.png",
       data: { scaleMode: "nearest" },
     }),
+    Assets.load<Texture>({
+      src: "/assets/potion_of_harming.png",
+      data: { scaleMode: "nearest" },
+    }),
+    Assets.load<Texture>({
+      src: "/assets/vine_whip_segment.png",
+      data: { scaleMode: "nearest" },
+    }),
   ]);
   if (sheet.source) sheet.source.scaleMode = "nearest";
   if (explosionSheet.source) explosionSheet.source.scaleMode = "nearest";
   if (statusSheet.source) statusSheet.source.scaleMode = "nearest";
+  if (potionHarming.source) potionHarming.source.scaleMode = "nearest";
+  if (vineWhipSegment.source) vineWhipSegment.source.scaleMode = "nearest";
 
   const frame = (col: number, row: number): Texture =>
     new Texture({ source: sheet.source, frame: cellRect(col, row) });
@@ -79,6 +91,8 @@ export async function loadAttackFxFrames(url = "/assets/attack_fx.png"): Promise
     ],
     // Row 2 — melee slash L→R
     meleeSlash: [frame(0, 2), frame(1, 2), frame(2, 2)],
+    potionHarming,
+    vineWhipSegment,
   };
 }
 
@@ -121,12 +135,12 @@ export function pickProjectileTexture(
       if (isDiagonalStep(dx, dy)) {
         return {
           texture: frames.arrowDiag,
-          rotation: aimRotation(dx, dy, "southeast"),
+          rotation: aimRotation(dx, dy, "southeast") + Math.PI,
         };
       }
       return {
         texture: frames.arrowOrtho,
-        rotation: aimRotation(dx, dy, "east"),
+        rotation: aimRotation(dx, dy, "east") + Math.PI,
       };
     }
     case "fireball":
@@ -136,6 +150,13 @@ export function pickProjectileTexture(
       };
     case "douvlon_orb":
       return { texture: frames.douvlonOrb, rotation: 0 };
+    case "potion_harming":
+      return { texture: frames.potionHarming, rotation: 0 };
+    case "vine_whip":
+      return {
+        texture: frames.vineWhipSegment,
+        rotation: Math.atan2(dy, dx),
+      };
     case "melee_slash":
       return {
         texture: frames.meleeSlash[0]!,
