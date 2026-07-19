@@ -73,49 +73,12 @@
               <span class="slot-label">Your deck</span>
               <span id="hud-draw" class="slot-count">0</span>
             </button>
-            <div class="items-track">
-              <div class="item-pill item-pill--gold">
-                <span class="item-pill-label">Gold</span>
-                <span id="hud-gold" class="item-pill-val">0</span>
+            <div class="inventory-panel">
+              <div class="inv-gold" title="Gold">
+                <span class="inv-icon" data-loot-icon="loot_coin" aria-hidden="true"></span>
+                <span id="hud-gold" class="inv-gold-val">0</span>
               </div>
-              <button
-                type="button"
-                class="item-pill item-pill--bread"
-                id="item-bread"
-                title="Eat bread — heals 20% of max HP"
-              >
-                <span class="item-pill-label">Bread</span>
-                <span id="hud-bread" class="item-pill-val">0</span>
-              </button>
-              <button
-                type="button"
-                class="item-pill item-pill--herb"
-                id="item-herb"
-                title="Use healing herb — restores 1 HP"
-              >
-                <span class="item-pill-label">Herb</span>
-                <span id="hud-herb" class="item-pill-val">0</span>
-              </button>
-              <button type="button" class="item-pill item-pill--gem" id="item-gem-strength" title="Gem of Strength — next physical attack ×1.5" style="display:none">
-                <span class="item-pill-label">Str</span>
-                <span id="hud-gem-strength" class="item-pill-val">0</span>
-              </button>
-              <button type="button" class="item-pill item-pill--gem" id="item-gem-speed" title="Gem of Speed — next movement doubled" style="display:none">
-                <span class="item-pill-label">Spd</span>
-                <span id="hud-gem-speed" class="item-pill-val">0</span>
-              </button>
-              <button type="button" class="item-pill item-pill--gem" id="item-gem-luck" title="Gem of Luck — Chance Highest this turn" style="display:none">
-                <span class="item-pill-label">Lck</span>
-                <span id="hud-gem-luck" class="item-pill-val">0</span>
-              </button>
-              <button type="button" class="item-pill item-pill--gem" id="item-gem-cards" title="Gem of Cards — draw 2" style="display:none">
-                <span class="item-pill-label">Crd</span>
-                <span id="hud-gem-cards" class="item-pill-val">0</span>
-              </button>
-              <button type="button" class="item-pill item-pill--gem" id="item-gem-healing" title="Gem of Healing — heal 10% max HP" style="display:none">
-                <span class="item-pill-label">Hln</span>
-                <span id="hud-gem-healing" class="item-pill-val">0</span>
-              </button>
+              <div id="inventory-grid" class="inventory-grid" aria-label="Inventory"></div>
             </div>
             <div class="dock-sub">
               <span class="mini-pile">Equipped <strong id="hud-equipped">—</strong></span>
@@ -223,7 +186,8 @@
         <p id="command-feedback" class="command-feedback" aria-live="polite"></p>
         <div class="command-help">
           <p><code>Set [variable] [number]</code> — level, danger, max hp, hp, gold, bread, herb, noise, exp, skill points</p>
-          <p><code>Card [card name] [add|remove]</code> — adds to discard or removes one copy</p>
+          <p><code>Card [card name] [add|remove?]</code> — adds to discard (default) or removes one copy</p>
+          <p><code>Item [item name] [quantity?]</code> — add inventory items (bread, herb, cheese, gold, gems, Flame of Destruction, Magic Tome)</p>
           <p><code>Deck [clear|reshuffle|reset]</code> — clear, reshuffle, or replace your deck with a new starting deck</p>
           <p><code>Dungeon [card name]</code> — places a dungeon card on top</p>
           <p><code>Floor [n]</code> — jump to floor n (new layout, danger = n)</p>
@@ -293,6 +257,30 @@
         <div id="deck-destroy-body" class="chest-offer-cards deck-destroy-body"></div>
         <div class="chest-offer-actions">
           <button type="button" class="chest-offer-skip" id="deck-destroy-skip">Don&apos;t destroy any card</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="flame-destroy-offer" class="chest-offer" aria-hidden="true" role="dialog" aria-labelledby="flame-destroy-title">
+      <div class="chest-offer-backdrop" id="flame-destroy-backdrop" tabindex="-1"></div>
+      <div class="chest-offer-panel">
+        <h2 id="flame-destroy-title" class="chest-offer-heading">Flame of Destruction</h2>
+        <p class="chest-offer-note">Destroy one card in your discard pile forever. The Flame is consumed only if you destroy a card.</p>
+        <div id="flame-destroy-body" class="chest-offer-cards deck-destroy-body"></div>
+        <div class="chest-offer-actions">
+          <button type="button" class="chest-offer-skip" id="flame-destroy-skip">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="bind-tome-offer" class="chest-offer" aria-hidden="true" role="dialog" aria-labelledby="bind-tome-title">
+      <div class="chest-offer-backdrop" id="bind-tome-backdrop" tabindex="-1"></div>
+      <div class="chest-offer-panel">
+        <h2 id="bind-tome-title" class="chest-offer-heading">Bind Magic Tome</h2>
+        <p class="chest-offer-note">Discard a Magic card from your hand to bind it into this Tome (3 charges).</p>
+        <div id="bind-tome-body" class="chest-offer-cards deck-destroy-body"></div>
+        <div class="chest-offer-actions">
+          <button type="button" class="chest-offer-skip" id="bind-tome-skip">Cancel</button>
         </div>
       </div>
     </div>

@@ -11,6 +11,7 @@ type CatalogEntry =
   | { kind: "card"; cardId: string; name: string; basePrice: number; stock: number; shift: "normal" | "up" | "none" }
   | { kind: "bread"; name: string; basePrice: number; stock: number; shift: "normal" }
   | { kind: "herb"; name: string; basePrice: number; stock: number; shift: "lowHp" }
+  | { kind: "cheese"; name: string; basePrice: number; stock: number; shift: "normal" }
   | { kind: "gem"; gemId: ShiftyGemId; name: string; basePrice: number; stock: number; shift: "normal" };
 
 const CARD_CATALOG: CatalogEntry[] = [
@@ -35,11 +36,13 @@ const CARD_CATALOG: CatalogEntry[] = [
 const CONSUMABLE_CATALOG: CatalogEntry[] = [
   { kind: "bread", name: "Piece of Bread", basePrice: 3, stock: 5, shift: "normal" },
   { kind: "herb", name: "Healing Herb", basePrice: 2, stock: 5, shift: "lowHp" },
+  { kind: "cheese", name: "Cheese", basePrice: 4, stock: 3, shift: "normal" },
   { kind: "gem", gemId: "strength", name: "Gem of Strength", basePrice: 8, stock: 2, shift: "normal" },
   { kind: "gem", gemId: "speed", name: "Gem of Speed", basePrice: 8, stock: 2, shift: "normal" },
   { kind: "gem", gemId: "luck", name: "Gem of Luck", basePrice: 10, stock: 2, shift: "normal" },
   { kind: "gem", gemId: "cards", name: "Gem of Cards", basePrice: 8, stock: 2, shift: "normal" },
   { kind: "gem", gemId: "healing", name: "Gem of Healing", basePrice: 8, stock: 2, shift: "normal" },
+  { kind: "gem", gemId: "defense", name: "Gem of Defense", basePrice: 8, stock: 2, shift: "normal" },
 ];
 
 const CONFIRM_LINES = [
@@ -113,9 +116,9 @@ export function createShiftyListings(state: GameState): ShiftyListing[] {
   });
 }
 
-/** Only Shifty exists for now, so he always appears (25% once other merchants exist). */
-export function shouldSpawnShifty(_state: GameState): boolean {
-  return true;
+/** With Obamly available: Shifty appears 25% of the time; otherwise Obamly. */
+export function pickStairMerchantId(): "shifty" | "obamly" {
+  return Math.random() < 0.25 ? "shifty" : "obamly";
 }
 
 export function openingDialogue(metBefore: boolean, leftShopThisFloor: boolean): {

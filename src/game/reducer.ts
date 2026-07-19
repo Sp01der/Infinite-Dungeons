@@ -29,6 +29,7 @@ import { createMonsterInstance, monsterDefenseForIncoming } from "./monsterSpawn
 import { attachStairRoom } from "./stairRoom";
 import {
   handleMerchantCommand,
+  merchantDisplayName,
   merchantUiBlocks,
   spawnMerchantAfterGauntlet,
 } from "./merchantRuntime";
@@ -39,6 +40,7 @@ import {
   pickPedestalOfferCards,
   pickRandomLootCardId,
   rollChestLoot,
+  rollMagicPotLoot,
   rollPotLoot,
 } from "./loot";
 import { addExp } from "./progression";
@@ -89,6 +91,8 @@ function choiceModalBlocksProgression(s: GameState): boolean {
     (s.cardPickupOffer?.queue.length ?? 0) > 0 ||
     !!s.pedestalOffer ||
     s.deckDestroyPending ||
+    s.flameDestroyPending ||
+    s.bindTomePending ||
     !!s.deckBuilderOffer ||
     merchantUiBlocks(s)
   );
@@ -220,6 +224,71 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
       return noHits(log(clearEquippedIfGone(removed), `Command: removed one ${nm}.`));
     }
     return noHits(log(state, `Command: ${nm} is not in your deck.`));
+  }
+
+  if (cmd.type === "DEV_ITEM") {
+    const qty = Math.max(0, Math.trunc(cmd.quantity));
+    if (qty <= 0) return noHits(log(state, "Command: item quantity must be at least 1."));
+    const p = state.player;
+    switch (cmd.item) {
+      case "gold":
+        return noHits(
+          log(
+            { ...state, player: { ...p, gold: p.gold + qty } },
+            `Command: added ${qty} gold.`,
+          ),
+        );
+      case "bread":
+        return noHits(
+          log(
+            { ...state, player: { ...p, bread: p.bread + qty } },
+            `Command: added ${qty} bread.`,
+          ),
+        );
+      case "herb":
+        return noHits(
+          log(
+            { ...state, player: { ...p, herb: p.herb + qty } },
+            `Command: added ${qty} healing herb${qty === 1 ? "" : "s"}.`,
+          ),
+        );
+      case "cheese":
+        return noHits(
+          log(
+            { ...state, player: { ...p, cheese: p.cheese + qty } },
+            `Command: added ${qty} cheese.`,
+          ),
+        );
+      case "flameOfDestruction":
+        return noHits(
+          log(
+            {
+              ...state,
+              player: { ...p, flameOfDestruction: p.flameOfDestruction + qty },
+            },
+            `Command: added ${qty} Flame of Destruction.`,
+          ),
+        );
+      case "unboundTomes":
+        return noHits(
+          log(
+            { ...state, player: { ...p, unboundTomes: p.unboundTomes + qty } },
+            `Command: added ${qty} Unbound Magic Tome${qty === 1 ? "" : "s"}.`,
+          ),
+        );
+      case "gem": {
+        const gemId = cmd.gemId;
+        if (!gemId) return noHits(log(state, "Command: missing gem type."));
+        const gems = { ...p.gems, [gemId]: p.gems[gemId] + qty };
+        const label = gemId[0]!.toUpperCase() + gemId.slice(1);
+        return noHits(
+          log(
+            { ...state, player: { ...p, gems } },
+            `Command: added ${qty} Gem of ${label}.`,
+          ),
+        );
+      }
+    }
   }
 
   if (cmd.type === "DEV_DECK") {
@@ -504,6 +573,32 @@ function applyMimicDeathLoot(state: GameState): GameState {
         },
         "Mimic loot: a loaf of bread.",
       );
+    case "herb":
+      return log(
+        {
+          ...next,
+          player: { ...next.player, herb: next.player.herb + 1 },
+        },
+        "Mimic loot: a healing herb.",
+      );
+    case "cheese":
+      return log(
+        {
+          ...next,
+          player: { ...next.player, cheese: next.player.cheese + 1 },
+        },
+        "Mimic loot: cheese.",
+      );
+    case "gem": {
+      const gems = {
+        ...next.player.gems,
+        [loot.gemId]: next.player.gems[loot.gemId] + 1,
+      };
+      return log(
+        { ...next, player: { ...next.player, gems } },
+        `Mimic loot: a Gem of ${loot.gemId[0]!.toUpperCase()}${loot.gemId.slice(1)}.`,
+      );
+    }
     case "cardChoice": {
       const cards = pickChestOfferCards(next.cardDefs, loot.tier, next.depth);
       return log(
@@ -1181,12 +1276,15 @@ function enqueueCardPickup(s: GameState, cardId: string): GameState {
   return { ...s, cardPickupOffer: { queue: [...prev, cardId] } };
 }
 
-/** Played equipped cards return to the top; all other played cards go to discard. */
+/** Played equipped cards return to the top; all other played cards go to discard. Bound Tome casts are consumed (not discarded). */
 function playerAfterPlayingCard(
   s: GameState,
   hand: string[],
   cardId: string,
 ): GameState["player"] {
+  if (s.tomeCast) {
+    return { ...s.player, hand };
+  }
   if (s.player.equipped === cardId) {
     return {
       ...s.player,
@@ -1199,6 +1297,121 @@ function playerAfterPlayingCard(
     hand,
     discardPile: [...s.player.discardPile, cardId],
   };
+}
+
+function spendBoundTomeCharge(
+  player: GameState["player"],
+  tomeId: string,
+  cardDefs: Map<string, CardDef>,
+): { player: GameState["player"]; message: string | null } {
+  const tome = player.boundTomes.find((t) => t.id === tomeId);
+  if (!tome) return { player, message: null };
+  const nm = cardDefs.get(tome.cardId)?.name ?? tome.cardId;
+  if (tome.charges <= 1) {
+    return {
+      player: {
+        ...player,
+        boundTomes: player.boundTomes.filter((t) => t.id !== tomeId),
+      },
+      message: `The Bound Tome (${nm}) is consumed.`,
+    };
+  }
+  return {
+    player: {
+      ...player,
+      boundTomes: player.boundTomes.map((t) =>
+        t.id === tomeId ? { ...t, charges: t.charges - 1 } : t,
+      ),
+    },
+    message: `Bound Tome (${nm}): ${tome.charges - 1} charge(s) remain.`,
+  };
+}
+
+/** If a Bound Tome virtual card left the hand without applyCardPlayed, spend the charge. */
+function finalizeTomeCast(_before: GameState, after: GameState): GameState {
+  if (!after.tomeCast) return after;
+  const { handIndex, tomeId } = after.tomeCast;
+  const tome = after.player.boundTomes.find((t) => t.id === tomeId);
+  if (tome && after.player.hand[handIndex] === tome.cardId) return after;
+  const spent = spendBoundTomeCharge(after.player, tomeId, after.cardDefs);
+  let next: GameState = { ...after, player: spent.player, tomeCast: null };
+  if (spent.message) next = log(next, spent.message);
+  return next;
+}
+
+/** Apply hand update after a card is played; spends a Bound Tome charge when casting from a tome. */
+function applyCardPlayed(s: GameState, hand: string[], cardId: string): GameState {
+  const player = playerAfterPlayingCard(s, hand, cardId);
+  if (!s.tomeCast) {
+    return { ...s, player, tomeCast: null };
+  }
+  const spent = spendBoundTomeCharge(player, s.tomeCast.tomeId, s.cardDefs);
+  let next: GameState = { ...s, player: spent.player, tomeCast: null };
+  if (spent.message) next = log(next, spent.message);
+  return next;
+}
+
+function nextBoundTomeId(s: GameState): string {
+  let n = 0;
+  for (const t of s.player.boundTomes) {
+    const m = /^tome_(\d+)$/.exec(t.id);
+    if (m) n = Math.max(n, parseInt(m[1]!, 10) + 1);
+  }
+  return `tome_${n}`;
+}
+
+function removeOneFromDiscard(s: GameState, cardId: string): GameState | null {
+  const di = s.player.discardPile.lastIndexOf(cardId);
+  if (di < 0) return null;
+  const discardPile = [...s.player.discardPile];
+  discardPile.splice(di, 1);
+  return { ...s, player: { ...s.player, discardPile } };
+}
+
+function abortTomeCast(s: GameState): GameState {
+  if (!s.tomeCast) return s;
+  const hand = [...s.player.hand];
+  const idx = s.tomeCast.handIndex;
+  if (idx >= 0 && idx < hand.length) hand.splice(idx, 1);
+  return {
+    ...s,
+    player: { ...s.player, hand },
+    pending: null,
+    tomeCast: null,
+  };
+}
+
+function grantMagicPotContents(s: GameState, loot: ReturnType<typeof rollMagicPotLoot>): GameState {
+  if (loot.kind === "gem") {
+    const gems = {
+      ...s.player.gems,
+      [loot.gemId]: s.player.gems[loot.gemId] + 1,
+    };
+    const label = loot.gemId[0]!.toUpperCase() + loot.gemId.slice(1);
+    return log({ ...s, player: { ...s.player, gems } }, `Inside: a Gem of ${label}!`);
+  }
+  if (loot.kind === "flame_of_destruction") {
+    return log(
+      {
+        ...s,
+        player: {
+          ...s.player,
+          flameOfDestruction: s.player.flameOfDestruction + 1,
+        },
+      },
+      "Inside: Flame of Destruction!",
+    );
+  }
+  return log(
+    {
+      ...s,
+      player: {
+        ...s.player,
+        unboundTomes: s.player.unboundTomes + 1,
+      },
+    },
+    "Inside: an Unbound Magic Tome!",
+  );
 }
 
 function roomKindAt(s: GameState, x: number, y: number): RoomKind | null {
@@ -1472,6 +1685,10 @@ function collectAdjacentLoot(s: GameState): GameState {
   let gold = s.player.gold;
   let bread = s.player.bread;
   let herb = s.player.herb;
+  let cheese = s.player.cheese;
+  let flameOfDestruction = s.player.flameOfDestruction;
+  let unboundTomes = s.player.unboundTomes;
+  const gems = { ...s.player.gems };
   let next: GameState = { ...s, groundLoot: rest };
   const lines: string[] = [];
   let cardFound = 0;
@@ -1495,6 +1712,24 @@ function collectAdjacentLoot(s: GameState): GameState {
         herb += 1;
         lines.push(`${d0}a healing herb.`);
         break;
+      case "cheese":
+        cheese += 1;
+        lines.push(`${d0}cheese.`);
+        break;
+      case "gem": {
+        const gid = loot.gemId ?? "strength";
+        gems[gid] = (gems[gid] ?? 0) + 1;
+        lines.push(`${d0}a gem (${gid}).`);
+        break;
+      }
+      case "flame_of_destruction":
+        flameOfDestruction += 1;
+        lines.push(`${d0}Flame of Destruction.`);
+        break;
+      case "magic_tome":
+        unboundTomes += 1;
+        lines.push(`${d0}an Unbound Magic Tome.`);
+        break;
       case "card": {
         const cid = loot.cardId ?? "move";
         next = enqueueCardPickup(next, cid);
@@ -1505,7 +1740,16 @@ function collectAdjacentLoot(s: GameState): GameState {
   }
   next = {
     ...next,
-    player: { ...next.player, gold, bread, herb },
+    player: {
+      ...next.player,
+      gold,
+      bread,
+      herb,
+      cheese,
+      flameOfDestruction,
+      unboundTomes,
+      gems,
+    },
   };
   for (const line of lines) next = log(next, line);
   if (cardFound === 1) next = log(next, "A card on the ground — add it to your deck?");
@@ -1528,8 +1772,44 @@ function breakPotFromAttack(s: GameState, px: number, py: number): GameState {
   if (!pot) return s;
   const pots = s.pots.filter((p) => p.id !== pot.id);
   let next: GameState = { ...s, pots };
-  const loot = rollPotLoot(next.cardDefs, next.depth, potLootHitChance(next));
   let serial = nextGroundLootSerial(next);
+  if (pot.magic) {
+    next = log(next, "The magic pot shatters!");
+    const loot = rollMagicPotLoot();
+    if (loot.kind === "gem") {
+      const g: GroundLootInstance = {
+        id: `gloot_${serial}`,
+        x: px,
+        y: py,
+        kind: "gem",
+        gemId: loot.gemId,
+      };
+      return collectAdjacentLoot(
+        log({ ...next, groundLoot: [...next.groundLoot, g] }, "A gem spills out in a flash of light."),
+      );
+    }
+    if (loot.kind === "flame_of_destruction") {
+      const g: GroundLootInstance = {
+        id: `gloot_${serial}`,
+        x: px,
+        y: py,
+        kind: "flame_of_destruction",
+      };
+      return collectAdjacentLoot(
+        log({ ...next, groundLoot: [...next.groundLoot, g] }, "Flame of Destruction tumbles out!"),
+      );
+    }
+    const g: GroundLootInstance = {
+      id: `gloot_${serial}`,
+      x: px,
+      y: py,
+      kind: "magic_tome",
+    };
+    return collectAdjacentLoot(
+      log({ ...next, groundLoot: [...next.groundLoot, g] }, "An Unbound Magic Tome tumbles out!"),
+    );
+  }
+  const loot = rollPotLoot(next.cardDefs, next.depth, potLootHitChance(next));
   next = log(next, "The pot shatters!");
   switch (loot.kind) {
     case "nothing":
@@ -1552,6 +1832,18 @@ function breakPotFromAttack(s: GameState, px: number, py: number): GameState {
         log({ ...next, groundLoot: [...next.groundLoot, g] }, "Bread tumbles out."),
       );
     }
+    case "herb": {
+      const g: GroundLootInstance = { id: `gloot_${serial}`, x: px, y: py, kind: "herb" };
+      return collectAdjacentLoot(
+        log({ ...next, groundLoot: [...next.groundLoot, g] }, "A healing herb tumbles out."),
+      );
+    }
+    case "cheese": {
+      const g: GroundLootInstance = { id: `gloot_${serial}`, x: px, y: py, kind: "cheese" };
+      return collectAdjacentLoot(
+        log({ ...next, groundLoot: [...next.groundLoot, g] }, "Cheese tumbles out."),
+      );
+    }
     case "card": {
       const g: GroundLootInstance = {
         id: `gloot_${serial}`,
@@ -1572,6 +1864,10 @@ function breakPotAsPlayer(s: GameState, x: number, y: number): GameState {
   if (!pot) return s;
   const pots = s.pots.filter((p) => p.id !== pot.id);
   let next: GameState = { ...s, pots };
+  if (pot.magic) {
+    next = log(next, "You smash a magic pot!");
+    return grantMagicPotContents(next, rollMagicPotLoot());
+  }
   const loot = rollPotLoot(s.cardDefs, s.depth, potLootHitChance(next));
   next = log(next, "You smash a pot!");
   switch (loot.kind) {
@@ -1586,6 +1882,16 @@ function breakPotAsPlayer(s: GameState, x: number, y: number): GameState {
       return log(
         { ...next, player: { ...next.player, bread: next.player.bread + 1 } },
         "Inside: a loaf of bread!",
+      );
+    case "herb":
+      return log(
+        { ...next, player: { ...next.player, herb: next.player.herb + 1 } },
+        "Inside: a healing herb!",
+      );
+    case "cheese":
+      return log(
+        { ...next, player: { ...next.player, cheese: next.player.cheese + 1 } },
+        "Inside: cheese!",
       );
     case "card": {
       const nm = next.cardDefs.get(loot.cardId)?.name ?? loot.cardId;
@@ -1627,6 +1933,32 @@ function openChestAsPlayer(s: GameState, x: number, y: number): GameState {
         },
         "Inside: a loaf of bread.",
       );
+    case "herb":
+      return log(
+        {
+          ...next,
+          player: { ...next.player, herb: next.player.herb + 1 },
+        },
+        "Inside: a healing herb.",
+      );
+    case "cheese":
+      return log(
+        {
+          ...next,
+          player: { ...next.player, cheese: next.player.cheese + 1 },
+        },
+        "Inside: cheese.",
+      );
+    case "gem": {
+      const gems = {
+        ...next.player.gems,
+        [loot.gemId]: next.player.gems[loot.gemId] + 1,
+      };
+      return log(
+        { ...next, player: { ...next.player, gems } },
+        `Inside: a Gem of ${loot.gemId[0]!.toUpperCase()}${loot.gemId.slice(1)}.`,
+      );
+    }
     case "cardChoice": {
       const cards = pickChestOfferCards(next.cardDefs, loot.tier, next.depth);
       return log(
@@ -2546,8 +2878,7 @@ function consumePlayedCard(
   return {
     cardId,
     state: {
-      ...state,
-      player: playerAfterPlayingCard(state, hand, cardId),
+      ...applyCardPlayed(state, hand, cardId),
       pending: null,
     },
   };
@@ -2817,6 +3148,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
   if (
     cmd.type === "DEV_SET_VARIABLE" ||
     cmd.type === "DEV_CARD" ||
+    cmd.type === "DEV_ITEM" ||
     cmd.type === "DEV_DECK" ||
     cmd.type === "DEV_DUNGEON_TOP" ||
     cmd.type === "DEV_GOTO_FLOOR" ||
@@ -2835,6 +3167,8 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
   if (pickupLen > 0 && cmd.type !== "RESOLVE_CARD_PICKUP") return noHits(state);
   if (state.pedestalOffer && cmd.type !== "RESOLVE_PEDESTAL_PICK") return noHits(state);
   if (state.deckDestroyPending && cmd.type !== "RESOLVE_DECK_DESTROY") return noHits(state);
+  if (state.flameDestroyPending && cmd.type !== "RESOLVE_FLAME_DESTROY") return noHits(state);
+  if (state.bindTomePending && cmd.type !== "RESOLVE_BIND_TOME") return noHits(state);
   if (
     state.dualWieldStage?.step === "choose_discard_attack" &&
     cmd.type !== "RESOLVE_DUAL_WIELD_DISCARD" &&
@@ -2854,7 +3188,9 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
     const merchantResult = handleMerchantCommand(state, cmd);
     if (merchantResult) return merchantResult;
     if (cmd.type === "PEACE_MOVE_TO") {
-      if (merchantUiBlocks(state)) return noHits(log(state, "Finish talking with Shifty first."));
+      if (merchantUiBlocks(state)) {
+        return noHits(log(state, `Finish talking with ${merchantDisplayName(state)} first.`));
+      }
       const dest = { x: cmd.x, y: cmd.y };
       const from = { x: state.player.x, y: state.player.y };
       if (manhattan(from, dest) !== 1) return noHits(state);
@@ -3020,7 +3356,12 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           log({ ...state, dualWieldStage: null, pending: null }, "Dual Wield cancelled."),
         );
       }
-      if (!state.pending) return noHits(state);
+      if (!state.pending) {
+        if (state.tomeCast) {
+          return noHits(log(abortTomeCast(state), "Bound Tome casting cancelled."));
+        }
+        return noHits(state);
+      }
       if (
         state.dualWieldStage?.step === "resolving_hand_attack"
       ) {
@@ -3062,11 +3403,14 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           hand.splice(p.cardHandIndex, 1);
           return noHits(
             log(
-              { ...state, player: playerAfterPlayingCard(state, hand, cardId), pending: null },
+              { ...applyCardPlayed(state, hand, cardId), pending: null },
               "Lightning chain cancelled.",
             ),
           );
         }
+      }
+      if (state.tomeCast) {
+        return noHits(log(abortTomeCast(state), "Bound Tome casting cancelled."));
       }
       return noHits({ ...state, pending: null });
     }
@@ -3110,6 +3454,9 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
 
     case "REQUEST_PLAY_CARD": {
       if (state.phase !== "player" || state.pending) return noHits(state);
+      if (state.tomeCast && cmd.handIndex !== state.tomeCast.handIndex) {
+        return noHits(log(state, "Finish or cancel the Bound Tome cast first."));
+      }
       const idx = cmd.handIndex;
       const cardId = state.player.hand[idx];
       if (!cardId) return noHits(state);
@@ -3143,10 +3490,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         hand.splice(idx, 1);
         return noHits(
           log(
-            {
-              ...state,
-              player: playerAfterPlayingCard(state, hand, cardId),
-              dualWieldStage: { step: "choose_hand_attack" },
+            { ...applyCardPlayed(state, hand, cardId), dualWieldStage: { step: "choose_hand_attack" },
             },
             "Dual Wield — play an Attack from your hand.",
           ),
@@ -3166,7 +3510,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         let s = state;
         const hand = [...s.player.hand];
         hand.splice(idx, 1);
-        s = { ...s, player: playerAfterPlayingCard(s, hand, cardId) };
+        s = applyCardPlayed(s, hand, cardId);
         s = drawFromPlayerDeck(s, def.effect.draw);
         const bonusId = "bonus_card";
         for (let i = 0; i < def.effect.bonusCount; i++) {
@@ -3184,7 +3528,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         let s = state;
         const hand = [...s.player.hand];
         hand.splice(idx, 1);
-        s = { ...s, player: playerAfterPlayingCard(s, hand, cardId) };
+        s = applyCardPlayed(s, hand, cardId);
         s = drawFromPlayerDeck(s, def.effect.amount);
         return noHits(log(s, `Played ${def.name} — draw ${def.effect.amount}.`));
       }
@@ -4602,6 +4946,180 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       );
     }
 
+    case "USE_CHEESE": {
+      if (state.phase !== "player" || state.pending) return noHits(state);
+      if (state.player.cheese <= 0) return noHits(log(state, "You have no cheese."));
+      if (state.player.hp >= state.player.maxHp) return noHits(log(state, "You're at full health."));
+      const heal = Math.min(3, state.player.maxHp - state.player.hp);
+      return noHits(
+        log(
+          {
+            ...state,
+            player: {
+              ...state.player,
+              cheese: state.player.cheese - 1,
+              hp: state.player.hp + heal,
+            },
+          },
+          `You eat cheese and recover ${heal} HP.`,
+        ),
+      );
+    }
+
+    case "USE_STEW": {
+      if (state.phase !== "player" || state.pending) return noHits(state);
+      if (state.player.stew <= 0) return noHits(log(state, "You have no Obamly's Special Stew."));
+      const maxHp = state.player.maxHp + 1;
+      const hp = Math.min(state.player.hp + 6, maxHp);
+      return noHits(
+        log(
+          {
+            ...state,
+            player: {
+              ...state.player,
+              stew: state.player.stew - 1,
+              maxHp,
+              hp,
+            },
+          },
+          `You eat Obamly's Special Stew — +1 max HP and recover to ${hp}/${maxHp}.`,
+        ),
+      );
+    }
+
+    case "USE_FLAME_OF_DESTRUCTION": {
+      if (state.phase !== "player" || state.pending || choiceModalBlocksProgression(state)) {
+        return noHits(state);
+      }
+      if (state.player.flameOfDestruction <= 0) {
+        return noHits(log(state, "You have no Flame of Destruction."));
+      }
+      if (state.player.discardPile.length === 0) {
+        return noHits(log(state, "Your discard pile is empty — nothing to destroy."));
+      }
+      return noHits(
+        log(
+          { ...state, flameDestroyPending: true },
+          "Flame of Destruction — choose a card in your discard pile to destroy.",
+        ),
+      );
+    }
+
+    case "RESOLVE_FLAME_DESTROY": {
+      if (!state.flameDestroyPending) return noHits(state);
+      if (cmd.cardId === null) {
+        return noHits(
+          log({ ...state, flameDestroyPending: false }, "You withhold the Flame of Destruction."),
+        );
+      }
+      const removed = removeOneFromDiscard(state, cmd.cardId);
+      if (!removed) {
+        return noHits(log(state, "That card is not in your discard pile."));
+      }
+      const nm = state.cardDefs.get(cmd.cardId)?.name ?? cmd.cardId;
+      let s = clearEquippedIfGone(removed);
+      s = {
+        ...s,
+        flameDestroyPending: false,
+        player: {
+          ...s.player,
+          flameOfDestruction: Math.max(0, state.player.flameOfDestruction - 1),
+        },
+      };
+      return noHits(log(s, `Flame of Destruction consumes ${nm} from your discard pile.`));
+    }
+
+    case "USE_UNBOUND_TOME": {
+      if (state.phase !== "player" || state.pending || choiceModalBlocksProgression(state)) {
+        return noHits(state);
+      }
+      if (state.player.unboundTomes <= 0) {
+        return noHits(log(state, "You have no Unbound Magic Tome."));
+      }
+      const hasMagic = state.player.hand.some((id) =>
+        state.cardDefs.get(id)?.types.includes("Magic"),
+      );
+      if (!hasMagic) {
+        return noHits(log(state, "You need a Magic card in hand to bind into the Tome."));
+      }
+      return noHits(
+        log(
+          { ...state, bindTomePending: true },
+          "Unbound Magic Tome — discard a Magic card from your hand to bind it.",
+        ),
+      );
+    }
+
+    case "RESOLVE_BIND_TOME": {
+      if (!state.bindTomePending) return noHits(state);
+      if (cmd.handIndex === null) {
+        return noHits(
+          log({ ...state, bindTomePending: false }, "You leave the Magic Tome unbound."),
+        );
+      }
+      const cardId = state.player.hand[cmd.handIndex];
+      if (!cardId) return noHits(state);
+      const def = state.cardDefs.get(cardId);
+      if (!def?.types.includes("Magic")) {
+        return noHits(log(state, "Only a Magic card can be bound into a Tome."));
+      }
+      const hand = [...state.player.hand];
+      hand.splice(cmd.handIndex, 1);
+      const bound = {
+        id: nextBoundTomeId(state),
+        cardId,
+        charges: 3,
+      };
+      const nm = def.name;
+      return noHits(
+        log(
+          {
+            ...state,
+            bindTomePending: false,
+            player: {
+              ...state.player,
+              hand,
+              discardPile: [...state.player.discardPile, cardId],
+              unboundTomes: state.player.unboundTomes - 1,
+              boundTomes: [...state.player.boundTomes, bound],
+            },
+          },
+          `The Tome binds ${nm} — three charges.`,
+        ),
+      );
+    }
+
+    case "USE_BOUND_TOME": {
+      if (state.phase !== "player" || state.pending || choiceModalBlocksProgression(state)) {
+        return noHits(state);
+      }
+      if (state.tomeCast) {
+        return noHits(log(state, "Finish or cancel the current Bound Tome cast first."));
+      }
+      const tome = state.player.boundTomes.find((t) => t.id === cmd.tomeId);
+      if (!tome || tome.charges <= 0) {
+        return noHits(log(state, "That Bound Tome is spent."));
+      }
+      const def = state.cardDefs.get(tome.cardId);
+      if (!def) return noHits(state);
+      if (state.player.hasteThisTurn) {
+        const blockedTypes = ["Attack", "Protection", "Aid", "Deck"];
+        if (def.types.some((t) => blockedTypes.includes(t))) {
+          return noHits(
+            log(state, "Haste is active — that Bound Tome spell cannot be cast this turn."),
+          );
+        }
+      }
+      const hand = [...state.player.hand, tome.cardId];
+      const handIndex = hand.length - 1;
+      const withCast: GameState = {
+        ...state,
+        player: { ...state.player, hand },
+        tomeCast: { tomeId: tome.id, handIndex },
+      };
+      return dispatchCore(withCast, { type: "REQUEST_PLAY_CARD", handIndex });
+    }
+
     case "USE_GEM": {
       if (state.phase !== "player" || state.pending) return noHits(state);
       const count = state.player.gems[cmd.gemId] ?? 0;
@@ -4653,6 +5171,19 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
             ),
           );
         }
+        case "defense":
+          return noHits(
+            log(
+              {
+                ...s,
+                player: {
+                  ...s.player,
+                  defenseBonusThisTurn: s.player.defenseBonusThisTurn + 4,
+                },
+              },
+              "Gem of Defense — +4 defense for the rest of this turn.",
+            ),
+          );
       }
       return noHits(s);
     }
@@ -4691,6 +5222,12 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       }
       if (state.pending) {
         return noHits(log(state, "Resolve or cancel your pending action before ending the turn."));
+      }
+      if (state.flameDestroyPending || state.bindTomePending) {
+        return noHits(log(state, "Finish the inventory choice before ending the turn."));
+      }
+      if (state.tomeCast) {
+        return noHits(log(state, "Finish or cancel the Bound Tome cast before ending the turn."));
       }
 
       let s = discardHand(state);
@@ -4796,6 +5333,7 @@ export function dispatch(state: GameState, cmd: GameCommand): DispatchResult {
     }
     s = processGauntletVictory(s);
     s = maybeEliteTeleportAll(s);
+    s = finalizeTomeCast(state, s);
     const hits = r.hits;
     const anims = finalizeAnims(state, s, hits, r.anims, cmd);
     return { state: s, hits, anims };

@@ -30,6 +30,7 @@ import {
   pickMeleeSlashTexture,
   pickProjectileTexture,
 } from "./attackFx";
+import { groundLootSpriteId } from "../game/lootIcons";
 
 /** Logical tile size in pixels (smaller than original 48 for a wider view). */
 export const TILE = 40;
@@ -828,7 +829,9 @@ export class GridView extends Container {
 
     for (const pot of state.pots) {
       if (state.fogOfWar && !state.discovered.has(keyOf(pot))) continue;
-      this.potLayer.addChild(this.makePlacedSprite("pot", pot.x, pot.y));
+      this.potLayer.addChild(
+        this.makePlacedSprite(pot.magic ? "magic_pot" : "pot", pot.x, pot.y),
+      );
     }
 
     for (const rk of state.rocks) {
@@ -853,16 +856,32 @@ export class GridView extends Container {
 
     for (const loot of state.groundLoot) {
       if (state.fogOfWar && !state.discovered.has(keyOf(loot))) continue;
-      const g = new Graphics();
-      const cx = loot.x * TILE + TILE * 0.72;
-      const cy = loot.y * TILE + TILE * 0.72;
-      const r = Math.max(3, Math.round(TILE * 0.12));
-      let color = 0xe8c547;
-      if (loot.kind === "bread") color = 0xc4a574;
-      if (loot.kind === "herb") color = 0x27ae60;
-      if (loot.kind === "card") color = 0x9b59b6;
-      g.circle(cx, cy, r).fill({ color, alpha: 0.92 });
-      this.lootLayer.addChild(g);
+      const spriteId = groundLootSpriteId(loot);
+      const style = this.styles.get(spriteId);
+      if (this.usePixelArt && style?.kind === "texture") {
+        const size = 16;
+        const spr = this.makeSprite(spriteId);
+        spr.width = size;
+        spr.height = size;
+        spr.x = loot.x * TILE + TILE - size - 2;
+        spr.y = loot.y * TILE + TILE - size - 2;
+        this.lootLayer.addChild(spr);
+      } else {
+        const g = new Graphics();
+        const cx = loot.x * TILE + TILE * 0.72;
+        const cy = loot.y * TILE + TILE * 0.72;
+        const r = Math.max(3, Math.round(TILE * 0.12));
+        let color = 0xe8c547;
+        if (loot.kind === "bread") color = 0xc4a574;
+        if (loot.kind === "herb") color = 0x27ae60;
+        if (loot.kind === "card") color = 0x9b59b6;
+        if (loot.kind === "cheese") color = 0xf1c40f;
+        if (loot.kind === "gem") color = 0xe74c3c;
+        if (loot.kind === "flame_of_destruction") color = 0xe67e22;
+        if (loot.kind === "magic_tome") color = 0x5dade2;
+        g.circle(cx, cy, r).fill({ color, alpha: 0.92 });
+        this.lootLayer.addChild(g);
+      }
     }
 
     for (const chest of state.chests) {
@@ -1070,7 +1089,13 @@ export class GridView extends Container {
         state.merchantState &&
         (!state.fogOfWar || state.discovered.has(keyOf(mer)))
       ) {
-        this.entityLayer.addChild(this.makePlacedSprite("merchant_shifty", mer.x, mer.y));
+        this.entityLayer.addChild(
+          this.makePlacedSprite(
+            state.merchantState.merchantId === "obamly" ? "merchant_obamly" : "merchant_shifty",
+            mer.x,
+            mer.y,
+          ),
+        );
       }
 
       for (const d of sf.exitDoorCells) {

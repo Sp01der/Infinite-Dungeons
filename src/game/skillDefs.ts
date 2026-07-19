@@ -132,7 +132,7 @@ const RAW_SKILLS: RawSkill[] = [
     id: "mob_careful_looting",
     category: "Mobility",
     name: "Careful Looting",
-    description: "Each pot broken has +5% chance to yield loot.",
+    description: "Each pot broken has +10% chance to yield loot.",
     cost: 1,
     requires: ["mob_speedy"],
   },

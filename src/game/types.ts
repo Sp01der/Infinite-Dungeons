@@ -414,6 +414,8 @@ export interface PotInstance {
   id: string;
   x: number;
   y: number;
+  /** Glowing magic pot — equal chance of each gem, Flame of Destruction, or Magic Tome. */
+  magic?: boolean;
 }
 
 export interface RockInstance {
@@ -441,7 +443,26 @@ export interface ChestInstance {
   tier: number;
 }
 
-export type GroundLootKind = "coin" | "bread" | "card" | "herb";
+export type ShiftyGemId = "strength" | "speed" | "luck" | "cards" | "healing" | "defense";
+
+export type GroundLootKind =
+  | "coin"
+  | "bread"
+  | "card"
+  | "herb"
+  | "cheese"
+  | "gem"
+  | "flame_of_destruction"
+  | "magic_tome";
+
+/** Bound Magic Tome instance (does not stack). */
+export type BoundMagicTome = {
+  id: string;
+  /** Spell card id bound into this tome. */
+  cardId: string;
+  /** Remaining uses (starts at 3). */
+  charges: number;
+};
 
 /** Tangleweed obstacle: blocks movement; can be attacked like a monster. */
 export interface TangleweedPropInstance {
@@ -465,6 +486,8 @@ export interface GroundLootInstance {
   amount?: number;
   /** Card id when kind === "card". */
   cardId?: string;
+  /** Gem type when kind === "gem". */
+  gemId?: ShiftyGemId;
 }
 
 export type EnterBlockedResume =
@@ -542,9 +565,16 @@ export interface StairFeaturePositions {
   cornerTile: Point;
 }
 
-export type ShiftyGemId = "strength" | "speed" | "luck" | "cards" | "healing";
+export type MerchantId = "shifty" | "obamly";
 
-export type ShiftyListingKind = "card" | "bread" | "herb" | "gem";
+export type ShiftyListingKind =
+  | "card"
+  | "bread"
+  | "herb"
+  | "gem"
+  | "cheese"
+  | "stew"
+  | "flame";
 
 export interface ShiftyListing {
   id: string;
@@ -555,12 +585,14 @@ export interface ShiftyListing {
   stock: number;
   cardId?: string;
   gemId?: ShiftyGemId;
+  /** Stable key for Obamly sell-out restock tracking. */
+  catalogKey?: string;
 }
 
 export type ShiftyDialogueChoice = { id: string; label: string };
 
 export type ShiftyMerchantState = {
-  merchantId: "shifty";
+  merchantId: MerchantId;
   leftShopThisFloor: boolean;
   phase: "idle" | "dialogue" | "shop" | "confirm";
   dialogueText: string;
@@ -590,13 +622,24 @@ export interface GameState {
     bread: number;
     /** Healing Herb: use for +1 HP (held like bread). */
     herb: number;
-    /** Consumable gems from merchants. */
+    /** Cheese: use to restore 3 HP. */
+    cheese: number;
+    /** Obamly's Special Stew: heal 6 HP and +1 max HP. */
+    stew: number;
+    /** Flame of Destruction: destroy one card from discard. */
+    flameOfDestruction: number;
+    /** Unbound Magic Tomes (stack). */
+    unboundTomes: number;
+    /** Bound Magic Tomes — each is unique; do not stack. */
+    boundTomes: BoundMagicTome[];
+    /** Consumable gems from merchants / loot. */
     gems: {
       strength: number;
       speed: number;
       luck: number;
       cards: number;
       healing: number;
+      defense: number;
     };
     /** Gem of Strength: next physical attack damage ×1.5 (floored). */
     nextPhysicalAttackMultiplier: number;
@@ -685,6 +728,13 @@ export interface GameState {
   stairFeatures: null | StairFeaturePositions;
   /** True after first conversation with Shifty this run. */
   shiftyMet: boolean;
+  /** True after first conversation with Mr. Robert Obamly this run. */
+  obamlyMet: boolean;
+  /**
+   * Consumable catalog keys sold out at Obamly — next Obamly visit guarantees
+   * those items with +1 stock.
+   */
+  obamlyRestockKeys: string[];
   /** Active stair-room merchant UI/stock (null if none spawned). */
   merchantState: ShiftyMerchantState | null;
   /** Card pedestal in the stair room (after peace). */
@@ -692,6 +742,12 @@ export interface GameState {
   pedestalOffer: null | { cards: [string, string, string] };
   /** After taking/skipping pedestal cards, optionally destroy one deck card (or skip). */
   deckDestroyPending: boolean;
+  /** Flame of Destruction: pick a discard card to destroy forever. */
+  flameDestroyPending: boolean;
+  /** Unbound Magic Tome: pick a Magic card from hand to bind. */
+  bindTomePending: boolean;
+  /** Playing a spell via Bound Tome (virtual hand card). */
+  tomeCast: null | { tomeId: string; handIndex: number };
   /** After Stability resolves; next dungeon draw may fizzle (Deadlier always applies). */
   stabilityBuffActive: boolean;
   /** Basic theme — The Dust Settles blocks investigate/scout until next turn start. */
@@ -803,6 +859,19 @@ export type GameCommand =
       value: number;
     }
   | { type: "DEV_CARD"; cardId: string; action: "add" | "remove" }
+  | {
+      type: "DEV_ITEM";
+      item:
+        | "gold"
+        | "bread"
+        | "herb"
+        | "cheese"
+        | "flameOfDestruction"
+        | "unboundTomes"
+        | "gem";
+      gemId?: ShiftyGemId;
+      quantity: number;
+    }
   | { type: "DEV_DECK"; action: "clear" | "reshuffle" | "reset" }
   | { type: "DEV_DUNGEON_TOP"; cardId: string }
   | { type: "DEV_GOTO_FLOOR"; depth: number }
@@ -824,7 +893,14 @@ export type GameCommand =
   | { type: "CANCEL_PENDING" }
   | { type: "USE_BREAD" }
   | { type: "USE_HERB" }
-  | { type: "USE_GEM"; gemId: "strength" | "speed" | "luck" | "cards" | "healing" }
+  | { type: "USE_CHEESE" }
+  | { type: "USE_STEW" }
+  | { type: "USE_FLAME_OF_DESTRUCTION" }
+  | { type: "RESOLVE_FLAME_DESTROY"; cardId: string | null }
+  | { type: "USE_UNBOUND_TOME" }
+  | { type: "RESOLVE_BIND_TOME"; handIndex: number | null }
+  | { type: "USE_BOUND_TOME"; tomeId: string }
+  | { type: "USE_GEM"; gemId: ShiftyGemId }
   | { type: "CONFIRM_WATER_ESCAPE"; destX: number; destY: number; handIndex: number }
   | { type: "CANCEL_WATER_ESCAPE" }
   | { type: "END_TURN" }

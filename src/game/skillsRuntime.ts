@@ -123,7 +123,7 @@ export function breadHealBonus(s: GameState): number {
 
 export function potLootHitChance(s: GameState): number {
   let p = 0.4;
-  if (hasSkill(s, SID.MOB_CAREFUL)) p += 0.05;
+  if (hasSkill(s, SID.MOB_CAREFUL)) p += 0.1;
   return Math.min(0.95, p);
 }
 

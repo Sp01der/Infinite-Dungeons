@@ -1,9 +1,16 @@
 import type { DispatchResult, GameCommand, GameState, ShiftyListing } from "./types";
 import {
+  brokeDialogueObamly,
+  confirmDialogueObamly,
+  createObamlyMerchantState,
+  openingDialogueObamly,
+  soldOutDialogueObamly,
+} from "./obamly";
+import {
   confirmDialogue,
   createShiftyMerchantState,
   openingDialogue,
-  shouldSpawnShifty,
+  pickStairMerchantId,
 } from "./shifty";
 
 function log(state: GameState, line: string): GameState {
@@ -20,6 +27,10 @@ function sameRoomAsMerchant(s: GameState): boolean {
   const pr = s.roomIds[s.player.y]?.[s.player.x] ?? -1;
   const mr = s.roomIds[m.y]?.[m.x] ?? -1;
   return pr >= 0 && pr === mr;
+}
+
+function isConsumableListing(listing: ShiftyListing): boolean {
+  return listing.kind !== "card";
 }
 
 function grantListing(s: GameState, listing: ShiftyListing): GameState {
@@ -48,6 +59,30 @@ function grantListing(s: GameState, listing: ShiftyListing): GameState {
       `Bought a healing herb for ${listing.price} gold.`,
     );
   }
+  if (listing.kind === "cheese") {
+    return log(
+      { ...s, player: { ...s.player, cheese: s.player.cheese + 1 } },
+      `Bought cheese for ${listing.price} gold.`,
+    );
+  }
+  if (listing.kind === "stew") {
+    return log(
+      { ...s, player: { ...s.player, stew: s.player.stew + 1 } },
+      `Bought Obamly's Special Stew for ${listing.price} gold.`,
+    );
+  }
+  if (listing.kind === "flame") {
+    return log(
+      {
+        ...s,
+        player: {
+          ...s.player,
+          flameOfDestruction: s.player.flameOfDestruction + 1,
+        },
+      },
+      `Bought Flame of Destruction for ${listing.price} gold.`,
+    );
+  }
   if (listing.kind === "gem" && listing.gemId) {
     return log(
       {
@@ -67,16 +102,34 @@ function grantListing(s: GameState, listing: ShiftyListing): GameState {
 }
 
 export function spawnMerchantAfterGauntlet(s: GameState): GameState {
-  if (!shouldSpawnShifty(s)) {
-    return log(s, "The stair chamber is empty of traders.");
+  const id = pickStairMerchantId();
+  if (id === "shifty") {
+    return log(
+      {
+        ...s,
+        merchantState: createShiftyMerchantState(s, s.shiftyMet),
+      },
+      "Shifty sets up shop in the stair chamber.",
+    );
   }
+  const { merchant, nextRestockKeys } = createObamlyMerchantState(s);
   return log(
     {
       ...s,
-      merchantState: createShiftyMerchantState(s, s.shiftyMet),
+      obamlyRestockKeys: nextRestockKeys,
+      merchantState: merchant,
     },
-    "Shifty sets up shop in the stair chamber.",
+    "Mr. Robert Obamly sets up shop in the stair chamber.",
   );
+}
+
+function markMet(state: GameState, merchantId: "shifty" | "obamly"): GameState {
+  if (merchantId === "shifty") return { ...state, shiftyMet: true };
+  return { ...state, obamlyMet: true };
+}
+
+function metBefore(state: GameState, merchantId: "shifty" | "obamly"): boolean {
+  return merchantId === "shifty" ? state.shiftyMet : state.obamlyMet;
 }
 
 export function handleMerchantCommand(state: GameState, cmd: GameCommand): DispatchResult | null {
@@ -86,10 +139,12 @@ export function handleMerchantCommand(state: GameState, cmd: GameCommand): Dispa
         return noHits(state);
       }
       const ms = state.merchantState;
-      const open = openingDialogue(state.shiftyMet, ms.leftShopThisFloor);
+      const open =
+        ms.merchantId === "obamly"
+          ? openingDialogueObamly(metBefore(state, "obamly"), ms.leftShopThisFloor)
+          : openingDialogue(metBefore(state, "shifty"), ms.leftShopThisFloor);
       return noHits({
-        ...state,
-        shiftyMet: true,
+        ...markMet(state, ms.merchantId),
         merchantState: {
           ...ms,
           phase: "dialogue",
@@ -105,8 +160,7 @@ export function handleMerchantCommand(state: GameState, cmd: GameCommand): Dispa
       if (ms.phase === "dialogue") {
         if (cmd.choiceId === "open_shop") {
           return noHits({
-            ...state,
-            shiftyMet: true,
+            ...markMet(state, ms.merchantId),
             merchantState: {
               ...ms,
               phase: "shop",
@@ -117,8 +171,7 @@ export function handleMerchantCommand(state: GameState, cmd: GameCommand): Dispa
           });
         }
         return noHits({
-          ...state,
-          shiftyMet: true,
+          ...markMet(state, ms.merchantId),
           merchantState: {
             ...ms,
             phase: "idle",
@@ -145,13 +198,20 @@ export function handleMerchantCommand(state: GameState, cmd: GameCommand): Dispa
         }
         if (cmd.choiceId === "buy") {
           if (state.player.gold < listing.price) {
+            const broke =
+              ms.merchantId === "obamly"
+                ? brokeDialogueObamly()
+                : {
+                    text: "You don't have enough gold! You trying to rip me off?",
+                    choices: [{ id: "open_shop" as const, label: "Back to shop" }],
+                  };
             return noHits({
               ...state,
               merchantState: {
                 ...ms,
                 phase: "dialogue",
-                dialogueText: "You don't have enough gold! You trying to rip me off?",
-                dialogueChoices: [{ id: "open_shop", label: "Back to shop" }],
+                dialogueText: broke.text,
+                dialogueChoices: broke.choices,
                 selectedListingId: null,
               },
             });
@@ -161,9 +221,35 @@ export function handleMerchantCommand(state: GameState, cmd: GameCommand): Dispa
             player: { ...state.player, gold: state.player.gold - listing.price },
           };
           s = grantListing(s, listing);
+          const newStock = listing.stock - 1;
           const listings = ms.listings
-            .map((l) => (l.id === listing.id ? { ...l, stock: l.stock - 1 } : l))
+            .map((l) => (l.id === listing.id ? { ...l, stock: newStock } : l))
             .filter((l) => l.stock > 0);
+
+          if (
+            ms.merchantId === "obamly" &&
+            isConsumableListing(listing) &&
+            newStock <= 0 &&
+            listing.catalogKey
+          ) {
+            const restockKeys = s.obamlyRestockKeys.includes(listing.catalogKey)
+              ? s.obamlyRestockKeys
+              : [...s.obamlyRestockKeys, listing.catalogKey];
+            const sold = soldOutDialogueObamly(listing.name);
+            return noHits({
+              ...s,
+              obamlyRestockKeys: restockKeys,
+              merchantState: {
+                ...ms,
+                phase: "dialogue",
+                dialogueText: sold.text,
+                dialogueChoices: sold.choices,
+                selectedListingId: null,
+                listings,
+              },
+            });
+          }
+
           return noHits({
             ...s,
             merchantState: {
@@ -196,7 +282,8 @@ export function handleMerchantCommand(state: GameState, cmd: GameCommand): Dispa
       if (!ms || ms.phase !== "shop") return noHits(state);
       const listing = ms.listings.find((l) => l.id === cmd.listingId && l.stock > 0);
       if (!listing) return noHits(state);
-      const conf = confirmDialogue(listing.name);
+      const conf =
+        ms.merchantId === "obamly" ? confirmDialogueObamly(listing) : confirmDialogue(listing.name);
       return noHits({
         ...state,
         merchantState: {
@@ -241,4 +328,11 @@ export function merchantShopOpen(s: GameState): boolean {
 export function merchantDialogueOpen(s: GameState): boolean {
   const p = s.merchantState?.phase;
   return p === "dialogue" || p === "confirm";
+}
+
+export function merchantDisplayName(s: GameState): string {
+  const id = s.merchantState?.merchantId;
+  if (id === "obamly") return "Mr. Robert Obamly";
+  if (id === "shifty") return "Shifty";
+  return "the merchant";
 }

@@ -16,7 +16,13 @@ import { hasAtbmb, inAttackRange, isOnBadTile, isOnFavoredTile, planAtbmbPath, r
 import { monsterTilePassable, movementOcc } from "./game/monsterAi";
 import type { AtbmbMoveSeek } from "./game/types";
 import { lightningBoltSkillDamageBonus } from "./game/skillsRuntime";
-import { merchantDialogueOpen, merchantShopOpen, merchantUiBlocks } from "./game/merchantRuntime";
+import { merchantDialogueOpen, merchantDisplayName, merchantShopOpen, merchantUiBlocks } from "./game/merchantRuntime";
+import {
+  ALL_GEM_IDS,
+  gemLootSpriteId,
+  lootIconCss,
+  type LootIconId,
+} from "./game/lootIcons";
 import { loadSpriteStyles } from "./render/assets";
 import { loadAttackFxFrames } from "./render/attackFx";
 import { GridView, VIEW_HEIGHT_PX, VIEW_WIDTH_PX } from "./render/gridView";
@@ -29,8 +35,7 @@ const hudLevel = document.querySelector<HTMLSpanElement>("#hud-level")!;
 const hudExp = document.querySelector<HTMLSpanElement>("#hud-exp")!;
 const hudSkillPts = document.querySelector<HTMLSpanElement>("#hud-skill-pts")!;
 const hudGold = document.querySelector<HTMLSpanElement>("#hud-gold")!;
-const hudBread = document.querySelector<HTMLSpanElement>("#hud-bread")!;
-const hudHerb = document.querySelector<HTMLSpanElement>("#hud-herb")!;
+const inventoryGrid = document.querySelector<HTMLDivElement>("#inventory-grid")!;
 const hudDanger = document.querySelector<HTMLSpanElement>("#hud-danger")!;
 const hudNoise = document.querySelector<HTMLSpanElement>("#hud-noise")!;
 const hudDraw = document.querySelector<HTMLSpanElement>("#hud-draw")!;
@@ -44,19 +49,13 @@ const hintEl = document.querySelector<HTMLParagraphElement>("#hint")!;
 const btnEnd = document.querySelector<HTMLButtonElement>("#btn-end-turn")!;
 const cancelBtn = document.querySelector<HTMLButtonElement>("#btn-cancel")!;
 const unequipBtn = document.querySelector<HTMLButtonElement>("#btn-unequip")!;
-const itemBreadBtn = document.querySelector<HTMLButtonElement>("#item-bread")!;
-const itemHerbBtn = document.querySelector<HTMLButtonElement>("#item-herb")!;
-const gemBtns: { id: ShiftyGemId; btn: HTMLButtonElement; hud: HTMLSpanElement }[] = (
-  ["strength", "speed", "luck", "cards", "healing"] as const
-).map((id) => ({
-  id,
-  btn: document.querySelector<HTMLButtonElement>(`#item-gem-${id}`)!,
-  hud: document.querySelector<HTMLSpanElement>(`#hud-gem-${id}`)!,
-}));
 const shiftyDialogueEl = document.querySelector<HTMLDivElement>("#shifty-dialogue")!;
+const shiftyDialogueBox = document.querySelector<HTMLDivElement>("#shifty-dialogue .shifty-dialogue-box")!;
 const shiftyDialogueText = document.querySelector<HTMLParagraphElement>("#shifty-dialogue-text")!;
 const shiftyDialogueChoices = document.querySelector<HTMLDivElement>("#shifty-dialogue-choices")!;
 const shiftyShopEl = document.querySelector<HTMLDivElement>("#shifty-shop")!;
+const shiftyShopTitle = document.querySelector<HTMLHeadingElement>("#shifty-shop-title")!;
+const shiftyShopNote = document.querySelector<HTMLParagraphElement>("#shifty-shop .chest-offer-note")!;
 const shiftyShopBackdrop = document.querySelector<HTMLDivElement>("#shifty-shop-backdrop")!;
 const shiftyShopListings = document.querySelector<HTMLDivElement>("#shifty-shop-listings")!;
 const shiftyShopLeave = document.querySelector<HTMLButtonElement>("#shifty-shop-leave")!;
@@ -90,6 +89,14 @@ const deckDestroyOfferEl = document.querySelector<HTMLDivElement>("#deck-destroy
 const deckDestroyBackdrop = document.querySelector<HTMLDivElement>("#deck-destroy-backdrop")!;
 const deckDestroyBody = document.querySelector<HTMLDivElement>("#deck-destroy-body")!;
 const deckDestroySkip = document.querySelector<HTMLButtonElement>("#deck-destroy-skip")!;
+const flameDestroyOfferEl = document.querySelector<HTMLDivElement>("#flame-destroy-offer")!;
+const flameDestroyBackdrop = document.querySelector<HTMLDivElement>("#flame-destroy-backdrop")!;
+const flameDestroyBody = document.querySelector<HTMLDivElement>("#flame-destroy-body")!;
+const flameDestroySkip = document.querySelector<HTMLButtonElement>("#flame-destroy-skip")!;
+const bindTomeOfferEl = document.querySelector<HTMLDivElement>("#bind-tome-offer")!;
+const bindTomeBackdrop = document.querySelector<HTMLDivElement>("#bind-tome-backdrop")!;
+const bindTomeBody = document.querySelector<HTMLDivElement>("#bind-tome-body")!;
+const bindTomeSkip = document.querySelector<HTMLButtonElement>("#bind-tome-skip")!;
 const dungeonCardToast = document.querySelector<HTMLDivElement>("#dungeon-card-toast")!;
 const dungeonCardToastTitle = document.querySelector<HTMLDivElement>("#dungeon-card-toast-title")!;
 const dungeonCardToastSummary = document.querySelector<HTMLDivElement>("#dungeon-card-toast-summary")!;
@@ -179,6 +186,8 @@ function choiceModalBlocksPlay(s: GameState): boolean {
     (s.cardPickupOffer?.queue.length ?? 0) > 0 ||
     !!s.pedestalOffer ||
     s.deckDestroyPending ||
+    s.flameDestroyPending ||
+    s.bindTomePending ||
     !!s.deckBuilderOffer ||
     s.dualWieldStage?.step === "choose_discard_attack" ||
     merchantUiBlocks(s)
@@ -642,6 +651,44 @@ const COMMAND_VARIABLES: Record<string, CommandVariable> = {
   sp: "skillPoints",
 };
 
+type CommandItem = Extract<GameCommand, { type: "DEV_ITEM" }>;
+
+const COMMAND_ITEMS: Record<string, { item: CommandItem["item"]; gemId?: ShiftyGemId; label: string }> = {
+  gold: { item: "gold", label: "gold" },
+  coin: { item: "gold", label: "gold" },
+  coins: { item: "gold", label: "gold" },
+  bread: { item: "bread", label: "bread" },
+  "piece of bread": { item: "bread", label: "bread" },
+  herb: { item: "herb", label: "healing herb" },
+  herbs: { item: "herb", label: "healing herb" },
+  "healing herb": { item: "herb", label: "healing herb" },
+  cheese: { item: "cheese", label: "cheese" },
+  flame: { item: "flameOfDestruction", label: "Flame of Destruction" },
+  "flame of destruction": { item: "flameOfDestruction", label: "Flame of Destruction" },
+  tome: { item: "unboundTomes", label: "Unbound Magic Tome" },
+  "magic tome": { item: "unboundTomes", label: "Unbound Magic Tome" },
+  "unbound magic tome": { item: "unboundTomes", label: "Unbound Magic Tome" },
+  "unbound tome": { item: "unboundTomes", label: "Unbound Magic Tome" },
+  "gem of strength": { item: "gem", gemId: "strength", label: "Gem of Strength" },
+  "strength gem": { item: "gem", gemId: "strength", label: "Gem of Strength" },
+  strength: { item: "gem", gemId: "strength", label: "Gem of Strength" },
+  "gem of speed": { item: "gem", gemId: "speed", label: "Gem of Speed" },
+  "speed gem": { item: "gem", gemId: "speed", label: "Gem of Speed" },
+  speed: { item: "gem", gemId: "speed", label: "Gem of Speed" },
+  "gem of luck": { item: "gem", gemId: "luck", label: "Gem of Luck" },
+  "luck gem": { item: "gem", gemId: "luck", label: "Gem of Luck" },
+  luck: { item: "gem", gemId: "luck", label: "Gem of Luck" },
+  "gem of cards": { item: "gem", gemId: "cards", label: "Gem of Cards" },
+  "cards gem": { item: "gem", gemId: "cards", label: "Gem of Cards" },
+  cards: { item: "gem", gemId: "cards", label: "Gem of Cards" },
+  "gem of healing": { item: "gem", gemId: "healing", label: "Gem of Healing" },
+  "healing gem": { item: "gem", gemId: "healing", label: "Gem of Healing" },
+  healing: { item: "gem", gemId: "healing", label: "Gem of Healing" },
+  "gem of defense": { item: "gem", gemId: "defense", label: "Gem of Defense" },
+  "defense gem": { item: "gem", gemId: "defense", label: "Gem of Defense" },
+  defense: { item: "gem", gemId: "defense", label: "Gem of Defense" },
+};
+
 function normalizeLookupName(value: string): string {
   // Expand common contractions before stripping punctuation, so "You're Not Alone"
   // matches defs named "You Are Not Alone" (apostrophe alone would yield "you re").
@@ -720,10 +767,12 @@ function runCommandLine(raw: string): string {
   }
 
   if (verb === "card") {
-    if (args.length < 2) return "Usage: Card [card name] [add or remove]";
-    const action = args[args.length - 1]!.toLowerCase();
-    if (action !== "add" && action !== "remove") return "Card action must be add or remove.";
-    const cardName = args.slice(0, -1).join(" ");
+    if (args.length < 1) return "Usage: Card [card name] [add|remove?]";
+    const maybeAction = args[args.length - 1]!.toLowerCase();
+    const hasAction = maybeAction === "add" || maybeAction === "remove";
+    const action = hasAction ? (maybeAction as "add" | "remove") : "add";
+    const cardName = hasAction ? args.slice(0, -1).join(" ") : args.join(" ");
+    if (!cardName) return "Usage: Card [card name] [add|remove?]";
     const cardId = findNamedId(state.cardDefs, cardName);
     if (!cardId) return `Unknown card: ${cardName}`;
     if (action === "remove" && !playerHasCardCopy(cardId)) {
@@ -731,6 +780,26 @@ function runCommandLine(raw: string): string {
     }
     apply({ type: "DEV_CARD", cardId, action });
     return `${action === "add" ? "Added" : "Removed"} ${state.cardDefs.get(cardId)?.name ?? cardId}.`;
+  }
+
+  if (verb === "item") {
+    if (args.length < 1) return "Usage: Item [item name] [quantity?]";
+    let quantity = 1;
+    let nameArgs = args;
+    const maybeQty = parseCommandNumber(args[args.length - 1]!);
+    if (maybeQty !== null && args.length >= 2) {
+      quantity = maybeQty;
+      nameArgs = args.slice(0, -1);
+    }
+    if (quantity < 1) return "Item quantity must be at least 1.";
+    const itemText = nameArgs.join(" ");
+    const item = COMMAND_ITEMS[normalizeLookupName(itemText)];
+    if (!item) {
+      return `Unknown item: ${itemText}. Try bread, herb, cheese, gold, Flame of Destruction, Magic Tome, or Gem of Strength.`;
+    }
+    apply({ type: "DEV_ITEM", item: item.item, gemId: item.gemId, quantity });
+    const label = item.label;
+    return `Added ${quantity} ${label}.`;
   }
 
   if (verb === "deck") {
@@ -844,7 +913,7 @@ function runCommandLine(raw: string): string {
     return `Editor mode ${enabled ? "enabled" : "disabled"}.`;
   }
 
-  return "Unknown command. Try Set, Card, Deck, Dungeon, Floor, Theme, Graphics, Summon, Chance, or Editor.";
+  return "Unknown command. Try Set, Card, Item, Deck, Dungeon, Floor, Theme, Graphics, Summon, Chance, or Editor.";
 }
 
 function openPileInspector(which: "deck" | "discard" | "dungeon"): void {
@@ -1334,6 +1403,53 @@ function syncDeckDestroyModal(): void {
   }
 }
 
+function syncFlameDestroyModal(): void {
+  if (!state.flameDestroyPending) {
+    flameDestroyOfferEl.classList.remove("is-open");
+    flameDestroyOfferEl.setAttribute("aria-hidden", "true");
+    return;
+  }
+  flameDestroyOfferEl.classList.add("is-open");
+  flameDestroyOfferEl.setAttribute("aria-hidden", "false");
+  flameDestroyBody.replaceChildren();
+  const counts = countIds(state.player.discardPile);
+  const rows = [...counts.entries()].sort((a, b) => {
+    const na = state.cardDefs.get(a[0])?.name ?? a[0];
+    const nb = state.cardDefs.get(b[0])?.name ?? b[0];
+    return na.localeCompare(nb);
+  });
+  for (const [id, n] of rows) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "deck-destroy-option";
+    const nm = state.cardDefs.get(id)?.name ?? id;
+    b.textContent = n > 1 ? `${nm} ×${n}` : nm;
+    b.addEventListener("click", () => apply({ type: "RESOLVE_FLAME_DESTROY", cardId: id }));
+    flameDestroyBody.appendChild(b);
+  }
+}
+
+function syncBindTomeModal(): void {
+  if (!state.bindTomePending) {
+    bindTomeOfferEl.classList.remove("is-open");
+    bindTomeOfferEl.setAttribute("aria-hidden", "true");
+    return;
+  }
+  bindTomeOfferEl.classList.add("is-open");
+  bindTomeOfferEl.setAttribute("aria-hidden", "false");
+  bindTomeBody.replaceChildren();
+  state.player.hand.forEach((cardId, idx) => {
+    const def = state.cardDefs.get(cardId);
+    if (!def?.types.includes("Magic")) return;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "deck-destroy-option";
+    b.textContent = def.name;
+    b.addEventListener("click", () => apply({ type: "RESOLVE_BIND_TOME", handIndex: idx }));
+    bindTomeBody.appendChild(b);
+  });
+}
+
 function syncChestOfferModal(): void {
   if (!state.chestOffer) {
     chestOfferEl.classList.remove("is-open");
@@ -1415,6 +1531,8 @@ function syncCardPickupModal(): void {
     !state.chestOffer &&
     !state.pedestalOffer &&
     !state.deckDestroyPending &&
+    !state.flameDestroyPending &&
+    !state.bindTomePending &&
     !state.deckBuilderOffer
       ? q[0]!
       : null;
@@ -1473,6 +1591,8 @@ function syncShiftyMerchantUi(): void {
   const ms = state.merchantState;
   const showDialogue = merchantDialogueOpen(state);
   const showShop = merchantShopOpen(state);
+  const isObamly = ms?.merchantId === "obamly";
+  shiftyDialogueBox.classList.toggle("merchant-obamly", !!isObamly);
 
   if (!showDialogue || !ms) {
     shiftyDialogueEl.classList.remove("is-open");
@@ -1499,6 +1619,10 @@ function syncShiftyMerchantUi(): void {
   } else {
     shiftyShopEl.classList.add("is-open");
     shiftyShopEl.setAttribute("aria-hidden", "false");
+    shiftyShopTitle.textContent = isObamly ? "Mr. Obamly's wares" : "Shifty's wares";
+    shiftyShopNote.textContent = isObamly
+      ? "Six consumables and two cards. Prices stay put."
+      : "Three cards and three consumables. Prices shift each visit.";
     shiftyShopListings.replaceChildren();
     for (const listing of ms.listings) {
       const b = document.createElement("button");
@@ -1576,6 +1700,154 @@ function renderDungeonPiles(): void {
   }
 }
 
+function applyLootIconStyle(el: HTMLElement, id: LootIconId, size = 24): void {
+  const css = lootIconCss(id, size);
+  el.style.backgroundImage = css.backgroundImage;
+  el.style.backgroundSize = css.backgroundSize;
+  el.style.backgroundPosition = css.backgroundPosition;
+  el.style.width = css.width;
+  el.style.height = css.height;
+}
+
+type InventorySlot = {
+  key: string;
+  icon: LootIconId;
+  count: number;
+  title: string;
+  use: () => void;
+  canUse: boolean;
+  bound?: boolean;
+};
+
+function inventorySlots(): InventorySlot[] {
+  const blocked =
+    state.phase !== "player" || !!state.pending || !!state.tomeCast || choiceModalBlocksPlay(state);
+  const full = state.player.hp >= state.player.maxHp;
+  const slots: InventorySlot[] = [];
+  if (state.player.bread > 0) {
+    slots.push({
+      key: "bread",
+      icon: "loot_bread",
+      count: state.player.bread,
+      title: "Bread — heal 2 HP (+ Feaster bonus)",
+      use: () => apply({ type: "USE_BREAD" }),
+      canUse: !blocked && !full,
+    });
+  }
+  if (state.player.herb > 0) {
+    slots.push({
+      key: "herb",
+      icon: "loot_herb",
+      count: state.player.herb,
+      title: "Healing Herb — restore 1 HP",
+      use: () => apply({ type: "USE_HERB" }),
+      canUse: !blocked && !full,
+    });
+  }
+  if (state.player.cheese > 0) {
+    slots.push({
+      key: "cheese",
+      icon: "loot_cheese",
+      count: state.player.cheese,
+      title: "Cheese — restore 3 HP",
+      use: () => apply({ type: "USE_CHEESE" }),
+      canUse: !blocked && !full,
+    });
+  }
+  if (state.player.stew > 0) {
+    slots.push({
+      key: "stew",
+      icon: "loot_soup",
+      count: state.player.stew,
+      title: "Obamly's Special Stew — +1 max HP and heal 6 (capped)",
+      use: () => apply({ type: "USE_STEW" }),
+      canUse: !blocked,
+    });
+  }
+  if (state.player.flameOfDestruction > 0) {
+    slots.push({
+      key: "flame",
+      icon: "loot_fire",
+      count: state.player.flameOfDestruction,
+      title: "Flame of Destruction — destroy a card in your discard pile",
+      use: () => apply({ type: "USE_FLAME_OF_DESTRUCTION" }),
+      canUse: !blocked && state.player.discardPile.length > 0,
+    });
+  }
+  if (state.player.unboundTomes > 0) {
+    slots.push({
+      key: "tome_unbound",
+      icon: "loot_tome",
+      count: state.player.unboundTomes,
+      title: "Unbound Magic Tome — discard a Magic card from hand to bind it (3 charges)",
+      use: () => apply({ type: "USE_UNBOUND_TOME" }),
+      canUse:
+        !blocked &&
+        state.player.hand.some((id) => state.cardDefs.get(id)?.types.includes("Magic")),
+    });
+  }
+  for (const tome of state.player.boundTomes) {
+    const spellName = state.cardDefs.get(tome.cardId)?.name ?? tome.cardId;
+    slots.push({
+      key: `tome_bound_${tome.id}`,
+      icon: "loot_tome",
+      count: tome.charges,
+      title: `Bound Tome (${spellName}) — ${tome.charges} charge(s); cast like playing that card`,
+      use: () => apply({ type: "USE_BOUND_TOME", tomeId: tome.id }),
+      canUse: !blocked && tome.charges > 0,
+      bound: true,
+    });
+  }
+  const gemTitles: Record<ShiftyGemId, string> = {
+    strength: "Gem of Strength — next physical attack ×1.5",
+    speed: "Gem of Speed — next movement doubled",
+    luck: "Gem of Luck — Chance Highest this turn",
+    cards: "Gem of Cards — draw 2",
+    healing: "Gem of Healing — heal 10% max HP",
+    defense: "Gem of Defense — +4 defense this turn",
+  };
+  for (const id of ALL_GEM_IDS) {
+    const count = state.player.gems[id] ?? 0;
+    if (count <= 0) continue;
+    slots.push({
+      key: `gem_${id}`,
+      icon: gemLootSpriteId(id),
+      count,
+      title: gemTitles[id],
+      use: () => apply({ type: "USE_GEM", gemId: id }),
+      canUse: !blocked && (id === "healing" ? !full : true),
+    });
+  }
+  return slots;
+}
+
+function renderInventoryGrid(): void {
+  inventoryGrid.replaceChildren();
+  for (const slot of inventorySlots()) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = slot.bound ? "inv-slot inv-slot-bound" : "inv-slot";
+    btn.title = slot.title;
+    btn.disabled = !slot.canUse;
+    const icon = document.createElement("span");
+    icon.className = "inv-icon";
+    icon.setAttribute("aria-hidden", "true");
+    applyLootIconStyle(icon, slot.icon, 24);
+    btn.appendChild(icon);
+    if (slot.count > 1 || slot.bound) {
+      const n = document.createElement("span");
+      n.className = "inv-slot-count";
+      n.textContent = String(slot.count);
+      btn.appendChild(n);
+    }
+    btn.addEventListener("click", () => {
+      if (!slot.canUse) return;
+      slot.use();
+    });
+    inventoryGrid.appendChild(btn);
+  }
+}
+
 function renderLog(): void {
   logEl.replaceChildren();
   const lines = state.log.slice(-12);
@@ -1614,8 +1886,11 @@ function renderAll(): void {
     skillTreeSkillPts.textContent = `${n} skill point${n === 1 ? "" : "s"}`;
   }
   hudGold.textContent = String(state.player.gold);
-  hudBread.textContent = String(state.player.bread);
-  hudHerb.textContent = String(state.player.herb);
+  {
+    const goldIcon = document.querySelector<HTMLElement>(".inv-gold .inv-icon");
+    if (goldIcon) applyLootIconStyle(goldIcon, "loot_coin", 20);
+  }
+  renderInventoryGrid();
   hudDanger.textContent = String(state.danger);
   hudNoise.textContent = String(state.noise);
 
@@ -1641,9 +1916,11 @@ function renderAll(): void {
     state.phase !== "player" ||
     choiceModalBlocksPlay(state) ||
     !!state.pending ||
+    !!state.tomeCast ||
     !!state.dualWieldStage;
   cancelBtn.style.display =
     state.pending ||
+    !!state.tomeCast ||
     state.dualWieldStage?.step === "choose_hand_attack" ||
     state.dualWieldStage?.step === "choose_discard_attack"
       ? "inline-block"
@@ -1651,32 +1928,6 @@ function renderAll(): void {
   unequipBtn.disabled = !state.player.equipped || choiceModalBlocksPlay(state);
   inspectDeckBtn.disabled = choiceModalBlocksPlay(state);
   inspectDiscardBtn.disabled = choiceModalBlocksPlay(state);
-  itemBreadBtn.disabled =
-    state.phase !== "player" ||
-    !!state.pending ||
-    choiceModalBlocksPlay(state) ||
-    state.player.bread <= 0 ||
-    state.player.hp >= state.player.maxHp;
-
-  itemHerbBtn.disabled =
-    state.phase !== "player" ||
-    !!state.pending ||
-    choiceModalBlocksPlay(state) ||
-    state.player.herb <= 0 ||
-    state.player.hp >= state.player.maxHp;
-
-  itemHerbBtn.style.display = state.player.herb > 0 ? "" : "none";
-
-  for (const g of gemBtns) {
-    const count = state.player.gems[g.id] ?? 0;
-    g.hud.textContent = String(count);
-    g.btn.style.display = count > 0 ? "" : "none";
-    g.btn.disabled =
-      state.phase !== "player" ||
-      !!state.pending ||
-      choiceModalBlocksPlay(state) ||
-      count <= 0;
-  }
 
   btnSkillTree.disabled =
     state.phase === "defeat" ||
@@ -1700,16 +1951,20 @@ function renderAll(): void {
         : "Add this card to your deck (discard pile), or leave it.";
   } else if (state.phase === "peace") {
     if (merchantDialogueOpen(state)) {
-      hintEl.textContent = "Shifty is talking — choose a reply.";
+      hintEl.textContent = `${merchantDisplayName(state)} is talking — choose a reply.`;
     } else if (merchantShopOpen(state)) {
-      hintEl.textContent = "Browse Shifty's shop, or leave when you're done.";
+      hintEl.textContent = `Browse ${merchantDisplayName(state)}'s shop, or leave when you're done.`;
     } else if (state.deckDestroyPending) {
       hintEl.textContent = "Pedestal — destroy one deck card, or skip.";
+    } else if (state.flameDestroyPending) {
+      hintEl.textContent = "Flame of Destruction — choose a discard card to destroy, or cancel.";
+    } else if (state.bindTomePending) {
+      hintEl.textContent = "Bind Magic Tome — choose a Magic card in hand to discard, or cancel.";
     } else if (state.pedestalOffer) {
       hintEl.textContent = "Pedestal — take one card into discard, or take none.";
     } else if (state.merchantState) {
       hintEl.textContent =
-        "Peace — click Shifty to talk, the pedestal first, then the east stair to descend.";
+        `Peace — click ${merchantDisplayName(state)} to talk, the pedestal first, then the east stair to descend.`;
     } else {
       hintEl.textContent =
         "Peace — click to move. Pedestal (sky circle) first; then step the east stair (grey) to descend.";
@@ -1933,6 +2188,8 @@ function renderAll(): void {
   syncChestOfferModal();
   syncPedestalOfferModal();
   syncDeckDestroyModal();
+  syncFlameDestroyModal();
+  syncBindTomeModal();
   syncCardPickupModal();
   syncDeckBuilderModal();
   syncDualWieldModal();
@@ -1951,11 +2208,6 @@ cancelBtn.addEventListener("click", () => {
 dualWieldCancel.addEventListener("click", () => apply({ type: "CANCEL_PENDING" }));
 dualWieldBackdrop.addEventListener("click", () => apply({ type: "CANCEL_PENDING" }));
 unequipBtn.addEventListener("click", () => apply({ type: "UNEQUIP" }));
-itemBreadBtn.addEventListener("click", () => apply({ type: "USE_BREAD" }));
-itemHerbBtn.addEventListener("click", () => apply({ type: "USE_HERB" }));
-for (const g of gemBtns) {
-  g.btn.addEventListener("click", () => apply({ type: "USE_GEM", gemId: g.id }));
-}
 shiftyShopLeave.addEventListener("click", () => apply({ type: "CLOSE_MERCHANT_SHOP" }));
 shiftyShopBackdrop.addEventListener("click", () => apply({ type: "CLOSE_MERCHANT_SHOP" }));
 btnEnd.addEventListener("click", () => apply({ type: "END_TURN" }));
@@ -1995,8 +2247,20 @@ function skipDeckDestroy(): void {
   if (state.deckDestroyPending) apply({ type: "RESOLVE_DECK_DESTROY", cardId: null });
 }
 
+function skipFlameDestroy(): void {
+  if (state.flameDestroyPending) apply({ type: "RESOLVE_FLAME_DESTROY", cardId: null });
+}
+
+function skipBindTome(): void {
+  if (state.bindTomePending) apply({ type: "RESOLVE_BIND_TOME", handIndex: null });
+}
+
 deckDestroySkip.addEventListener("click", () => skipDeckDestroy());
 deckDestroyBackdrop.addEventListener("click", () => skipDeckDestroy());
+flameDestroySkip.addEventListener("click", () => skipFlameDestroy());
+flameDestroyBackdrop.addEventListener("click", () => skipFlameDestroy());
+bindTomeSkip.addEventListener("click", () => skipBindTome());
+bindTomeBackdrop.addEventListener("click", () => skipBindTome());
 
 deckBuilderBackdrop.addEventListener("click", () => {
   if (!state.deckBuilderOffer) return;
@@ -2087,6 +2351,14 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.key === "Escape" && deckDestroyOfferEl.classList.contains("is-open")) {
     if (state.deckDestroyPending) skipDeckDestroy();
+    return;
+  }
+  if (e.key === "Escape" && flameDestroyOfferEl.classList.contains("is-open")) {
+    if (state.flameDestroyPending) skipFlameDestroy();
+    return;
+  }
+  if (e.key === "Escape" && bindTomeOfferEl.classList.contains("is-open")) {
+    if (state.bindTomePending) skipBindTome();
     return;
   }
   if (e.key === "Escape" && pedestalOfferEl.classList.contains("is-open")) {

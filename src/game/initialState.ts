@@ -19,7 +19,7 @@ import { keyOf, parseFloor } from "../engine/grid";
 import { buildFreshDungeonDeck } from "./dungeonDeck";
 import { loadCardDefs, loadDungeonCardDefs, loadMonsterDefs } from "./loadContent";
 import { createMonsterInstance } from "./monsterSpawn";
-import { pickRandomLootCardId } from "./loot";
+import { rollGroundLootPiece } from "./loot";
 
 const ORTHO_NEIGHBORS: Point[] = [
   { x: 1, y: 0 },
@@ -277,6 +277,10 @@ function placePropsByRoom(
     );
   };
   const pickId = (k: RoomKind) => pickMonsterId(k, monsterDefs, floorDepth, floorTheme);
+  const pushPot = (p: Point) => {
+    const magic = floorDepth >= 3 && Math.random() < 0.05;
+    pots.push({ id: `pot_${pi++}`, x: p.x, y: p.y, magic: magic || undefined });
+  };
 
   for (const [rid, cells] of cellsByRoom) {
     if (cells.length === 0) continue;
@@ -292,12 +296,12 @@ function placePropsByRoom(
     switch (kind) {
       case "entrance": {
         const n = rollInt(0, 2);
-        for (const p of take(n)) pots.push({ id: `pot_${pi++}`, x: p.x, y: p.y });
+        for (const p of take(n)) pushPot(p);
         break;
       }
       case "corridor": {
         const nPot = rollInt(0, 1);
-        for (const p of take(nPot)) pots.push({ id: `pot_${pi++}`, x: p.x, y: p.y });
+        for (const p of take(nPot)) pushPot(p);
         if (cells.length - idx > 0 && Math.random() < 0.38) {
           const [p] = take(1);
           if (p) pushMonster(p, pickId("corridor"));
@@ -309,7 +313,7 @@ function placePropsByRoom(
         break;
       case "normal": {
         const nPot = rollInt(1, 3);
-        for (const p of take(nPot)) pots.push({ id: `pot_${pi++}`, x: p.x, y: p.y });
+        for (const p of take(nPot)) pushPot(p);
         const nMon = Math.random() < 0.68 ? 1 : 2;
         for (let k = 0; k < nMon; k++) {
           const [p] = take(1);
@@ -319,7 +323,7 @@ function placePropsByRoom(
       }
       case "treasure": {
         const nPot = rollInt(0, 2);
-        for (const p of take(nPot)) pots.push({ id: `pot_${pi++}`, x: p.x, y: p.y });
+        for (const p of take(nPot)) pushPot(p);
         const nMon = Math.random() < 0.65 ? 1 : 2;
         for (let k = 0; k < nMon; k++) {
           const [p] = take(1);
@@ -438,17 +442,7 @@ function placePropsByRoom(
   return { monsters, pots, chests };
 }
 
-function rollGroundLootPiece(
-  cardDefs: Map<string, CardDef>,
-  depth: number,
-): { kind: "coin"; amount: number } | { kind: "bread" } | { kind: "card"; cardId: string } {
-  const r = Math.random();
-  if (r < 0.48) return { kind: "coin", amount: 1 };
-  if (r < 0.9) return { kind: "bread" };
-  return { kind: "card", cardId: pickRandomLootCardId(cardDefs, depth) };
-}
-
-/** ~50% per room: 1–2 small drops; monsters may stand on loot tiles. */
+/** ~65% per room: 1–2 small drops; monsters may stand on loot tiles. */
 function spawnGroundLoot(
   tiles: TileKind[][],
   roomIds: number[][],
@@ -483,11 +477,11 @@ function spawnGroundLoot(
     if (cells.length === 0) continue;
     const rid = roomIds[cells[0]!.y]?.[cells[0]!.x] ?? -1;
     if (rid >= 0 && (roomKinds[rid] === "gauntlet_corridor" || roomKinds[rid] === "gauntlet")) continue;
-    if (Math.random() >= 0.5) continue;
+    if (Math.random() >= 0.65) continue;
     const candidates = cells.filter((c) => !blocked.has(keyOf(c)));
     if (candidates.length === 0) continue;
     shuffleInPlace(candidates);
-    const nDrops = Math.random() < 0.82 ? 1 : 2;
+    const nDrops = Math.random() < 0.7 ? 1 : 2;
     const rk = rid >= 0 ? roomKinds[rid] : "normal";
     for (let k = 0; k < nDrops && k < candidates.length; k++) {
       const p = candidates[k]!;
@@ -500,6 +494,18 @@ function spawnGroundLoot(
         out.push({ id: `gloot_${li++}`, x: p.x, y: p.y, kind: "coin", amount: piece.amount });
       } else if (piece.kind === "bread") {
         out.push({ id: `gloot_${li++}`, x: p.x, y: p.y, kind: "bread" });
+      } else if (piece.kind === "herb") {
+        out.push({ id: `gloot_${li++}`, x: p.x, y: p.y, kind: "herb" });
+      } else if (piece.kind === "cheese") {
+        out.push({ id: `gloot_${li++}`, x: p.x, y: p.y, kind: "cheese" });
+      } else if (piece.kind === "gem") {
+        out.push({
+          id: `gloot_${li++}`,
+          x: p.x,
+          y: p.y,
+          kind: "gem",
+          gemId: piece.gemId,
+        });
       } else {
         out.push({ id: `gloot_${li++}`, x: p.x, y: p.y, kind: "card", cardId: piece.cardId });
       }
@@ -593,7 +599,12 @@ export function createInitialState(floorDef: FloorDef): GameState {
       gold: 0,
       bread: 0,
       herb: 0,
-      gems: { strength: 0, speed: 0, luck: 0, cards: 0, healing: 0 },
+      cheese: 0,
+      stew: 0,
+      flameOfDestruction: 0,
+      unboundTomes: 0,
+      boundTomes: [],
+      gems: { strength: 0, speed: 0, luck: 0, cards: 0, healing: 0, defense: 0 },
       nextPhysicalAttackMultiplier: 1,
       nextMoveDoubled: false,
       gemLuckRestore: null,
@@ -645,10 +656,15 @@ export function createInitialState(floorDef: FloorDef): GameState {
     gauntletCommenced: false,
     stairFeatures: null,
     shiftyMet: false,
+    obamlyMet: false,
+    obamlyRestockKeys: [],
     merchantState: null,
     pedestalUsed: false,
     pedestalOffer: null,
     deckDestroyPending: false,
+    flameDestroyPending: false,
+    bindTomePending: false,
+    tomeCast: null,
     stabilityBuffActive: false,
     scoutBlockedThisTurn: false,
     dungeonCardReveal: null,
@@ -719,7 +735,12 @@ export function createInitialStateGenerated(depth = 1): GameState {
       gold: 0,
       bread: 0,
       herb: 0,
-      gems: { strength: 0, speed: 0, luck: 0, cards: 0, healing: 0 },
+      cheese: 0,
+      stew: 0,
+      flameOfDestruction: 0,
+      unboundTomes: 0,
+      boundTomes: [],
+      gems: { strength: 0, speed: 0, luck: 0, cards: 0, healing: 0, defense: 0 },
       nextPhysicalAttackMultiplier: 1,
       nextMoveDoubled: false,
       gemLuckRestore: null,
@@ -771,10 +792,15 @@ export function createInitialStateGenerated(depth = 1): GameState {
     gauntletCommenced: false,
     stairFeatures: null,
     shiftyMet: false,
+    obamlyMet: false,
+    obamlyRestockKeys: [],
     merchantState: null,
     pedestalUsed: false,
     pedestalOffer: null,
     deckDestroyPending: false,
+    flameDestroyPending: false,
+    bindTomePending: false,
+    tomeCast: null,
     stabilityBuffActive: false,
     scoutBlockedThisTurn: false,
     dungeonCardReveal: null,
@@ -909,10 +935,15 @@ export function createNextFloorState(
     gauntletCommenced: false,
     stairFeatures: null,
     shiftyMet: prev.shiftyMet,
+    obamlyMet: prev.obamlyMet,
+    obamlyRestockKeys: prev.obamlyRestockKeys,
     merchantState: null,
     pedestalUsed: false,
     pedestalOffer: null,
     deckDestroyPending: false,
+    flameDestroyPending: false,
+    bindTomePending: false,
+    tomeCast: null,
     stabilityBuffActive: false,
     scoutBlockedThisTurn: false,
     dungeonCardReveal: null,
