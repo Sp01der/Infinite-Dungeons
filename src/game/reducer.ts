@@ -1,3 +1,4 @@
+import { baseMagicCardId, upgradedMagicCardId } from "./cardUpgrades";
 import { applyDefense, rollInt, pushRollChanceContext, popRollChanceContext } from "../engine/combat";
 import { addRoomsToDiscovered, collectRoomIdsAdjacentToPlayer } from "../engine/discovery";
 import {
@@ -51,7 +52,7 @@ import {
   fighterTrainingBonus,
   hasteMovementRange,
   heavyPunchBonus,
-  incomingDamageToPlayer,
+  applyDamageToPlayer,
   knockbackTokensGrantedPerTurn,
   lightningBoltSkillDamageBonus,
   mageTrainingBonus,
@@ -929,9 +930,10 @@ function applyPendingStalactiteDamage(s: GameState): GameState {
     if (seen.has(k)) continue;
     seen.add(k);
     if (next.player.x === pos.x && next.player.y === pos.y) {
-      const dmg = incomingDamageToPlayer(next, envDmg);
-      const hp = Math.max(0, next.player.hp - dmg);
-      next = { ...next, player: { ...next.player, hp } };
+      const _taken_dmg = applyDamageToPlayer(next, envDmg);
+      next = _taken_dmg.state;
+      const dmg = _taken_dmg.damage;
+      const hp = next.player.hp;
       next = log(next, `Stalactites crash down — ${dmg} damage!`);
       if (hp <= 0) return { ...next, phase: "defeat" };
     }
@@ -1039,10 +1041,11 @@ function applyPendingCollapse(state: GameState): { state: GameState; hits: HitVi
 
   const playerHere = keyOf({ x: next.player.x, y: next.player.y });
   if (keys.has(playerHere)) {
-    const dmg = incomingDamageToPlayer(next, COLLAPSE_CRUSH_DAMAGE);
+    const taken = applyDamageToPlayer(next, COLLAPSE_CRUSH_DAMAGE);
+    next = taken.state;
+    const dmg = taken.damage;
     hits.push({ gridX: next.player.x, gridY: next.player.y, damage: dmg });
-    const hp = Math.max(0, next.player.hp - dmg);
-    next = { ...next, player: { ...next.player, hp } };
+    const hp = next.player.hp;
     if (hp <= 0) {
       return {
         state: log({ ...next, phase: "defeat", player: { ...next.player, hp: 0 } }, "You are buried in the collapse."),
@@ -1276,7 +1279,7 @@ function enqueueCardPickup(s: GameState, cardId: string): GameState {
   return { ...s, cardPickupOffer: { queue: [...prev, cardId] } };
 }
 
-/** Played equipped cards return to the top; all other played cards go to discard. Bound Tome casts are consumed (not discarded). */
+/** Played equipped cards return to the top; all other played cards go to discard. Bound Tome casts are consumed (not discarded). Temporary Magic+ upgrades discard as their base card. */
 function playerAfterPlayingCard(
   s: GameState,
   hand: string[],
@@ -1292,10 +1295,11 @@ function playerAfterPlayingCard(
       drawPile: [cardId, ...s.player.drawPile],
     };
   }
+  const discardId = baseMagicCardId(cardId);
   return {
     ...s.player,
     hand,
-    discardPile: [...s.player.discardPile, cardId],
+    discardPile: [...s.player.discardPile, discardId],
   };
 }
 
@@ -1620,14 +1624,11 @@ function resolvePlayerEnterTile(s: GameState, x: number, y: number): GameState {
 function applyHarmingCloudEnter(s: GameState, x: number, y: number): GameState {
   const cloud = s.harmingClouds.find((c) => c.x === x && c.y === y && c.turnsLeft > 0);
   if (!cloud) return s;
-  const dmg = incomingDamageToPlayer(s, 5);
-  const hp = Math.max(0, s.player.hp - dmg);
-  let next: GameState = {
-    ...s,
-    player: { ...s.player, hp },
-  };
+  const taken = applyDamageToPlayer(s, 5);
+  let next = taken.state;
+  const dmg = taken.damage;
   next = log(next, `The harming cloud burns you for ${dmg}!`);
-  if (hp <= 0) return { ...next, phase: "defeat" };
+  if (next.player.hp <= 0) return { ...next, phase: "defeat" };
   return next;
 }
 
@@ -2018,7 +2019,14 @@ function drawFromPlayerDeck(
     const drawPile = [...s.player.drawPile];
     const [drawn] = drawPile.splice(drawIndex, 1);
     if (!drawn) break;
-    hand = [...hand, drawn];
+    let drawnId = drawn;
+    if (s.player.arcaneChargeActive) {
+      const d = s.cardDefs.get(drawn);
+      if (d?.types.includes("Magic")) {
+        drawnId = upgradedMagicCardId(drawn) ?? drawn;
+      }
+    }
+    hand = [...hand, drawnId];
     s = { ...s, player: { ...s.player, drawPile, hand } };
   }
   return s;
@@ -2278,7 +2286,7 @@ function discardHand(s: GameState): GameState {
   for (const id of s.player.hand) {
     const def = s.cardDefs.get(id);
     if (def?.effect.type === "bonus_chit") continue;
-    toDiscard.push(id);
+    toDiscard.push(baseMagicCardId(id));
   }
   const discardPile = [...s.player.discardPile, ...toDiscard];
   return {
@@ -2322,7 +2330,7 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
     return withHits(st, []);
   }
 
-  const working: GameState = { ...base, stabilityBuffActive: false };
+  let working: GameState = { ...base, stabilityBuffActive: false };
 
   if (descendantSkipDungeonDraw(working)) {
     const summary = "Descendant — the dungeon's pull slips past you this turn.";
@@ -2356,13 +2364,15 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
     }
     case "trap": {
       const rawTrap = rollTrapDamage();
-      const dmg = incomingDamageToPlayer(working, rawTrap);
+      const taken = applyDamageToPlayer(working, rawTrap);
+      working = taken.state;
+      const dmg = taken.damage;
       summary = dmg === 0 ? "No damage." : `You take ${dmg} damage.`;
       const hits: HitVisual[] = [];
       if (dmg > 0) {
         hits.push({ gridX: working.player.x, gridY: working.player.y, damage: dmg });
       }
-      const hp = Math.max(0, working.player.hp - dmg);
+      const hp = working.player.hp;
       if (hp <= 0) {
         const st = log(
           {
@@ -2378,7 +2388,6 @@ function drawDungeonTop(s: GameState): { state: GameState; hits: HitVisual[] } {
       const st = log(
         {
           ...working,
-          player: { ...working.player, hp },
           dungeonCardReveal: { title, summary },
         },
         `Dungeon: ${title} — ${summary}`,
@@ -2727,6 +2736,8 @@ function applyPerTurnSkillResourcesAfterDraw(next: GameState): GameState {
       movementCardsPlayedThisTurn: 0,
       scoutUsesThisTurn: 0,
       hasteThisTurn: false,
+      arcaneChargeActive: false,
+      resistance: 0,
     },
   };
 }
@@ -3506,6 +3517,97 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         }
       }
 
+      if (state.player.arcaneChargeActive && !def.types.includes("Magic")) {
+        return noHits(
+          log(state, "Arcane Charge is active — only Magic cards can be played this turn."),
+        );
+      }
+
+      if (def.effect.type === "arcane_charge") {
+        const hand = [...state.player.hand];
+        hand.splice(idx, 1);
+        let s = applyCardPlayed(state, hand, cardId);
+        const upgradedHand = s.player.hand.map((id) => {
+          const d = s.cardDefs.get(id);
+          if (!d?.types.includes("Magic")) return id;
+          return upgradedMagicCardId(id) ?? id;
+        });
+        s = {
+          ...s,
+          player: {
+            ...s.player,
+            hand: upgradedHand,
+            arcaneChargeActive: true,
+          },
+        };
+        if (def.effect.draw > 0) {
+          s = drawFromPlayerDeck(s, def.effect.draw);
+        }
+        const drawMsg =
+          def.effect.draw > 0 ? ` Draw ${def.effect.draw}.` : "";
+        return noHits(
+          log(
+            s,
+            `Arcane Charge! Only Magic cards this turn; Magic in hand is upgraded.${drawMsg}`,
+          ),
+        );
+      }
+
+      if (def.effect.type === "arcane_shield") {
+        const hand = [...state.player.hand];
+        hand.splice(idx, 1);
+        let s = applyCardPlayed(state, hand, cardId);
+        const resistance = s.player.resistance + def.effect.resistance;
+        s = {
+          ...s,
+          player: { ...s.player, resistance },
+        };
+        return noHits(
+          log(s, `Arcane Shield — gain ${def.effect.resistance} Resistance (${resistance} total).`),
+        );
+      }
+
+      if (def.effect.type === "shining_blade") {
+        const hand = [...state.player.hand];
+        hand.splice(idx, 1);
+        let s = applyCardPlayed(state, hand, cardId);
+        const dirs = def.effect.diagonals
+          ? [
+              { x: 1, y: 0 },
+              { x: -1, y: 0 },
+              { x: 0, y: 1 },
+              { x: 0, y: -1 },
+              { x: 1, y: 1 },
+              { x: 1, y: -1 },
+              { x: -1, y: 1 },
+              { x: -1, y: -1 },
+            ]
+          : [
+              { x: 1, y: 0 },
+              { x: -1, y: 0 },
+              { x: 0, y: 1 },
+              { x: 0, y: -1 },
+            ];
+        const raw = magicAttackRollRaw(s, cardId, def.effect.minDamage, def.effect.maxDamage);
+        const hits: HitVisual[] = [];
+        for (const d of dirs) {
+          const t = { x: s.player.x + d.x, y: s.player.y + d.y };
+          if (!inBounds(t, s.width, s.height)) continue;
+          const result = damageAttackTargetsAt(s, t, raw, "magic_missile");
+          s = result.state;
+          hits.push(...result.hits);
+        }
+        return withHits(
+          log(
+            s,
+            def.effect.diagonals
+              ? `Shining Blade+ flashes in all directions (${raw} damage)!`
+              : `Shining Blade flashes outward (${raw} damage)!`,
+          ),
+          hits,
+        );
+      }
+
       if (def.effect.type === "tactical_approach") {
         let s = state;
         const hand = [...s.player.hand];
@@ -3985,15 +4087,17 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           if (!cardId) return noHits(state);
           hand.splice(p.cardHandIndex, 1);
           const raw = rollInt(3, 4);
-          const dmg = incomingDamageToPlayer(state, raw);
-          const hp = Math.max(0, state.player.hp - dmg);
+          const taken = applyDamageToPlayer(state, raw);
+          const dmg = taken.damage;
+          const hp = taken.state.player.hp;
+          const resistance = taken.state.player.resistance;
           const px = state.player.x;
           const py = state.player.y;
           if (hp <= 0) {
             return withHits(log(
                 {
-                  ...state,
-                  player: { ...playerAfterPlayingCard(state, hand, cardId), hp: 0 },
+                  ...taken.state,
+                  player: { ...playerAfterPlayingCard(taken.state, hand, cardId), hp: 0, resistance },
                   phase: "defeat",
                   pending: null,
                 },
@@ -4001,8 +4105,8 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
               ), [{ gridX: px, gridY: py, damage: dmg }],);
           }
           let s: GameState = {
-            ...state,
-            player: { ...playerAfterPlayingCard(state, hand, cardId), hp },
+            ...taken.state,
+            player: { ...playerAfterPlayingCard(taken.state, hand, cardId), hp, resistance },
             pending: null,
           };
           s = awakenMimicOnTile(s, dest.x, dest.y);
@@ -4016,12 +4120,16 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const cardIdW = handW[p.cardHandIndex];
           if (!cardIdW) return noHits(state);
           handW.splice(p.cardHandIndex, 1);
-          const rawW = state.danger;
-          const dmgW = incomingDamageToPlayer(state, rawW);
-          const hpW = Math.max(0, state.player.hp - dmgW);
+          const takenW = applyDamageToPlayer(state, state.danger);
+          const dmgW = takenW.damage;
+          const hpW = takenW.state.player.hp;
           let sw: GameState = {
-            ...state,
-            player: { ...playerAfterPlayingCard(state, handW, cardIdW), hp: hpW },
+            ...takenW.state,
+            player: {
+              ...playerAfterPlayingCard(takenW.state, handW, cardIdW),
+              hp: hpW,
+              resistance: takenW.state.player.resistance,
+            },
             pending: { kind: "water_escape", waterX: dest.x, waterY: dest.y },
           };
           sw = log(
@@ -4120,15 +4228,17 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           if (!cardId) return noHits(state);
           hand.splice(p.cardHandIndex, 1);
           const raw = rollInt(3, 4);
-          const dmg = incomingDamageToPlayer(state, raw);
-          const hp = Math.max(0, state.player.hp - dmg);
+          const taken = applyDamageToPlayer(state, raw);
+          const dmg = taken.damage;
+          const hp = taken.state.player.hp;
+          const resistance = taken.state.player.resistance;
           const px = state.player.x;
           const py = state.player.y;
           if (hp <= 0) {
             return withHits(log(
                 {
-                  ...state,
-                  player: { ...playerAfterPlayingCard(state, hand, cardId), hp: 0 },
+                  ...taken.state,
+                  player: { ...playerAfterPlayingCard(taken.state, hand, cardId), hp: 0, resistance },
                   phase: "defeat",
                   pending: null,
                 },
@@ -4136,8 +4246,8 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
               ), [{ gridX: px, gridY: py, damage: dmg }],);
           }
           let s: GameState = {
-            ...state,
-            player: { ...playerAfterPlayingCard(state, hand, cardId), hp },
+            ...taken.state,
+            player: { ...playerAfterPlayingCard(taken.state, hand, cardId), hp, resistance },
             pending: null,
           };
           s = awakenMimicOnTile(s, dest.x, dest.y);
@@ -4151,11 +4261,16 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const cardIdWs = handWs[p.cardHandIndex];
           if (!cardIdWs) return noHits(state);
           handWs.splice(p.cardHandIndex, 1);
-          const dmgWs = incomingDamageToPlayer(state, state.danger);
-          const hpWs = Math.max(0, state.player.hp - dmgWs);
+          const takenWs = applyDamageToPlayer(state, state.danger);
+          const dmgWs = takenWs.damage;
+          const hpWs = takenWs.state.player.hp;
           let sws: GameState = {
-            ...state,
-            player: { ...playerAfterPlayingCard(state, handWs, cardIdWs), hp: hpWs },
+            ...takenWs.state,
+            player: {
+              ...playerAfterPlayingCard(takenWs.state, handWs, cardIdWs),
+              hp: hpWs,
+              resistance: takenWs.state.player.resistance,
+            },
             pending: { kind: "water_escape", waterX: dest.x, waterY: dest.y },
           };
           sws = log(
@@ -4392,8 +4507,10 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
             pending: null,
           };
           const raw = rollInt(3, 4);
-          const dmg = incomingDamageToPlayer(s, raw);
-          const hp = Math.max(0, s.player.hp - dmg);
+          const taken = applyDamageToPlayer(s, raw);
+          s = taken.state;
+          const dmg = taken.damage;
+          const hp = s.player.hp;
           const px = s.player.x;
           const py = s.player.y;
           if (hp <= 0) {
@@ -4402,7 +4519,6 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
                 "The mimic's bite is fatal.",
               ), [{ gridX: px, gridY: py, damage: dmg }],);
           }
-          s = { ...s, player: { ...s.player, hp } };
           s = awakenMimicOnTile(s, dest.x, dest.y);
           s = log(s, "The chest strikes — the Mimic wakes!");
           return withHits(s, [{ gridX: px, gridY: py, damage: dmg }],);
@@ -4410,18 +4526,18 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
 
         const brDm = bridgeTileKeySet(state);
         if (tileAt(state.tiles, dest) === "water" && !brDm.has(keyOf(dest))) {
-          const dmgD = incomingDamageToPlayer(state, state.danger);
-          const hpD = Math.max(0, state.player.hp - dmgD);
+          const takenD = applyDamageToPlayer(state, state.danger);
+          const dmgD = takenD.damage;
           let sd: GameState = {
-            ...state,
-            player: { ...state.player, hp: hpD, suppressNextMove: false },
+            ...takenD.state,
+            player: { ...takenD.state.player, suppressNextMove: false },
             pending: { kind: "water_escape", waterX: dest.x, waterY: dest.y },
           };
           sd = log(
             sd,
             `The water pulls you under — ${dmgD} damage! Discard a card and choose adjacent land to escape.`,
           );
-          if (hpD <= 0) {
+          if (sd.player.hp <= 0) {
             return withHits(log(
                 { ...sd, player: { ...sd.player, hp: 0 }, phase: "defeat", pending: null },
                 "You drown.",
@@ -4505,15 +4621,16 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         );
         if (mimicHere) {
           const raw = rollInt(3, 4);
-          const dmg = incomingDamageToPlayer(state, raw);
-          const hp = Math.max(0, state.player.hp - dmg);
+          const taken = applyDamageToPlayer(state, raw);
+          const dmg = taken.damage;
+          const hp = taken.state.player.hp;
           const px = state.player.x;
           const py = state.player.y;
           if (hp <= 0) {
             return withHits(log(
                 {
-                  ...state,
-                  player: { ...state.player, hp: 0 },
+                  ...taken.state,
+                  player: { ...taken.state.player, hp: 0 },
                   phase: "defeat",
                   pending: null,
                 },
@@ -4521,8 +4638,11 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
               ), [{ gridX: px, gridY: py, damage: dmg }],);
           }
           let s: GameState = {
-            ...state,
-            player: { ...state.player, hp, moveTokens: state.player.moveTokens - 1 },
+            ...taken.state,
+            player: {
+              ...taken.state.player,
+              moveTokens: state.player.moveTokens - 1,
+            },
             pending: null,
           };
           s = awakenMimicOnTile(s, dest.x, dest.y);
@@ -4532,13 +4652,12 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
 
         const brTok = bridgeTileKeySet(state);
         if (tileAt(state.tiles, dest) === "water" && !brTok.has(keyOf(dest))) {
-          const dmgT = incomingDamageToPlayer(state, state.danger);
-          const hpT = Math.max(0, state.player.hp - dmgT);
+          const takenT = applyDamageToPlayer(state, state.danger);
+          const dmgT = takenT.damage;
           let st: GameState = {
-            ...state,
+            ...takenT.state,
             player: {
-              ...state.player,
-              hp: hpT,
+              ...takenT.state.player,
               moveTokens: state.player.moveTokens - 1,
             },
             pending: { kind: "water_escape", waterX: dest.x, waterY: dest.y },
@@ -4547,7 +4666,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
             st,
             `The water pulls you under — ${dmgT} damage! Discard a card and choose adjacent land to escape.`,
           );
-          if (hpT <= 0) {
+          if (st.player.hp <= 0) {
             return withHits(log(
                 { ...st, player: { ...st.player, hp: 0 }, phase: "defeat", pending: null },
                 "You drown.",
@@ -4637,19 +4756,19 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
               if (hp <= 0) s = log(s, "Tangleweed burned away.");
             }
             if (s.player.x === tx && s.player.y === ty) {
-              const pdmg = incomingDamageToPlayer(s, dmg);
-              const php = Math.max(0, s.player.hp - pdmg);
+              const taken = applyDamageToPlayer(s, dmg);
+              s = taken.state;
+              const pdmg = taken.damage;
               s = {
                 ...s,
                 player: {
                   ...s.player,
-                  hp: php,
                   fireLevels: (s.player.fireLevels ?? 0) + fireLvls,
                 },
               };
               hits.push({ gridX: tx, gridY: ty, damage: pdmg });
               s = log(s, `You are caught in the fireball — ${pdmg} damage and Fire ${fireLvls}!`);
-              if (php <= 0) {
+              if (s.player.hp <= 0) {
                 return withHits(
                   { ...s, phase: "defeat" },
                   hits,
@@ -4712,9 +4831,10 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           hits.push({ gridX: dest.x, gridY: dest.y, damage: p.damage });
         }
         if (s.player.x === dest.x && s.player.y === dest.y) {
-          const dmg = incomingDamageToPlayer(s, p.damage);
-          const hp = Math.max(0, s.player.hp - dmg);
-          s = { ...s, player: { ...s.player, hp } };
+          const _taken_dmg = applyDamageToPlayer(s, p.damage);
+          s = _taken_dmg.state;
+          const dmg = _taken_dmg.damage;
+          const hp = s.player.hp;
           hits.push({ gridX: dest.x, gridY: dest.y, damage: dmg });
           s = log(s, `You are caught in the potion blast — ${dmg} damage!`);
           if (hp <= 0) return withHits({ ...s, phase: "defeat" }, hits);

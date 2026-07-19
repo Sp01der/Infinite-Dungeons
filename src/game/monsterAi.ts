@@ -5,7 +5,7 @@ import { cullMonstersWithDouvlonPairs, setMonsterHpWithDouvlonSync } from "./dou
 import { maybeDropMonsterCoin } from "./loot";
 import { addExp } from "./progression";
 import { SHADE_DECK_TEMPLATE } from "./monsterSpawn";
-import { incomingDamageToPlayer } from "./skillsRuntime";
+import { applyDamageToPlayer } from "./skillsRuntime";
 import { pushAttackAnim, pushMoveAnim } from "./turnAnims";
 import { hasAtbmb, runAtbmbTurn, type AtbmbHost } from "./atbmb";
 import type { GameState, HitVisual, MonsterInstance, Point, SkeletonWeapon, TangleweedPropInstance, TurnAnimEvent } from "./types";
@@ -343,14 +343,20 @@ function damagePlayer(
   hits: HitVisual[],
   fx?: HitVisual["fx"],
 ): { state: GameState; dead: boolean } {
-  const dmg = incomingDamageToPlayer(s, raw);
+  const beforeRes = s.player.resistance;
+  const taken = applyDamageToPlayer(s, raw);
   const px = s.player.x;
   const py = s.player.y;
-  const hp = Math.max(0, s.player.hp - dmg);
-  let next = appendLog(s, `${monName} hits you for ${dmg}.`);
-  next = { ...next, player: { ...next.player, hp } };
-  recordHit(hits, { gridX: px, gridY: py, damage: dmg, fx }, next);
-  return { state: next, dead: hp <= 0 };
+  let next = taken.state;
+  if (taken.damage > 0) {
+    next = appendLog(next, `${monName} hits you for ${taken.damage}.`);
+  } else if (beforeRes > next.player.resistance) {
+    next = appendLog(next, `${monName}'s attack is absorbed by Resistance!`);
+  } else {
+    next = appendLog(next, `${monName} hits you for 0.`);
+  }
+  recordHit(hits, { gridX: px, gridY: py, damage: taken.damage, fx }, next);
+  return { state: next, dead: next.player.hp <= 0 };
 }
 
 function meleeFrom(m: { x: number; y: number }): HitVisual["fx"] {

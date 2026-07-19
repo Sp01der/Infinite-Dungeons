@@ -258,5 +258,82 @@
     "types": ["Alchemy", "Attack"],
     "tags": ["ranged"],
     "effect": { "type": "potion_of_harming", "range": 5, "damage": 5, "cloudTurns": 3 }
+  },
+  {
+    "id": "arcane_charge",
+    "name": "Arcane Charge",
+    "rarity": "Merchant",
+    "description": "You may only play Magic cards for the rest of this turn. Magic cards in your hand are upgraded for this turn.",
+    "types": ["Magic", "Skill"],
+    "effect": { "type": "arcane_charge", "draw": 0 }
+  },
+  {
+    "id": "shining_blade",
+    "name": "Shining Blade",
+    "rarity": "Uncommon",
+    "description": "Deal 4–5 damage to everything on the tiles orthogonally adjacent to you.",
+    "types": ["Magic", "Attack"],
+    "tags": ["melee"],
+    "effect": { "type": "shining_blade", "minDamage": 4, "maxDamage": 5, "diagonals": false }
+  },
+  {
+    "id": "arcane_shield",
+    "name": "Arcane Shield",
+    "rarity": "Uncommon",
+    "description": "Gain 7 Resistance this turn. Resistance absorbs incoming damage (ignoring defense) until depleted.",
+    "types": ["Magic", "Aid"],
+    "effect": { "type": "arcane_shield", "resistance": 7 }
+  },
+  {
+    "id": "magic_missile_plus",
+    "name": "Magic Missile+",
+    "rarity": "Rare",
+    "description": "Deal 5–6 damage to a target on one tile in a straight or diagonal line from you. Ignores defense.",
+    "types": ["Magic", "Attack"],
+    "tags": ["ranged"],
+    "effect": { "type": "magic_missile", "minDamage": 5, "maxDamage": 6 }
+  },
+  {
+    "id": "fireball_plus",
+    "name": "Fireball+",
+    "rarity": "Uncommon",
+    "description": "Choose a square within 8 spaces (line of sight). Deal 5–7 damage in a 3×3 blast and inflict 5 Fire levels on everything hit.",
+    "types": ["Magic", "Attack"],
+    "tags": ["ranged"],
+    "effect": { "type": "fireball", "minDamage": 5, "maxDamage": 7, "range": 8, "minFire": 5, "maxFire": 5 }
+  },
+  {
+    "id": "lightning_bolt_plus",
+    "name": "Lightning Bolt+",
+    "rarity": "Legendary",
+    "description": "Hit a target on a tile within 8 spaces for 8 damage, then chain to new targets for 7, 6, 5… damage. Ignores defense. Cannot hit the same tile twice.",
+    "types": ["Magic", "Attack"],
+    "tags": ["ranged"],
+    "effect": { "type": "lightning_bolt", "startDamage": 8, "startRange": 8, "chainRange": 7 }
+  },
+  {
+    "id": "arcane_charge_plus",
+    "name": "Arcane Charge+",
+    "rarity": "Merchant",
+    "description": "You may only play Magic cards for the rest of this turn. Magic cards in your hand are upgraded for this turn. Draw a card.",
+    "types": ["Magic", "Skill"],
+    "effect": { "type": "arcane_charge", "draw": 1 }
+  },
+  {
+    "id": "shining_blade_plus",
+    "name": "Shining Blade+",
+    "rarity": "Uncommon",
+    "description": "Deal 6 damage to everything on the tiles orthogonally and diagonally adjacent to you.",
+    "types": ["Magic", "Attack"],
+    "tags": ["melee"],
+    "effect": { "type": "shining_blade", "minDamage": 6, "maxDamage": 6, "diagonals": true }
+  },
+  {
+    "id": "arcane_shield_plus",
+    "name": "Arcane Shield+",
+    "rarity": "Uncommon",
+    "description": "Gain 10 Resistance this turn. Resistance absorbs incoming damage (ignoring defense) until depleted.",
+    "types": ["Magic", "Aid"],
+    "effect": { "type": "arcane_shield", "resistance": 10 }
   }
 ]

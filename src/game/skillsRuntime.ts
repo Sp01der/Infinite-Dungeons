@@ -72,6 +72,34 @@ export function incomingDamageToPlayer(s: GameState, raw: number): number {
   return applyDefense(raw, s.player.defenseBonusThisTurn + block);
 }
 
+/**
+ * Apply incoming damage: Resistance absorbs raw damage (no defense), then leftover
+ * is reduced by defense/block and subtracted from HP.
+ */
+export function applyDamageToPlayer(
+  s: GameState,
+  raw: number,
+): { state: GameState; damage: number } {
+  let resistance = s.player.resistance;
+  let remaining = Math.max(0, Math.trunc(raw));
+  if (resistance > 0 && remaining > 0) {
+    const used = Math.min(resistance, remaining);
+    resistance -= used;
+    remaining -= used;
+  }
+  let next: GameState = {
+    ...s,
+    player: { ...s.player, resistance },
+  };
+  const damage =
+    remaining <= 0
+      ? 0
+      : applyDefense(remaining, next.player.defenseBonusThisTurn + playerBlockRollForHit(next));
+  const hp = Math.max(0, next.player.hp - damage);
+  next = { ...next, player: { ...next.player, hp } };
+  return { state: next, damage };
+}
+
 export function attackStrengthBonus(s: GameState): number {
   return hasSkill(s, SID.ATK_STRENGTH) ? 1 : 0;
 }

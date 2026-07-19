@@ -554,7 +554,10 @@ function applyMoveToDisplay(s: GameState, ev: Extract<TurnAnimEvent, { kind: "mo
 function renderHudFrom(s: GameState): void {
   hudPhase.textContent =
     s.phase === "defeat" ? "Defeat" : s.phase === "peace" ? "Peace" : "Your turn";
-  hudHp.textContent = `${s.player.hp} / ${s.player.maxHp}`;
+  hudHp.textContent =
+    s.player.resistance > 0
+      ? `${s.player.hp} / ${s.player.maxHp} (Res ${s.player.resistance})`
+      : `${s.player.hp} / ${s.player.maxHp}`;
   renderLogFrom(s);
 }
 
@@ -1877,7 +1880,10 @@ function renderAll(): void {
   hudFloor.textContent = state.floorName;
   hudPhase.textContent =
     state.phase === "defeat" ? "Defeat" : state.phase === "peace" ? "Peace" : "Your turn";
-  hudHp.textContent = `${state.player.hp} / ${state.player.maxHp}`;
+  hudHp.textContent =
+    state.player.resistance > 0
+      ? `${state.player.hp} / ${state.player.maxHp} (Res ${state.player.resistance})`
+      : `${state.player.hp} / ${state.player.maxHp}`;
   hudLevel.textContent = String(state.player.level);
   hudExp.textContent = `${state.player.exp} / ${expToNextLevel(state.player.level)}`;
   hudSkillPts.textContent = String(state.player.skillPoints);

@@ -54,7 +54,10 @@ export interface CardDef {
         secondaryMinDamage: number;
         secondaryMaxDamage: number;
       }
-    | { type: "potion_of_harming"; range: number; damage: number; cloudTurns: number };
+    | { type: "potion_of_harming"; range: number; damage: number; cloudTurns: number }
+    | { type: "arcane_charge"; draw: number }
+    | { type: "shining_blade"; minDamage: number; maxDamage: number; diagonals: boolean }
+    | { type: "arcane_shield"; resistance: number };
 }
 
 export type CardTag = "punch" | "physical attack" | "ranged" | "melee";
@@ -672,6 +675,16 @@ export interface GameState {
     scoutUsesThisTurn: number;
     /** Haste card: all movement this turn moves twice as far; Attack/Protection/Aid/Deck cards are blocked. */
     hasteThisTurn: boolean;
+    /**
+     * Arcane Charge: only Magic cards may be played; Magic cards in hand were
+     * physically upgraded for this turn.
+     */
+    arcaneChargeActive: boolean;
+    /**
+     * Resistance status: absorbs raw incoming damage (ignores defense) until
+     * depleted. Does not tick down each turn; Arcane Shield clears at next turn start.
+     */
+    resistance: number;
     /** Fire levels on the player (for future use). */
     fireLevels: number;
   };

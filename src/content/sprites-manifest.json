@@ -43,6 +43,7 @@
     "highlight": { "fallbackColor": "#f1c40f", "alpha": 0.45 },
     "merchant_shifty": { "texture": "/assets/merchant_shifty.png", "fallbackColor": "#7b3db8" },
     "merchant_obamly": { "texture": "/assets/merchant_obamly.png", "fallbackColor": "#2c5aa0" },
+    "merchant_sennis": { "texture": "/assets/merchant_sennis.png", "fallbackColor": "#3d6ed8" },
     "harming_cloud_0": { "texture": "/assets/harming_cloud.png", "frame": [0, 0, 20, 20], "fallbackColor": "#8b4513", "alpha": 0.9 },
     "harming_cloud_1": { "texture": "/assets/harming_cloud.png", "frame": [20, 0, 20, 20], "fallbackColor": "#8b4513", "alpha": 0.9 },
     "harming_cloud_2": { "texture": "/assets/harming_cloud.png", "frame": [40, 0, 20, 20], "fallbackColor": "#8b4513", "alpha": 0.9 },

@@ -782,6 +782,9 @@ button.pile-inspect:focus-visible {
 .playing-card.rarity-Legendary {
   border-color: #e6a23c;
 }
+.playing-card.rarity-Merchant {
+  border-color: #c9a227;
+}
 .playing-card.rarity-Bonus {
   border-color: #6b8f9e;
   border-style: dashed;

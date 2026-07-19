@@ -110,7 +110,8 @@ export function isPlayableDeckCard(d: CardDef): boolean {
   return (
     d.effect.type !== "bonus_chit" &&
     d.effect.type !== "penalty_destroy" &&
-    d.rarity !== "Merchant"
+    d.rarity !== "Merchant" &&
+    !d.id.endsWith("_plus")
   );
 }
 
