@@ -58,6 +58,7 @@ const shiftyShopTitle = document.querySelector<HTMLHeadingElement>("#shifty-shop
 const shiftyShopNote = document.querySelector<HTMLParagraphElement>("#shifty-shop .chest-offer-note")!;
 const shiftyShopBackdrop = document.querySelector<HTMLDivElement>("#shifty-shop-backdrop")!;
 const shiftyShopListings = document.querySelector<HTMLDivElement>("#shifty-shop-listings")!;
+const shiftyShopTomes = document.querySelector<HTMLButtonElement>("#shifty-shop-tomes")!;
 const shiftyShopLeave = document.querySelector<HTMLButtonElement>("#shifty-shop-leave")!;
 const inspectDeckBtn = document.querySelector<HTMLButtonElement>("#inspect-deck")!;
 const inspectDiscardBtn = document.querySelector<HTMLButtonElement>("#inspect-discard")!;
@@ -1595,7 +1596,9 @@ function syncShiftyMerchantUi(): void {
   const showDialogue = merchantDialogueOpen(state);
   const showShop = merchantShopOpen(state);
   const isObamly = ms?.merchantId === "obamly";
+  const isSennis = ms?.merchantId === "sennis";
   shiftyDialogueBox.classList.toggle("merchant-obamly", !!isObamly);
+  shiftyDialogueBox.classList.toggle("merchant-sennis", !!isSennis);
 
   if (!showDialogue || !ms) {
     shiftyDialogueEl.classList.remove("is-open");
@@ -1619,13 +1622,23 @@ function syncShiftyMerchantUi(): void {
   if (!showShop || !ms) {
     shiftyShopEl.classList.remove("is-open");
     shiftyShopEl.setAttribute("aria-hidden", "true");
+    shiftyShopTomes.hidden = true;
   } else {
     shiftyShopEl.classList.add("is-open");
     shiftyShopEl.setAttribute("aria-hidden", "false");
-    shiftyShopTitle.textContent = isObamly ? "Mr. Obamly's wares" : "Shifty's wares";
-    shiftyShopNote.textContent = isObamly
-      ? "Six consumables and two cards. Prices stay put."
-      : "Three cards and three consumables. Prices shift each visit.";
+    if (isSennis) {
+      shiftyShopTitle.textContent = "Sennis's wares";
+      shiftyShopNote.textContent =
+        "Magic goods from the Mage Guild. Discuss Magic Tomes below.";
+    } else if (isObamly) {
+      shiftyShopTitle.textContent = "Mr. Obamly's wares";
+      shiftyShopNote.textContent = "Six consumables and two cards. Prices stay put.";
+    } else {
+      shiftyShopTitle.textContent = "Shifty's wares";
+      shiftyShopNote.textContent =
+        "Three cards and three consumables. Prices shift each visit.";
+    }
+    shiftyShopTomes.hidden = !isSennis;
     shiftyShopListings.replaceChildren();
     for (const listing of ms.listings) {
       const b = document.createElement("button");
@@ -2214,6 +2227,7 @@ cancelBtn.addEventListener("click", () => {
 dualWieldCancel.addEventListener("click", () => apply({ type: "CANCEL_PENDING" }));
 dualWieldBackdrop.addEventListener("click", () => apply({ type: "CANCEL_PENDING" }));
 unequipBtn.addEventListener("click", () => apply({ type: "UNEQUIP" }));
+shiftyShopTomes.addEventListener("click", () => apply({ type: "OPEN_MERCHANT_TOMES" }));
 shiftyShopLeave.addEventListener("click", () => apply({ type: "CLOSE_MERCHANT_SHOP" }));
 shiftyShopBackdrop.addEventListener("click", () => apply({ type: "CLOSE_MERCHANT_SHOP" }));
 btnEnd.addEventListener("click", () => apply({ type: "END_TURN" }));

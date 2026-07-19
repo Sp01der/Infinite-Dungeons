@@ -568,7 +568,7 @@ export interface StairFeaturePositions {
   cornerTile: Point;
 }
 
-export type MerchantId = "shifty" | "obamly";
+export type MerchantId = "shifty" | "obamly" | "sennis";
 
 export type ShiftyListingKind =
   | "card"
@@ -597,7 +597,15 @@ export type ShiftyDialogueChoice = { id: string; label: string };
 export type ShiftyMerchantState = {
   merchantId: MerchantId;
   leftShopThisFloor: boolean;
-  phase: "idle" | "dialogue" | "shop" | "confirm";
+  phase:
+    | "idle"
+    | "dialogue"
+    | "shop"
+    | "confirm"
+    | "tome_hub"
+    | "tome_buy"
+    | "tome_bind"
+    | "tome_sell";
   dialogueText: string;
   dialogueChoices: ShiftyDialogueChoice[];
   listings: ShiftyListing[];
@@ -748,6 +756,10 @@ export interface GameState {
    * those items with +1 stock.
    */
   obamlyRestockKeys: string[];
+  /** True after first conversation with Sennis the Wizard this run. */
+  sennisMet: boolean;
+  /** True after Sennis's Magic Tome explanation has been heard this run. */
+  sennisTomeExplained: boolean;
   /** Active stair-room merchant UI/stock (null if none spawned). */
   merchantState: ShiftyMerchantState | null;
   /** Card pedestal in the stair room (after peace). */
@@ -924,6 +936,7 @@ export type GameCommand =
   | { type: "TALK_TO_MERCHANT" }
   | { type: "RESOLVE_MERCHANT_DIALOGUE"; choiceId: string }
   | { type: "SELECT_MERCHANT_ITEM"; listingId: string }
+  | { type: "OPEN_MERCHANT_TOMES" }
   | { type: "CLOSE_MERCHANT_SHOP" }
   | { type: "RESOLVE_PEDESTAL_PICK"; pickIndex: number | null }
   | { type: "RESOLVE_DECK_DESTROY"; cardId: string | null }

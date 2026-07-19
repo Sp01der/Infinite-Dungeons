@@ -1922,6 +1922,10 @@ button.pile-inspect:focus-visible {
   background: url("/assets/obamly_dialogue.png") center / 100% 100% no-repeat;
 }
 
+.shifty-dialogue-box.merchant-sennis {
+  background: url("/assets/sennis_dialogue.png") center / 100% 100% no-repeat;
+}
+
 .shifty-dialogue-text {
   margin: 0;
   flex: 1 1 auto;

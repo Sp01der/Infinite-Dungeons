@@ -116,9 +116,12 @@ export function createShiftyListings(state: GameState): ShiftyListing[] {
   });
 }
 
-/** With Obamly available: Shifty appears 25% of the time; otherwise Obamly. */
-export function pickStairMerchantId(): "shifty" | "obamly" {
-  return Math.random() < 0.25 ? "shifty" : "obamly";
+/** Equal chance among available stair merchants. */
+export function pickStairMerchantId(): "shifty" | "obamly" | "sennis" {
+  const roll = Math.random();
+  if (roll < 1 / 3) return "shifty";
+  if (roll < 2 / 3) return "obamly";
+  return "sennis";
 }
 
 export function openingDialogue(metBefore: boolean, leftShopThisFloor: boolean): {

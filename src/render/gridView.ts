@@ -1089,13 +1089,13 @@ export class GridView extends Container {
         state.merchantState &&
         (!state.fogOfWar || state.discovered.has(keyOf(mer)))
       ) {
-        this.entityLayer.addChild(
-          this.makePlacedSprite(
-            state.merchantState.merchantId === "obamly" ? "merchant_obamly" : "merchant_shifty",
-            mer.x,
-            mer.y,
-          ),
-        );
+        const merchantSprite =
+          state.merchantState.merchantId === "obamly"
+            ? "merchant_obamly"
+            : state.merchantState.merchantId === "sennis"
+              ? "merchant_sennis"
+              : "merchant_shifty";
+        this.entityLayer.addChild(this.makePlacedSprite(merchantSprite, mer.x, mer.y));
       }
 
       for (const d of sf.exitDoorCells) {
