@@ -2298,6 +2298,8 @@ function discardHand(s: GameState): GameState {
       moveTokens: 0,
       knockbackTokens: 0,
       knockbackPrimed: 0,
+      /** Charge ends with the turn — must clear before the next hand is drawn. */
+      arcaneChargeActive: false,
     },
   };
 }
@@ -2760,6 +2762,10 @@ function beginNextPlayerTurn(s: GameState): GameState {
   }
   const drawN = playerDrawCountPerTurn(next);
   next = ensureEquippedOnTopOfDraw(next);
+  // Arcane Charge must not still be active when the new hand is drawn.
+  if (next.player.arcaneChargeActive) {
+    next = { ...next, player: { ...next.player, arcaneChargeActive: false } };
+  }
   next = drawFromPlayerDeck(next, drawN, true);
   next = applyPerTurnSkillResourcesAfterDraw(next);
   next = revealAtPlayer(next);
