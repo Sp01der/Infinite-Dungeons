@@ -1,6 +1,6 @@
 # Merchants — Complete Reference
 
-Everything the game currently implements about stair-chamber merchants: shared rules, then full details for **Shifty** and **Mr. Robert Obamly**.
+Everything the game currently implements about stair-chamber merchants: shared rules, then full details for **Shifty**, **Mr. Robert Obamly**, and **Sennis the Wizard**.
 
 ---
 
@@ -8,13 +8,14 @@ Everything the game currently implements about stair-chamber merchants: shared r
 
 Merchants are NPCs that appear in the **stair chamber** after you clear the floor’s **gauntlet**. You talk to them in **peace** phase, browse a shop of cards and consumables, and pay with **gold**.
 
-There are two merchant IDs:
+There are three merchant IDs:
 
 
 | ID       | Display name      | Shop title         |
 | -------- | ----------------- | ------------------ |
 | `shifty` | Shifty            | Shifty's wares     |
 | `obamly` | Mr. Robert Obamly | Mr. Obamly's wares |
+| `sennis` | Sennis            | Sennis's wares     |
 
 
 Only one merchant spawns per stair chamber. Stock and prices are rolled when they appear and stay until you leave the floor (`merchantState` is cleared on floor descent).
@@ -35,15 +36,17 @@ Only one merchant spawns per stair chamber. Stock and prices are rolled when the
 
 ### Which merchant?
 
-`pickStairMerchantId()`:
+`pickStairMerchantId()` — equal chance among the three:
 
-- **25%** → Shifty  
-- **75%** → Mr. Robert Obamly
+- **1/3** → Shifty  
+- **1/3** → Mr. Robert Obamly  
+- **1/3** → Sennis the Wizard  
 
 Spawn log lines:
 
 - Shifty: `"Shifty sets up shop in the stair chamber."`
 - Obamly: `"Mr. Robert Obamly sets up shop in the stair chamber."`
+- Sennis: `"Sennis the Wizard sets up shop in the stair chamber."`
 
 ---
 
@@ -69,12 +72,14 @@ The merchant tile is occupied (cannot place other props there). Sprites:
 | -------- | ----------------- | ----------------------------- | -------------- |
 | Shifty   | `merchant_shifty` | `/assets/merchant_shifty.png` | `#7b3db8`      |
 | Obamly   | `merchant_obamly` | `/assets/merchant_obamly.png` | `#2c5aa0`      |
+| Sennis   | `merchant_sennis` | `/assets/merchant_sennis.png` | `#3d6ed8`      |
 
 
 Dialogue box backgrounds:
 
 - Shifty: `/assets/shifty_dialogue.png` (CSS class `.shifty-dialogue-box`)
 - Obamly: `/assets/obamly_dialogue.png` (class `.shifty-dialogue-box.merchant-obamly`)
+- Sennis: `/assets/sennis_dialogue.png` (class `.shifty-dialogue-box.merchant-sennis`)
 
 ---
 
@@ -95,15 +100,19 @@ Click the merchant sprite → `TALK_TO_MERCHANT`.
 ### Merchant UI phases (`ShiftyMerchantState.phase`)
 
 
-| Phase      | Meaning                                               |
-| ---------- | ----------------------------------------------------- |
-| `idle`     | On the map; no overlay                                |
-| `dialogue` | Dialogue box open (opening / sold-out / broke / etc.) |
-| `shop`     | Shop panel open                                       |
-| `confirm`  | Confirm purchase dialogue                             |
+| Phase       | Meaning                                               |
+| ----------- | ----------------------------------------------------- |
+| `idle`      | On the map; no overlay                                |
+| `dialogue`  | Dialogue box open (opening / sold-out / broke / etc.) |
+| `shop`      | Shop panel open                                       |
+| `confirm`   | Confirm purchase dialogue                             |
+| `tome_hub`  | Sennis only — Magic Tome hub                          |
+| `tome_buy`  | Sennis only — buy unbound Tome                        |
+| `tome_bind` | Sennis only — bind unbound Tome                       |
+| `tome_sell` | Sennis only — sell unbound / bound Tomes              |
 
 
-While phase is `dialogue`, `confirm`, or `shop`, **merchant UI blocks** other progression (`merchantUiBlocks`). Attempting other actions logs:  
+While phase is `dialogue`, `confirm`, `shop`, or any `tome_*` phase, **merchant UI blocks** other progression (`merchantUiBlocks`). Attempting other actions logs:  
 `"Finish talking with {name} first."`
 
 ### Flow
@@ -112,8 +121,9 @@ While phase is `dialogue`, `confirm`, or `shop`, **merchant UI blocks** other pr
 2. Choose **open shop** or **leave**.
 3. In shop: click a listing → confirm dialogue → **Buy** or **Cancel**.
 4. On buy: gold checked; if enough, deduct gold, grant item, reduce stock; remove listing if stock hits 0.
-5. Close shop (Leave button, backdrop click, or Escape) → phase `idle`, sets `leftShopThisFloor: true`.
-6. Talk again after leaving → “come back” style dialogue (merchants still have remaining stock).
+5. **Sennis only:** shop also has **Discuss Magic Tomes** (`OPEN_MERCHANT_TOMES`) → tomes flow (see Sennis).
+6. Close shop (Leave button, backdrop click, or Escape) → phase `idle`, sets `leftShopThisFloor: true`.
+7. Talk again after leaving → “come back” style dialogue (merchants still have remaining stock).
 
 Escape:
 
@@ -127,11 +137,13 @@ Escape:
 Carried into the next floor (`advanceFloor` / equivalent):
 
 
-| Flag / field        | Purpose                                                 |
-| ------------------- | ------------------------------------------------------- |
-| `shiftyMet`         | True after first conversation with Shifty this run      |
-| `obamlyMet`         | True after first conversation with Obamly this run      |
-| `obamlyRestockKeys` | Catalog keys sold out at Obamly (for next Obamly visit) |
+| Flag / field          | Purpose                                                       |
+| --------------------- | ------------------------------------------------------------- |
+| `shiftyMet`           | True after first conversation with Shifty this run            |
+| `obamlyMet`           | True after first conversation with Obamly this run            |
+| `obamlyRestockKeys`   | Catalog keys sold out at Obamly (for next Obamly visit)       |
+| `sennisMet`           | True after first conversation with Sennis this run            |
+| `sennisTomeExplained` | True after first Magic Tomes explanation from Sennis this run |
 
 
 **Not** carried: `merchantState` (reset to `null` on descend). Fresh listings are rolled when a merchant spawns on a later floor.
@@ -146,30 +158,30 @@ First conversation marks the matching `*Met` flag so later openings use the “H
 | `TALK_TO_MERCHANT`          | Open opening dialogue                                                 |
 | `RESOLVE_MERCHANT_DIALOGUE` | Choice in dialogue/confirm (`open_shop`, `leave`, `buy`, `cancel`, …) |
 | `SELECT_MERCHANT_ITEM`      | Pick a shop listing → confirm                                         |
+| `OPEN_MERCHANT_TOMES`       | Sennis only — open Magic Tomes flow from shop                         |
 | `CLOSE_MERCHANT_SHOP`       | Close shop; mark left this floor                                      |
-
 
 
 
 ### Listing model (`ShiftyListing`)
 
-Shared shape for both merchants:
+Shared shape for all merchants:
 
 
-| Field         | Meaning                                                                                        |
-| ------------- | ---------------------------------------------------------------------------------------------- |
-| `id`          | Unique listing id for this shop instance                                                       |
-| `kind`        | `card` | `bread` | `herb` | `gem` | `cheese` | `stew` | `flame`                                |
-| `name`        | Display name                                                                                   |
-| `basePrice`   | Catalog / computed base                                                                        |
-| `price`       | Actual gold cost this visit                                                                    |
-| `stock`       | Remaining units                                                                                |
-| `cardId?`     | When `kind === "card"`                                                                         |
-| `gemId?`      | When `kind === "gem"` — one of `strength` | `speed` | `luck` | `cards` | `healing` | `defense` |
-| `catalogKey?` | Obamly only — restock tracking key                                                             |
+| Field         | Meaning                                   |
+| ------------- | ----------------------------------------- |
+| `id`          | Unique listing id for this shop instance  |
+| `kind`        | See kinds below                           |
+| `name`        | Display name                              |
+| `basePrice`   | Catalog / computed base                   |
+| `price`       | Actual gold cost this visit               |
+| `stock`       | Remaining units                           |
+| `cardId?`     | When `kind === "card"`                    |
+| `gemId?`      | When `kind === "gem"` — one of `strength` |
+| `catalogKey?` | Obamly (restock) / Sennis (listing id)    |
 
 
-
+Kinds: `card` | `bread` | `herb` | `gem` | `cheese` | `stew` | `flame`.
 
 ### What buying grants
 
@@ -189,6 +201,7 @@ Not enough gold:
 
 - **Shifty:** `"You don't have enough gold! You trying to rip me off?"` → choice **Back to shop**
 - **Obamly:** see Obamly broke dialogue below
+- **Sennis:** see Sennis broke dialogue below (same line for shop buys and Tome bind/buy)
 
 Shop UI shows each line as: `{price}G · stock {stock}`.
 
@@ -233,7 +246,7 @@ These are inventory uses after purchase (player phase), not buy-time effects.
 
 
 
-### Flame of Destruction (Obamly shop; also appears as world loot)
+### Flame of Destruction (Obamly / Sennis shops; also appears as world loot)
 
 - Use: `USE_FLAME_OF_DESTRUCTION`
 - Opens picker to **destroy one card from the discard pile**
@@ -253,6 +266,14 @@ These are inventory uses after purchase (player phase), not buy-time effects.
 | **Cards**    | **Draw 2**                                                                |
 | **Healing**  | Heal **10% of max HP** (floored, min 1)                                   |
 | **Defense**  | **+4** defense for the rest of this turn                                  |
+
+
+
+### Magic Tomes (Sennis services; also appear as world loot)
+
+- **Unbound Magic Tome** (`player.unboundTomes`): stackable. Player can bind themselves in combat (`USE_UNBOUND_TOME` → discard a Magic card from hand → Bound with 3 charges). Sennis can also bind for gold without spending a card from the player.
+- **Bound Magic Tome** (`player.boundTomes[]`): does not stack. Each has `id`, `cardId`, `charges` (starts at 3). Cast via `USE_BOUND_TOME` like playing that spell; each cast consumes a charge.
+
 
 
 ---
@@ -534,6 +555,196 @@ Choice: **Back to shop**
 
 
 
+# Sennis the Wizard
+
+
+
+## Character
+
+- Merchant from the **Mage Guild**. Calm, direct, magic-focused.
+- Display name: **Sennis**
+- Exclusive services: **Magic Tomes** (buy / bind / sell). Sells Mage Guild spell cards and magical consumables (gems, Flame of Destruction).
+- Does **not** sell food, stew, or Gem of Speed.
+
+
+
+## Shop composition
+
+Each visit, randomly one of:
+
+- **2 consumables + 3 cards**, or  
+- **3 consumables + 2 cards**
+
+Shop note: `"Magic goods from the Mage Guild. Discuss Magic Tomes below."`
+
+Prices are **fixed** at catalog values (no Shifty-style shift). Shop panel includes a **Discuss Magic Tomes** button (`OPEN_MERCHANT_TOMES`).
+
+### Consumable catalog
+
+Unique picks (no duplicates in one shop). Gems roll stock **1–2** each visit; Flame always stock **2**.
+
+
+| Catalog key    | Kind  | Name                 | Price | Stock      |
+| -------------- | ----- | -------------------- | ----- | ---------- |
+| `gem_strength` | gem   | Gem of Strength      | 6     | 1–2 random |
+| `gem_healing`  | gem   | Gem of Healing       | 6     | 1–2 random |
+| `gem_defense`  | gem   | Gem of Defense       | 6     | 1–2 random |
+| `gem_cards`    | gem   | Gem of Cards         | 6     | 1–2 random |
+| `gem_luck`     | gem   | Gem of Luck          | 7     | 1–2 random |
+| `flame`        | flame | Flame of Destruction | 6     | 2          |
+
+
+Sennis does **not** sell bread, herb, cheese, stew, or Gem of Speed.
+
+### Card catalog
+
+Weighted unique picks (no duplicates in one shop). All stock **1**. **Arcane Charge** is weighted **twice** as common as the others.
+
+
+| Card id          | Name          | Price | Weight |
+| ---------------- | ------------- | ----- | ------ |
+| `shining_blade`  | Shining Blade | 6     | 1      |
+| `arcane_shield`  | Arcane Shield | 7     | 1      |
+| `fireball`       | Fireball      | 8     | 1      |
+| `magic_missile`  | Magic Missile | 9     | 1      |
+| `arcane_charge`  | Arcane Charge | 10    | **2**  |
+| `lightning_bolt` | Lightning Bolt| 14    | 1      |
+
+
+### Listing ids
+
+Examples: `sennis_{i}_{catalogKey}`, `sennis_{i}_{cardId}`.
+
+## Dialogue
+
+
+
+### Opening
+
+**First meeting** (`!sennisMet`, not left shop this floor):
+
+> Hello. My name is Sennis of the Mage Guild. I would be willing to trade with you, for I offer powerful magic items.
+
+Choices: **Let's trade** (`open_shop`) · **Maybe later** (`leave`)
+
+**Met before:**
+
+> Hello. Would you be willing to trade? Perhaps I could interest you in a Magic Tome.
+
+Choices: **Show me** · **Not now**
+
+**Left shop this floor, talking again:**
+
+> I'm always willing to trade.
+
+Choices: **Browse wares** · **Leave**
+
+### Purchase confirm (by listing)
+
+
+
+| Situation                         | Text                                                                                                                            |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Gem (any)                         | `"These Gems contain concentrated magical energy. Simply break it to release its power."`                                         |
+| Flame of Destruction              | `"These Flames were created with magic, and thus can permanently destroy cards in the dungeon. Very useful."`                     |
+| Shining Blade / Arcane Shield     | `"Basic Spells in card form. The simplest of magic. But even the simplest magic can be highly effective."`                        |
+| Fireball                          | `"Beware. The rash mage will throw fireballs with no regard, and in doing so burn themselves."`                                   |
+| Magic Missile                     | `"Simple and powerful. The same attack Mystic Cores use."`                                                                        |
+| Arcane Charge                     | `"A specialty of the Mage Guild. Charging your magic makes it far more effective."`                                               |
+| Lightning Bolt                    | `"Such magic is dangerous, and rare. Can you wield the power of thunder?"`                                                        |
+
+
+Choices: **Buy** · **Cancel**
+
+### Sold out
+
+No special sold-out monologue — listings simply disappear when stock reaches 0. No restock tracking.
+
+### Broke
+
+Used for shop purchases, buying unbound Tomes, and binding Tomes:
+
+> You'll need a bit more gold than that. Magic is expensive, you know.
+
+Choice returns to the prior menu (**Back to shop**, **Back**, etc.).
+
+---
+
+
+
+## Magic Tomes (Sennis-only service)
+
+Entered from the shop via **Discuss Magic Tomes** (`OPEN_MERCHANT_TOMES`).
+
+### First explanation (`!sennisTomeExplained`)
+
+> Magic Tomes a books that can be imbued with magical energy from cards. This is called Binding. Once Bound, they can expel the energy to achieve various effects. Doing so does damage the Tome though, so they don't last forever.
+
+Choice: **Continue** (`tome_hub`) — sets `sennisTomeExplained = true`, then opens the hub.
+
+### Hub (`tome_hub`)
+
+> What would you like to do with Magic Tomes?
+
+Choices:
+
+- **Buy Magic Tomes** (`tome_buy_offer`)
+- **Bind Magic Tomes** (`tome_bind_menu`)
+- **Sell Magic Tomes** (`tome_sell_menu`)
+- **Back to shop** (`open_shop`)
+
+### Buy Magic Tomes (`tome_buy`)
+
+> I will sell you an unbound Tome for 4 gold.
+
+Choices: **Buy** (`buy_unbound_tome`) · **Cancel** (`tome_hub`)
+
+On buy: deduct **4** gold, `unboundTomes += 1`. Stay on the buy offer so another can be purchased. Broke → broke dialogue, then back to hub.
+
+### Bind Magic Tomes (`tome_bind`)
+
+Intro:
+
+> You may give me an Unbound Tome and I can Bind it for you.
+
+Requires `unboundTomes > 0`. If none: same text plus *"You don't have an Unbound Tome right now."* → **Back** to hub.
+
+Otherwise choose a spell (player spends **Unbound Tome + gold only** — no card from hand/discard). Bound tome granted with **3 charges**.
+
+
+| Spell           | Bind cost |
+| --------------- | --------- |
+| Shining Blade   | 3G        |
+| Arcane Shield   | 3G        |
+| Fireball        | 4G        |
+| Magic Missile   | 4G        |
+| Lightning Bolt  | 5G        |
+| Arcane Charge   | 5G        |
+
+
+On success:
+
+> There! This book now contains the magic of {card name}. It has three charges.
+
+Choice: **Continue** → hub.
+
+Broke → broke dialogue, then back to bind menu.
+
+### Sell Magic Tomes (`tome_sell`)
+
+> I will buy an Unbound Tome for 3 gold. If you have a Bound Tome, I'll give you an extra gold for each Charge remaining.
+
+Sell options listed as choices:
+
+- Unbound: **3G** each (`sell_unbound`)
+- Bound: **3G + remaining charges** (`sell_bound_{tomeId}`)
+
+Choice: **Done** (`tome_hub`). If nothing to sell, dialogue notes that and offers **Back**.
+
+---
+
+
+
 ## UI / player-facing hints
 
 Hints while merchant is active (peace):
@@ -542,7 +753,13 @@ Hints while merchant is active (peace):
 - Shop: `"Browse {name}'s shop, or leave when you're done."`
 - Idle on map: `"Peace — click {name} to talk, the pedestal first, then the east stair to descend."`
 
-Display names from `merchantDisplayName`: `Shifty` / `Mr. Robert Obamly` / fallback `"the merchant"`.
+Display names from `merchantDisplayName`: `Shifty` / `Mr. Robert Obamly` / `Sennis` / fallback `"the merchant"`.
+
+Sennis shop extras:
+
+- Title: `"Sennis's wares"`
+- Note: `"Magic goods from the Mage Guild. Discuss Magic Tomes below."`
+- Button: **Discuss Magic Tomes** (hidden for other merchants)
 
 ---
 
@@ -556,13 +773,14 @@ Display names from `merchantDisplayName`: `Shifty` / `Mr. Robert Obamly` / fallb
 | Shared commands, grant, spawn pick | `src/game/merchantRuntime.ts`                                             |
 | Shifty catalogs, prices, dialogue  | `src/game/shifty.ts`                                                      |
 | Obamly catalogs, restock, dialogue | `src/game/obamly.ts`                                                      |
+| Sennis catalogs, tomes, dialogue   | `src/game/sennis.ts`                                                      |
 | Types / flags                      | `src/game/types.ts`                                                       |
 | Gauntlet → stair → spawn           | `src/game/reducer.ts` (`processGauntletVictory`), `src/game/stairRoom.ts` |
 | Floor persistence of met/restock   | `src/game/initialState.ts`                                                |
-| UI sync, shop notes                | `src/main.ts`                                                             |
+| UI sync, shop notes, Tomes button  | `src/main.ts`, `index.html`                                               |
 | Sprites                            | `src/content/sprites-manifest.json`, `src/render/gridView.ts`             |
-| Styles                             | `src/style.css` (`.shifty-dialogue`, `.shifty-shop-*`)                    |
-| Consumable / gem use effects       | `src/game/reducer.ts` (`USE_*`)                                           |
+| Styles                             | `src/style.css` (`.shifty-dialogue`, `.merchant-sennis`, `.shifty-shop-*`) |
+| Consumable / gem / tome use        | `src/game/reducer.ts` (`USE_*`)                                           |
 
 
 ---
@@ -572,16 +790,16 @@ Display names from `merchantDisplayName`: `Shifty` / `Mr. Robert Obamly` / fallb
 ## Quick comparison
 
 
-|                   | Shifty                  | Obamly                                   |
-| ----------------- | ----------------------- | ---------------------------------------- |
-| Spawn chance      | 25%                     | 75%                                      |
-| Listings          | 3 cards + 3 consumables | 6 consumables + 2 cards                  |
-| Card pool         | Fixed 16-card catalog   | All playable deck cards, rarity-weighted |
-| Prices            | Shift each visit        | Fixed                                    |
-| Exclusive stock   | —                       | Stew, Flame of Destruction               |
-| Gem prices        | Higher (8–10)           | Lower (5–7)                              |
-| Sold-out tracking | None                    | Restock queue + bonus stock              |
-| Broke tone        | Accusatory              | Polite                                   |
-| Price pitch       | Half-price boasts       | “Best prices in the dungeon”             |
-
+|                   | Shifty                  | Obamly                                   | Sennis                                              |
+| ----------------- | ----------------------- | ---------------------------------------- | --------------------------------------------------- |
+| Spawn chance      | 1/3                     | 1/3                                      | 1/3                                                 |
+| Listings          | 3 cards + 3 consumables | 6 consumables + 2 cards                  | 2+3 or 3+2 (consumables/cards)                      |
+| Card pool         | Fixed 16-card catalog   | All playable deck cards, rarity-weighted | Fixed 6 Magic / Mage Guild cards (Arcane Charge ×2) |
+| Prices            | Shift each visit        | Fixed                                    | Fixed                                               |
+| Exclusive stock   | —                       | Stew                                     | Magic Tomes service; Mage Guild spell catalog       |
+| Flame in shop     | No                      | Yes (stock 1)                            | Yes (stock 2)                                       |
+| Gem prices        | Higher (8–10)           | Lower (5–7)                              | Mid (6–7); no Speed                                 |
+| Sold-out tracking | None                    | Restock queue + bonus stock              | None                                                |
+| Broke tone        | Accusatory              | Polite                                   | Matter-of-fact (“Magic is expensive”)               |
+| Extra service     | —                       | —                                        | Buy / bind / sell Magic Tomes                       |
 

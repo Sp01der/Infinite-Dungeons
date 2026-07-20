@@ -2196,9 +2196,13 @@ export function processGauntletVictory(s: GameState): GameState {
   if (alive) return s;
   let next = attachStairRoom(s);
   next = reshufflePlayerDeck(next);
+  next = {
+    ...next,
+    player: { ...next.player, gold: next.player.gold + 3 },
+  };
   next = log(
     next,
-    "The gauntlet falls silent. A stair chamber opens — peace. Your deck is reshuffled.",
+    "The gauntlet falls silent. You claim 3 gold. A stair chamber opens — peace. Your deck is reshuffled.",
   );
   next = spawnMerchantAfterGauntlet(next);
   return {

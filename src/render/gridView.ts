@@ -911,6 +911,17 @@ export class GridView extends Container {
     playerRoot.addChild(this.makePlacedSprite("player", 0, 0));
     const playerFire = this.makeFireOverlay(0, 0, state.player.fireLevels ?? 0);
     if (playerFire) playerRoot.addChild(playerFire);
+    if ((state.player.resistance ?? 0) > 0) {
+      const resStyle = this.styles.get("status_resistance");
+      if (this.usePixelArt && resStyle?.kind === "texture") {
+        playerRoot.addChild(this.makePlacedSprite("status_resistance", 0, 0));
+      } else {
+        const r = Math.max(3, Math.round(TILE * 0.11));
+        const dot = new Graphics();
+        dot.circle(TILE - r - 3, r + 3, r).fill({ color: 0x3d6ed8, alpha: 0.95 });
+        playerRoot.addChild(dot);
+      }
+    }
     playerRoot.addChild(this.makeEntityLabel("You", 0, 0, 0xffffff));
 
     const douvlonPairs = new Map<string, { red?: { x: number; y: number }; blue?: { x: number; y: number }; visibleCount: number }>();
@@ -1071,17 +1082,23 @@ export class GridView extends Container {
 
     if (state.stairFeatures) {
       const sf = state.stairFeatures;
-      const pedAlpha = state.pedestalUsed ? 0.42 : 0.92;
       const tileInset = inset;
 
       const ped = sf.pedestal;
       if (!state.fogOfWar || state.discovered.has(keyOf(ped))) {
-        const pcx = (ped.x + 0.5) * TILE;
-        const pcy = (ped.y + 0.5) * TILE;
-        const pr = TILE * 0.36;
-        const pg = new Graphics();
-        pg.circle(pcx, pcy, pr).fill({ color: 0x87ceeb, alpha: pedAlpha });
-        this.entityLayer.addChild(pg);
+        const pedId = state.pedestalUsed ? "card_pedestal_used" : "card_pedestal";
+        const pedStyle = this.styles.get(pedId);
+        if (this.usePixelArt && pedStyle?.kind === "texture") {
+          this.entityLayer.addChild(this.makePlacedSprite(pedId, ped.x, ped.y));
+        } else {
+          const pedAlpha = state.pedestalUsed ? 0.42 : 0.92;
+          const pcx = (ped.x + 0.5) * TILE;
+          const pcy = (ped.y + 0.5) * TILE;
+          const pr = TILE * 0.36;
+          const pg = new Graphics();
+          pg.circle(pcx, pcy, pr).fill({ color: 0x87ceeb, alpha: pedAlpha });
+          this.entityLayer.addChild(pg);
+        }
       }
 
       const mer = sf.merchant;
@@ -1095,25 +1112,40 @@ export class GridView extends Container {
             : state.merchantState.merchantId === "sennis"
               ? "merchant_sennis"
               : "merchant_shifty";
-        this.entityLayer.addChild(this.makePlacedSprite(merchantSprite, mer.x, mer.y));
+        // Sennis is 20×25 — place bottom-aligned so the extra 5px stick out the top.
+        this.entityLayer.addChild(
+          merchantSprite === "merchant_sennis"
+            ? this.makeTallPlacedSprite(merchantSprite, mer.x, mer.y)
+            : this.makePlacedSprite(merchantSprite, mer.x, mer.y),
+        );
       }
 
-      for (const d of sf.exitDoorCells) {
-        if (state.fogOfWar && !state.discovered.has(keyOf(d))) continue;
-        const ox = d.x * TILE + tileInset / 2;
-        const oy = d.y * TILE + tileInset / 2;
-        const sz = TILE - tileInset;
-        const sg = new Graphics();
-        sg.roundRect(ox, oy, sz, sz, 2).fill({ color: 0x3d3d42, alpha: 0.98 });
-        this.entityLayer.addChild(sg);
-      }
-      const ct = sf.cornerTile;
-      if (!state.fogOfWar || state.discovered.has(keyOf(ct))) {
-        const g = new Graphics();
-        const cx = ct.x * TILE + TILE * 0.76;
-        const cy = ct.y * TILE + TILE * 0.76;
-        g.circle(cx, cy, Math.max(2, Math.round(TILE * 0.065))).fill({ color: 0xe8c547, alpha: 0.55 });
-        this.entityLayer.addChild(g);
+      const doors = sf.exitDoorCells;
+      const stairsVisible =
+        doors.length > 0 &&
+        (!state.fogOfWar || doors.some((d) => state.discovered.has(keyOf(d))));
+      if (stairsVisible) {
+        const stairStyle = this.styles.get("staircase");
+        const origin = doors[0]!;
+        if (this.usePixelArt && stairStyle?.kind === "texture" && doors.length >= 2) {
+          // 40×20 art at 2× fills exactly two tiles.
+          const spr = this.makeSprite("staircase");
+          spr.x = origin.x * TILE;
+          spr.y = origin.y * TILE;
+          spr.width = TILE * 2;
+          spr.height = TILE;
+          this.entityLayer.addChild(spr);
+        } else {
+          for (const d of doors) {
+            if (state.fogOfWar && !state.discovered.has(keyOf(d))) continue;
+            const ox = d.x * TILE + tileInset / 2;
+            const oy = d.y * TILE + tileInset / 2;
+            const sz = TILE - tileInset;
+            const sg = new Graphics();
+            sg.roundRect(ox, oy, sz, sz, 2).fill({ color: 0x3d3d42, alpha: 0.98 });
+            this.entityLayer.addChild(sg);
+          }
+        }
       }
     }
 
@@ -1699,6 +1731,32 @@ export class GridView extends Container {
       spr.y = tileY * TILE + pad;
       spr.width = size;
       spr.height = size;
+    } else {
+      const inset = Math.round(4 * (TILE / 40));
+      spr.x = tileX * TILE + inset / 2;
+      spr.y = tileY * TILE + inset / 2;
+      spr.width = TILE - inset;
+      spr.height = TILE - inset;
+    }
+    return spr;
+  }
+
+  /**
+   * Place a taller-than-tile sprite (e.g. Sennis 20×25) at 2× scale, bottom-aligned so
+   * extra height sticks out above the tile.
+   */
+  private makeTallPlacedSprite(id: string, tileX: number, tileY: number): Sprite {
+    const style = this.styles.get(id);
+    const spr = this.makeSprite(id);
+    const pixel = this.usePixelArt && style?.kind === "texture";
+    if (pixel) {
+      const w = Math.min(TILE, style.texture.width * 2);
+      const h = style.texture.height * 2;
+      const padX = (TILE - w) / 2;
+      spr.x = tileX * TILE + padX;
+      spr.y = tileY * TILE + TILE - h;
+      spr.width = w;
+      spr.height = h;
     } else {
       const inset = Math.round(4 * (TILE / 40));
       spr.x = tileX * TILE + inset / 2;

@@ -1,7 +1,9 @@
 import type { GameState, Point, RoomKind, StairFeaturePositions, TileKind } from "./types";
 import { keyOf } from "../engine/grid";
 
-const STAIR = 4;
+/** Stair chamber size in tiles (width × height). */
+const STAIR_W = 5;
+const STAIR_H = 4;
 
 function boundsOfRoom(
   roomIds: number[][],
@@ -55,8 +57,8 @@ function padRightBottom(pack: Pack, padR: number, padB: number): Pack {
 
 function stairTiles(x0: number, y0: number): Point[] {
   const out: Point[] = [];
-  for (let y = y0; y < y0 + STAIR; y++) {
-    for (let x = x0; x < x0 + STAIR; x++) {
+  for (let y = y0; y < y0 + STAIR_H; y++) {
+    for (let x = x0; x < x0 + STAIR_W; x++) {
       out.push({ x, y });
     }
   }
@@ -106,22 +108,24 @@ function carve(
   return { tiles, roomIds, width: w, height: h };
 }
 
+/**
+ * Pedestal at NW. Merchant on the east (back) column, second row down.
+ * Stairway on the bottom row spanning columns 4–5.
+ */
 function featuresEast(x0: number, y0: number): StairFeaturePositions {
   return {
     pedestal: { x: x0, y: y0 },
-    merchant: { x: x0 + 1, y: y0 },
+    merchant: { x: x0 + STAIR_W - 1, y: y0 + 1 },
     exitDoorCells: [
-      { x: x0 + STAIR - 1, y: y0 },
-      { x: x0 + STAIR - 1, y: y0 + 1 },
-      { x: x0 + STAIR - 1, y: y0 + 2 },
-      { x: x0 + STAIR - 1, y: y0 + 3 },
+      { x: x0 + 3, y: y0 + STAIR_H - 1 },
+      { x: x0 + 4, y: y0 + STAIR_H - 1 },
     ],
-    cornerTile: { x: x0 + STAIR - 1, y: y0 + STAIR - 1 },
+    cornerTile: { x: x0 + STAIR_W - 1, y: y0 + STAIR_H - 1 },
   };
 }
 
 /**
- * Places a 4×4 stair room flush to the east of the gauntlet (top-aligned). Expands the grid with
+ * Places a 5×4 stair room flush to the east of the gauntlet (top-aligned). Expands the grid with
  * walls if needed. Neighboring non-gauntlet rooms are walled off where they touch the stair.
  */
 export function attachStairRoom(s: GameState): GameState {
@@ -141,8 +145,8 @@ export function attachStairRoom(s: GameState): GameState {
 
   const y0 = b.minY;
   const x0 = b.maxX + 1;
-  const padR = Math.max(0, x0 + STAIR - pack.width);
-  const padB = Math.max(0, y0 + STAIR - pack.height);
+  const padR = Math.max(0, x0 + STAIR_W - pack.width);
+  const padB = Math.max(0, y0 + STAIR_H - pack.height);
   pack = padRightBottom(pack, padR, padB);
 
   const stairRid = s.roomKinds.length;
