@@ -45,6 +45,8 @@ const hudEquipped = document.querySelector<HTMLSpanElement>("#hud-equipped")!;
 const dungeonDeckVisual = document.querySelector<HTMLDivElement>("#dungeon-deck-visual")!;
 const dungeonDiscardVisual = document.querySelector<HTMLDivElement>("#dungeon-discard-visual")!;
 const handEl = document.querySelector<HTMLDivElement>("#hand-cards")!;
+const handZoneEl = document.querySelector<HTMLDivElement>(".dock-hand")!;
+const actionBarEl = document.querySelector<HTMLDivElement>("#hand-action-bar")!;
 const logEl = document.querySelector<HTMLDivElement>("#game-log")!;
 const hintEl = document.querySelector<HTMLParagraphElement>("#hint")!;
 const btnEnd = document.querySelector<HTMLButtonElement>("#btn-end-turn")!;
@@ -145,6 +147,10 @@ let mapCameraInitialized = false;
 let lastSyncedFloorId: string | null = null;
 /** Hand index chosen to discard when escaping water (then click land). */
 let waterEscapeHandIndex: number | null = null;
+/** Currently selected hand card for the shared action bar. */
+let selectedHandIndex: number | null = null;
+/** Whether the discard bonus sub-menu is open in the action bar. */
+let discardMenuOpen = false;
 /** Editor: monster instance whose ATBMB brain is open. */
 let brainInspectMonsterId: string | null = null;
 /** True while move/attack presentation is playing — blocks further commands. */
@@ -751,6 +757,7 @@ function openCommandWindow(): void {
 function closeCommandWindow(): void {
   commandWindow.classList.remove("is-open");
   commandWindow.setAttribute("aria-hidden", "true");
+  commandInput.blur();
 }
 
 function runCommandLine(raw: string): string {
@@ -1919,6 +1926,194 @@ function renderInventoryGrid(): void {
   }
 }
 
+function focusHandZone(): void {
+  if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") return;
+  handZoneEl.focus({ preventScroll: true });
+}
+
+function scrollHandCardIntoView(index: number): void {
+  const cards = handEl.querySelectorAll<HTMLElement>(".playing-card");
+  cards[index]?.scrollIntoView({ block: "nearest", inline: "nearest", behavior: "smooth" });
+}
+
+function selectHandCard(index: number | null): void {
+  selectedHandIndex = index;
+  discardMenuOpen = false;
+  renderAll();
+  if (index !== null) {
+    focusHandZone();
+    scrollHandCardIntoView(index);
+  }
+}
+
+function handIndexFromDigitKey(e: KeyboardEvent): number | null {
+  if (e.key >= "1" && e.key <= "9") return parseInt(e.key, 10) - 1;
+  const digit = e.code.match(/^(?:Digit|Numpad)([1-9])$/);
+  return digit ? parseInt(digit[1], 10) - 1 : null;
+}
+
+function gameplayKeyboardBlocked(): boolean {
+  const active = document.activeElement;
+  if (
+    active instanceof HTMLInputElement ||
+    active instanceof HTMLTextAreaElement ||
+    active instanceof HTMLSelectElement
+  ) {
+    return true;
+  }
+  if (active instanceof HTMLElement && active.isContentEditable) return true;
+  if (commandWindow.classList.contains("is-open")) return true;
+  if (skillTreeModal.classList.contains("is-open")) return true;
+  if (pileInspector.classList.contains("is-open")) return true;
+  if (chestOfferEl.classList.contains("is-open")) return true;
+  if (pedestalOfferEl.classList.contains("is-open")) return true;
+  if (deckDestroyOfferEl.classList.contains("is-open")) return true;
+  if (flameDestroyOfferEl.classList.contains("is-open")) return true;
+  if (bindTomeOfferEl.classList.contains("is-open")) return true;
+  if (deckBuilderOfferEl.classList.contains("is-open")) return true;
+  if (cardPickupOfferEl.classList.contains("is-open")) return true;
+  if (shiftyShopEl.classList.contains("is-open")) return true;
+  if (shiftyDialogueEl.classList.contains("is-open")) return true;
+  return false;
+}
+
+function renderActionBar(): void {
+  actionBarEl.replaceChildren();
+
+  const handLen = state.player.hand.length;
+  const hasSelection =
+    selectedHandIndex !== null && selectedHandIndex >= 0 && selectedHandIndex < handLen;
+  if (!hasSelection) discardMenuOpen = false;
+  actionBarEl.classList.toggle("hand-action-bar--empty", !hasSelection);
+
+  const enterBlocked = state.pending?.kind === "enter_blocked_tile";
+  const waterEscape = state.pending?.kind === "water_escape";
+  const resume = state.pending?.kind === "enter_blocked_tile" ? state.pending.resume : null;
+  const forbidIdx =
+    resume?.kind === "play_move" || resume?.kind === "play_card_seeker"
+      ? resume.cardHandIndex
+      : -1;
+  const actionsDisabled =
+    !hasSelection ||
+    state.phase !== "player" ||
+    (!!state.pending && !enterBlocked && !waterEscape) ||
+    choiceModalBlocksPlay(state);
+
+  const idx = hasSelection ? selectedHandIndex! : -1;
+  const cardId = hasSelection ? state.player.hand[idx] : null;
+  const def = cardId ? state.cardDefs.get(cardId) : undefined;
+  const isBonus = def?.effect.type === "bonus_chit";
+  const isPenalty = def?.effect.type === "penalty_destroy";
+  const dualHandChoice = state.dualWieldStage?.step === "choose_hand_attack";
+
+  const info = document.createElement("div");
+  info.className = "hand-action-info";
+  const nameEl = document.createElement("span");
+  nameEl.className = "hand-action-name" + (hasSelection ? "" : " hand-action-name--placeholder");
+  nameEl.textContent = hasSelection ? (def?.name ?? cardId!) : "Select a card";
+  info.appendChild(nameEl);
+
+  if (def) {
+    const types = document.createElement("span");
+    types.className = "hand-action-types";
+    for (const t of def.types) {
+      const pill = document.createElement("span");
+      pill.className = "card-type-pill";
+      pill.textContent = t;
+      types.appendChild(pill);
+    }
+    info.appendChild(types);
+  }
+
+  const buttons = document.createElement("div");
+  buttons.className = "hand-action-buttons";
+
+  const mkBtn = (label: string, cls: string, onClick: () => void, extraDisabled?: boolean) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "hand-action-btn" + (cls ? " " + cls : "");
+    b.textContent = label;
+    b.disabled = actionsDisabled || !!extraDisabled;
+    b.addEventListener("click", onClick);
+    return b;
+  };
+
+  if (waterEscape && hasSelection) {
+    buttons.appendChild(
+      mkBtn(
+        waterEscapeHandIndex === idx ? "Selected ✓" : "Discard to escape",
+        waterEscapeHandIndex === idx ? "primary" : "",
+        () => { waterEscapeHandIndex = idx; renderAll(); },
+      ),
+    );
+  } else {
+    buttons.appendChild(
+      mkBtn(
+        enterBlocked ? "Pay rubble cost" : "Play",
+        "primary",
+        () => {
+          if (!hasSelection) return;
+          if (enterBlocked) apply({ type: "CONFIRM_ENTER_BLOCKED", handIndex: idx });
+          else apply({ type: "REQUEST_PLAY_CARD", handIndex: idx });
+        },
+        isBonus ||
+          waterEscape ||
+          (enterBlocked && idx === forbidIdx) ||
+          (dualHandChoice && !def?.types.includes("Attack")),
+      ),
+    );
+
+    buttons.appendChild(
+      mkBtn(
+        "Equip",
+        "",
+        () => {
+          if (!hasSelection) return;
+          apply({ type: "REQUEST_EQUIP", handIndex: idx });
+        },
+        !!state.player.equipped || isBonus || isPenalty || enterBlocked || dualHandChoice,
+      ),
+    );
+
+    const discardWrap = document.createElement("div");
+    discardWrap.className = "hand-discard-wrap";
+    const discardBtn = mkBtn(
+      "Discard ▾",
+      "",
+      () => {
+        if (!hasSelection) return;
+        discardMenuOpen = !discardMenuOpen;
+        renderActionBar();
+      },
+      isPenalty || dualHandChoice,
+    );
+    discardWrap.appendChild(discardBtn);
+
+    if (discardMenuOpen && hasSelection) {
+      const menu = document.createElement("div");
+      menu.className = "hand-discard-menu";
+      menu.appendChild(mkBtn("Move +1", "", () => {
+        discardMenuOpen = false;
+        apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "move1" });
+      }, isPenalty || dualHandChoice));
+      menu.appendChild(mkBtn("Punch", "", () => {
+        discardMenuOpen = false;
+        apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "punch" });
+      }, isPenalty || dualHandChoice));
+      menu.appendChild(mkBtn("Scout", "", () => {
+        discardMenuOpen = false;
+        apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "investigate" });
+      }, isPenalty || dualHandChoice));
+      discardWrap.appendChild(menu);
+    }
+
+    buttons.appendChild(discardWrap);
+  }
+
+  actionBarEl.appendChild(info);
+  actionBarEl.appendChild(buttons);
+}
+
 function renderLog(): void {
   logEl.replaceChildren();
   const lines = state.log.slice(-12);
@@ -2149,105 +2344,24 @@ function renderAll(): void {
     body.textContent = def?.description ?? "";
     const typeRow = createCardTypesElement(def);
 
-    const actions = document.createElement("div");
-    actions.className = "card-actions";
+    const isSelected = selectedHandIndex === idx;
+    if (isSelected) card.classList.add("playing-card--selected");
+    else if (selectedHandIndex !== null) card.classList.add("playing-card--dimmed");
 
-    const enterBlocked = state.pending?.kind === "enter_blocked_tile";
-    const waterEscape = state.pending?.kind === "water_escape";
-    const resume =
-      state.pending?.kind === "enter_blocked_tile" ? state.pending.resume : null;
-    const forbidIdx =
-      resume?.kind === "play_move" || resume?.kind === "play_card_seeker"
-        ? resume.cardHandIndex
-        : -1;
-    const disabled =
-      state.phase !== "player" ||
-      (!!state.pending && !enterBlocked && !waterEscape) ||
-      choiceModalBlocksPlay(state);
-    const isBonus = def?.effect.type === "bonus_chit";
-    const isPenalty = def?.effect.type === "penalty_destroy";
-    const dualHandChoice = state.dualWieldStage?.step === "choose_hand_attack";
-
-    const mkBtn = (label: string, cls: string, onClick: () => void, extraDisabled?: boolean) => {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = cls;
-      b.textContent = label;
-      b.disabled = disabled || !!extraDisabled;
-      b.addEventListener("click", onClick);
-      return b;
-    };
-
-    actions.appendChild(
-      mkBtn(
-        enterBlocked ? "Pay rubble cost" : "Play",
-        "primary",
-        () =>
-          enterBlocked
-            ? apply({ type: "CONFIRM_ENTER_BLOCKED", handIndex: idx })
-            : apply({ type: "REQUEST_PLAY_CARD", handIndex: idx }),
-        isBonus ||
-          waterEscape ||
-          (enterBlocked && idx === forbidIdx) ||
-          (dualHandChoice && !def?.types.includes("Attack")),
-      ),
-    );
-
-    const discardRow = document.createElement("div");
-    discardRow.className = "discard-row";
-    if (waterEscape) {
-      discardRow.appendChild(
-        mkBtn(
-          waterEscapeHandIndex === idx ? "Selected ✓" : "Discard to escape",
-          waterEscapeHandIndex === idx ? "primary" : "",
-          () => {
-            waterEscapeHandIndex = idx;
-            renderAll();
-          },
-        ),
-      );
-    } else if (!enterBlocked) {
-      discardRow.appendChild(
-        mkBtn(
-          "Move +1",
-          "",
-          () => apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "move1" }),
-          isPenalty || dualHandChoice,
-        ),
-      );
-      discardRow.appendChild(
-        mkBtn(
-          "Punch",
-          "",
-          () => apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "punch" }),
-          isPenalty || dualHandChoice,
-        ),
-      );
-      discardRow.appendChild(
-        mkBtn(
-          "Scout",
-          "",
-          () => apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "investigate" }),
-          isPenalty || dualHandChoice,
-        ),
-      );
-    }
-
-    actions.appendChild(discardRow);
-    actions.appendChild(
-      mkBtn(
-        "Equip",
-        "",
-        () => apply({ type: "REQUEST_EQUIP", handIndex: idx }),
-        !!state.player.equipped || isBonus || isPenalty || enterBlocked || waterEscape || dualHandChoice,
-      ),
-    );
+    const hotkey = document.createElement("span");
+    hotkey.className = "playing-card-hotkey";
+    hotkey.textContent = String(idx + 1);
 
     card.appendChild(rail);
+    card.appendChild(hotkey);
     card.appendChild(header);
     card.appendChild(body);
     if (typeRow) card.appendChild(typeRow);
-    card.appendChild(actions);
+
+    card.addEventListener("click", () => {
+      selectHandCard(selectedHandIndex === idx ? null : idx);
+    });
+
     handEl.appendChild(card);
   });
 
@@ -2257,6 +2371,12 @@ function renderAll(): void {
     ban.textContent = `Equipped: ${state.cardDefs.get(state.player.equipped)?.name ?? state.player.equipped}`;
     handEl.appendChild(ban);
   }
+
+  if (selectedHandIndex !== null && selectedHandIndex >= state.player.hand.length) {
+    selectedHandIndex = state.player.hand.length > 0 ? state.player.hand.length - 1 : null;
+    discardMenuOpen = false;
+  }
+  renderActionBar();
 
   renderLog();
   syncChestOfferModal();
@@ -2403,6 +2523,8 @@ skillTreeScroll.addEventListener(
   { passive: false },
 );
 
+handZoneEl.addEventListener("pointerdown", () => focusHandZone());
+
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && commandWindow.classList.contains("is-open")) {
     closeCommandWindow();
@@ -2450,7 +2572,97 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.key === "Escape" && pileInspector.classList.contains("is-open")) closePileInspector();
   if (e.key === "Escape" && skillTreeModal.classList.contains("is-open")) closeSkillTreeModal();
+
+  if (e.key === "Escape" && selectedHandIndex !== null) {
+    selectHandCard(null);
+    return;
+  }
 });
+
+window.addEventListener(
+  "keydown",
+  (e) => {
+    if (gameplayKeyboardBlocked()) return;
+
+    const handLen = state.player.hand.length;
+    const digitIndex = handIndexFromDigitKey(e);
+
+    if (digitIndex !== null) {
+      if (digitIndex < handLen) {
+        e.preventDefault();
+        selectHandCard(selectedHandIndex === digitIndex ? null : digitIndex);
+      }
+      return;
+    }
+
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+      if (handLen === 0) return;
+      e.preventDefault();
+      if (selectedHandIndex === null) {
+        selectHandCard(0);
+      } else {
+        const delta = e.key === "ArrowRight" ? 1 : -1;
+        selectHandCard((selectedHandIndex + delta + handLen) % handLen);
+      }
+      return;
+    }
+
+    if ((e.key === "Enter" || e.key === " ") && selectedHandIndex !== null) {
+      e.preventDefault();
+      const idx = selectedHandIndex;
+      if (state.pending?.kind === "enter_blocked_tile") {
+        apply({ type: "CONFIRM_ENTER_BLOCKED", handIndex: idx });
+      } else if (state.pending?.kind === "water_escape") {
+        waterEscapeHandIndex = idx;
+        renderAll();
+      } else {
+        apply({ type: "REQUEST_PLAY_CARD", handIndex: idx });
+      }
+      return;
+    }
+
+    if (e.key === "e" && selectedHandIndex !== null) {
+      e.preventDefault();
+      apply({ type: "REQUEST_EQUIP", handIndex: selectedHandIndex });
+      return;
+    }
+
+    if (e.key === "d" && selectedHandIndex !== null) {
+      e.preventDefault();
+      discardMenuOpen = !discardMenuOpen;
+      renderActionBar();
+      return;
+    }
+
+    if (discardMenuOpen && selectedHandIndex !== null) {
+      const bonusMap: Record<string, "move1" | "punch" | "investigate"> = {
+        m: "move1",
+        p: "punch",
+        s: "investigate",
+      };
+      if (bonusMap[e.key]) {
+        e.preventDefault();
+        discardMenuOpen = false;
+        apply({ type: "REQUEST_DISCARD_BONUS", handIndex: selectedHandIndex, bonus: bonusMap[e.key] });
+      }
+      return;
+    }
+
+    if (e.key === "t" && selectedHandIndex === null) {
+      e.preventDefault();
+      if (!btnEnd.disabled) apply({ type: "END_TURN" });
+      return;
+    }
+
+    if (e.key === "c") {
+      e.preventDefault();
+      waterEscapeHandIndex = null;
+      if (state.pending?.kind === "water_escape") apply({ type: "CANCEL_WATER_ESCAPE" });
+      else apply({ type: "CANCEL_PENDING" });
+    }
+  },
+  true,
+);
 
 const app = new Application();
 
@@ -2496,6 +2708,7 @@ async function bootstrap(): Promise<void> {
   app.stage.addChild(grid);
 
   apply({ type: "BEGIN_FIRST_TURN" });
+  focusHandZone();
 }
 
 bootstrap().catch((e) => {

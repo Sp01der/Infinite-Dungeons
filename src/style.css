@@ -685,6 +685,10 @@ button.pile-inspect:focus-visible {
   min-height: 0;
 }
 
+.dock-hand:focus {
+  outline: none;
+}
+
 .hand-cards--dock {
   flex: 1;
   min-height: 0;
@@ -864,54 +868,163 @@ button.pile-inspect:focus-visible {
   text-transform: uppercase;
 }
 
-.card-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.2rem;
-  padding: 0.35rem 0.4rem 0.4rem;
-  background: rgba(0, 0, 0, 0.22);
-  border-top: 1px solid #2e3240;
+/* --- Selected card + action bar --- */
+.playing-card {
+  position: relative;
+  cursor: pointer;
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
 }
 
-.card-actions button {
-  flex: 1 1 auto;
-  min-width: 2.6rem;
-  padding: 0.22rem 0.28rem;
-  font-size: 0.6rem;
+.playing-card:hover:not(.playing-card--selected) {
+  transform: translateY(-2px);
+  box-shadow: 0 5px 14px rgba(0, 0, 0, 0.4);
+}
+
+.playing-card--selected {
+  transform: translateY(-4px);
+  box-shadow: 0 0 0 2px #c9a227, 0 6px 16px rgba(201, 162, 39, 0.25);
+}
+
+.playing-card--dimmed {
+  opacity: 0.72;
+}
+
+.playing-card-hotkey {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.3rem;
+  font-size: 0.55rem;
+  font-weight: 800;
+  color: #9aa3b2;
+  background: rgba(0, 0, 0, 0.45);
+  border-radius: 3px;
+  padding: 0.05rem 0.22rem;
+  line-height: 1.3;
+}
+
+.playing-card--selected .playing-card-hotkey {
+  color: #f0e6c0;
+  background: rgba(201, 162, 39, 0.35);
+}
+
+.hand-action-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.5rem;
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid #2e3240;
+  border-radius: 6px;
+  margin-top: 0.35rem;
+  min-height: 2rem;
+}
+
+.hand-action-name--placeholder {
+  font-weight: 500;
+  color: #6b7280;
+  font-style: italic;
+}
+
+.hand-action-bar--empty {
+  opacity: 0.85;
+}
+
+.hand-action-info {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.hand-action-name {
+  margin: 0;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #f2f0eb;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.hand-action-types {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.15rem;
+}
+
+.hand-action-buttons {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 0.3rem;
+}
+
+.hand-action-btn {
+  padding: 0.3rem 0.55rem;
+  font-size: 0.68rem;
   border-radius: 4px;
   border: 1px solid #3d4354;
   background: #2a2d3a;
   color: #e8eaef;
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.card-actions button:hover:not(:disabled) {
+.hand-action-btn:hover:not(:disabled) {
   background: #363a4a;
   border-color: #5c6378;
 }
 
-.card-actions button:disabled {
+.hand-action-btn:disabled {
   opacity: 0.4;
   cursor: not-allowed;
 }
 
-.card-actions button.primary {
+.hand-action-btn.primary {
   background: #2d4a35;
   border-color: #4a7c59;
   color: #d8f0dc;
 }
 
-.discard-row {
-  width: 100%;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.2rem;
-  margin-top: 0.1rem;
+.hand-discard-wrap {
+  position: relative;
 }
 
-.discard-row button {
-  flex: 1 1 30%;
-  font-size: 0.58rem;
+.hand-discard-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 0.25rem);
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  min-width: 7.5rem;
+  padding: 0.3rem;
+  background: #1a1d28;
+  border: 1px solid #3d4354;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.45);
+}
+
+.hand-discard-menu button {
+  padding: 0.28rem 0.45rem;
+  font-size: 0.65rem;
+  border-radius: 4px;
+  border: 1px solid #3d4354;
+  background: #2a2d3a;
+  color: #e8eaef;
+  cursor: pointer;
+  text-align: left;
+}
+
+.hand-discard-menu button:hover:not(:disabled) {
+  background: #363a4a;
+}
+
+.hand-discard-menu button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .equipped-banner {

@@ -85,9 +85,10 @@
             </div>
           </div>
 
-          <div class="dock-zone dock-hand">
+          <div class="dock-zone dock-hand" tabindex="0" aria-label="Hand cards">
             <div class="dock-label dock-label--cards">Cards</div>
             <div id="hand-cards" class="hand-cards hand-cards--dock"></div>
+            <div id="hand-action-bar" class="hand-action-bar" aria-label="Card actions"></div>
           </div>
 
           <div class="dock-zone dock-meta">
@@ -140,7 +141,7 @@
               class="btn-end-corner"
               disabled
               aria-label="End turn"
-              title="End turn"
+              title="End turn (T)"
             >
               ▶ End turn
             </button>
