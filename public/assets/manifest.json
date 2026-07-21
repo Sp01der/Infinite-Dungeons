@@ -18,6 +18,7 @@
     "enemy_skeleton_axe": { "texture": "/assets/enemy_skeleton_axe.png", "fallbackColor": "#e8ecf0" },
     "enemy_skeleton_spear": { "texture": "/assets/enemy_skeleton_spear.png", "fallbackColor": "#e8ecf0" },
     "enemy_skeleton_scimitar": { "texture": "/assets/enemy_skeleton_scimitar.png", "fallbackColor": "#e8ecf0" },
+    "enemy_elite_skeleton": { "texture": "/assets/enemy_elite_skeleton.png", "fallbackColor": "#d8dce4" },
     "enemy_skeleton_archer": { "texture": "/assets/enemy_skeleton_archer.png", "fallbackColor": "#b8c4d0" },
     "enemy_skeleton_archer_aiming": { "texture": "/assets/enemy_skeleton_archer_aiming.png", "fallbackColor": "#b8c4d0" },
     "enemy_bat": { "fallbackColor": "#8e6bb8" },

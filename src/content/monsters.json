@@ -610,12 +610,77 @@
   {
     "id": "elite_skeleton",
     "name": "Elite Skeleton",
-    "spriteId": "enemy_skeleton",
+    "spriteId": "enemy_elite_skeleton",
     "hp": 8,
     "defense": 0,
     "damage": 4,
     "power": 8,
-    "description": "A seasoned warrior that spawns above the current threat level. Picks its best weapon and retreats when wounded."
+    "description": "A seasoned warrior that spawns above the current threat level. Simulates weapon reach, strikes, then retreats.",
+    "ai": {
+      "initialState": "attack",
+      "turnStartState": "attack",
+      "moveStyle": "ortho",
+      "abilities": [
+        {
+          "id": "step",
+          "kind": "move",
+          "uses": 3,
+          "params": { "steps": 1 }
+        },
+        {
+          "id": "engage",
+          "kind": "custom",
+          "params": {
+            "customId": "elite_skeleton_attack",
+            "nextState": "retreat",
+            "continueInNewState": true
+          }
+        }
+      ],
+      "states": [
+        {
+          "id": "attack",
+          "tilePrefs": {
+            "bad": [
+              { "kind": "slime_leap_path" },
+              { "kind": "pending_collapse" },
+              { "kind": "pending_targeted_collapse" },
+              { "kind": "flooding_room" }
+            ]
+          },
+          "decide": [
+            {
+              "id": "simulate_and_strike",
+              "actions": [{ "ability": "engage" }]
+            }
+          ]
+        },
+        {
+          "id": "retreat",
+          "tilePrefs": {
+            "bad": [
+              { "kind": "slime_leap_path" },
+              { "kind": "pending_collapse" },
+              { "kind": "pending_targeted_collapse" },
+              { "kind": "flooding_room" },
+              { "kind": "distance_to_player", "metric": "manhattan", "min": 0, "max": 3 }
+            ]
+          },
+          "decide": [
+            {
+              "id": "back_off",
+              "when": { "onBadTile": true },
+              "actions": [
+                { "ability": "step", "seek": "away_from_bad" },
+                { "ability": "step", "seek": "away_from_bad" },
+                { "ability": "step", "seek": "away_from_bad" }
+              ]
+            }
+          ],
+          "nextState": "attack"
+        }
+      ]
+    }
   },
   {
     "id": "vineshon",

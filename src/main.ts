@@ -12,8 +12,9 @@ import {
   type SkillDef,
 } from "./game/skillDefs";
 import { CARD_TYPE_ORDER, type AtbmbTilePref, type AtbmbWhen, type CardDef, type FloorTheme, type GameCommand, type GameState, type ShiftyGemId, type TurnAnimEvent } from "./game/types";
-import { hasAtbmb, inAttackRange, isOnBadTile, isOnFavoredTile, planAtbmbPath, resolveTilePrefs, stablePathRng, whenMatches } from "./game/atbmb";
+import { hasAtbmb, inAttackRange, isOnBadTile, isOnFavoredTile, planAtbmbPath, resolveTilePrefs, stablePathRng, whenMatches, evaluateEliteSkeletonOptions } from "./game/atbmb";
 import { monsterTilePassable, movementOcc } from "./game/monsterAi";
+import { manhattan } from "./engine/movement";
 import type { AtbmbMoveSeek } from "./game/types";
 import { lightningBoltSkillDamageBonus } from "./game/skillsRuntime";
 import { merchantDialogueOpen, merchantDisplayName, merchantShopOpen, merchantUiBlocks } from "./game/merchantRuntime";
@@ -1188,8 +1189,62 @@ function renderMonsterBrain(): void {
       leap.textContent = `Leap telegraph: ${facing}`;
       stateSec.appendChild(leap);
     }
+    if (mon.defId === "elite_skeleton" && mon.eliteTeleported) {
+      const concerned = document.createElement("div");
+      concerned.className = "monster-brain-muted";
+      concerned.textContent = "Concerned (teleported): spear option has no +2 penalty.";
+      stateSec.appendChild(concerned);
+    }
   }
   monsterBrainBody.appendChild(stateSec);
+
+  if (mon.defId === "elite_skeleton" && stateId === "attack") {
+    const simSec = document.createElement("div");
+    simSec.className = "monster-brain-section";
+    const simH = document.createElement("h3");
+    simH.textContent = "Attack simulation";
+    simSec.appendChild(simH);
+
+    const orthoAdjacent =
+      manhattan({ x: mon.x, y: mon.y }, { x: state.player.x, y: state.player.y }) === 1;
+    if (orthoAdjacent) {
+      const p = document.createElement("p");
+      p.textContent = "Orthogonally adjacent — axe attack, then Retreat.";
+      simSec.appendChild(p);
+    } else {
+      const evals = evaluateEliteSkeletonOptions(state, mon, {
+        tilePassable: monsterTilePassable,
+        occupancy: movementOcc,
+      });
+      const table = document.createElement("table");
+      table.className = "monster-brain-table";
+      const thead = document.createElement("thead");
+      thead.innerHTML =
+        "<tr><th>Option</th><th>Weapon</th><th>Steps</th><th>Penalty</th><th>Weight</th><th>Goals</th></tr>";
+      table.appendChild(thead);
+      const tbody = document.createElement("tbody");
+      for (const ev of evals) {
+        const tr = document.createElement("tr");
+        if (ev.chosen) tr.className = "monster-brain-chosen";
+        const goalText =
+          ev.goals.length === 0
+            ? "—"
+            : ev.plan?.goal
+              ? `(${ev.plan.goal.x}, ${ev.plan.goal.y}) +${ev.goals.length - 1} more`
+              : `${ev.goals.length} tile(s)`;
+        tr.innerHTML = `<td>${ev.id}${ev.chosen ? " ✓" : ""}</td><td>${ev.weapon}</td><td>${ev.pathSteps === Infinity ? "∞" : ev.pathSteps}</td><td>+${ev.penalty}</td><td>${ev.weighted === Infinity ? "∞" : ev.weighted}</td><td>${goalText}</td>`;
+        tbody.appendChild(tr);
+      }
+      table.appendChild(tbody);
+      simSec.appendChild(table);
+      const legend = document.createElement("p");
+      legend.className = "monster-brain-muted";
+      legend.textContent =
+        "Tie-break: scimitar → sword → spear. Green / yellow / blue on grid = option goal tiles.";
+      simSec.appendChild(legend);
+    }
+    monsterBrainBody.appendChild(simSec);
+  }
 
   if (prefs) {
     monsterBrainBody.appendChild(formatPrefList("Favored tiles", prefs.favored));

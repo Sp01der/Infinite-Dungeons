@@ -19,6 +19,7 @@ import { inAttackRange } from "./conditions";
 import { skeletonWeaponCanHit, skeletonWeaponRollDamage } from "./skeletonWeapon";
 import { pickPathStep } from "./planPath";
 import { resolveTilePrefs } from "./tilePrefs";
+import { runEliteSkeletonAttacking } from "./eliteSkeleton";
 
 /** Host adapters supplied by monsterAi so ATBMB stays free of phase/anim coupling. */
 export type AtbmbHost = {
@@ -404,6 +405,9 @@ export function tryExecuteAction(
   }
 
   if (def.kind === "custom") {
+    if (def.params?.customId === "elite_skeleton_attack") {
+      return runEliteSkeletonAttacking(s, m, ai, def, host, budget, turnCtx);
+    }
     return { state: s, mon: m, dead: false, used: false };
   }
 

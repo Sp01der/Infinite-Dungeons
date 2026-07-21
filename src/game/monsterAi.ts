@@ -2032,6 +2032,16 @@ export function runMonsterPhaseWithHooks(
     }
 
     if (curMon.defId === "elite_skeleton") {
+      const ai = s.monsterDefs.get(curMon.defId)?.ai;
+      if (hasAtbmb(ai)) {
+        const r = runAtbmbTurn(s, curMon, makeAtbmbHost(hooks, hits));
+        if (r) {
+          s = r.state;
+          if (r.dead) return finish({ ...s, phase: "defeat" });
+          s = tickMonsterFireAfterTurn(s, monId, hits);
+          continue;
+        }
+      }
       const r = takeEliteSkeletonTurn(s, curMon, hooks, hits);
       s = r.state;
       if (r.dead) return finish({ ...s, phase: "defeat" });

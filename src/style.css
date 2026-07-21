@@ -1165,6 +1165,28 @@ button.pile-inspect:focus-visible {
   color: #8a93a8;
 }
 
+.monster-brain-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.72rem;
+}
+
+.monster-brain-table th,
+.monster-brain-table td {
+  padding: 0.2rem 0.35rem;
+  text-align: left;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.monster-brain-table th {
+  color: #8a93a8;
+  font-weight: 600;
+}
+
+.monster-brain-chosen {
+  background: rgba(46, 204, 113, 0.12);
+}
+
 .monster-brain-rule {
   margin-top: 0.35rem;
   padding-top: 0.35rem;

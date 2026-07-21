@@ -20,7 +20,7 @@ import type {
   PendingIntent,
   RoomKind,
 } from "../game/types";
-import { tileMatchesAnyPref, resolveTilePrefs, planAtbmbPath, stablePathRng, whenMatches } from "../game/atbmb";
+import { tileMatchesAnyPref, resolveTilePrefs, planAtbmbPath, stablePathRng, whenMatches, evaluateEliteSkeletonOptions, eliteSkeletonAttackPrefs } from "../game/atbmb";
 import { monsterTilePassable, movementOcc } from "../game/monsterAi";
 import type { AtbmbMoveSeek } from "../game/types";
 import type { SpriteStyle } from "./assets";
@@ -950,7 +950,10 @@ export class GridView extends Container {
             ? "enemy_skeleton_archer_aiming"
             : def?.spriteId ?? "enemy_slime";
       const root = this.ensureEntityRoot(m.id, m.x, m.y);
-      const spr = this.makePlacedSprite(mimicChest ? "chest" : spriteId, 0, 0);
+      const useTall = m.defId === "elite_skeleton" || def?.spriteId === "enemy_elite_skeleton";
+      const spr = useTall
+        ? this.makeTallPlacedSprite(mimicChest ? "chest" : spriteId, 0, 0)
+        : this.makePlacedSprite(mimicChest ? "chest" : spriteId, 0, 0);
       if (m.defId === "douvlon") {
         const tint = m.douvlonColor === "blue" ? 0x5dade2 : 0xe74c3c;
         spr.tint = tint;
@@ -1181,6 +1184,12 @@ export class GridView extends Container {
     const ai = state.monsterDefs.get(mon.defId)?.ai;
     if (!ai) return;
     const stateId = mon.aiStateId ?? ai.initialState;
+
+    if (mon.defId === "elite_skeleton" && stateId === "attack") {
+      this.drawEliteSkeletonAttackBrain(state, mon);
+      return;
+    }
+
     const stateDef = ai.states.find((st) => st.id === stateId) ?? ai.states[0];
     const prefs = stateDef ? resolveTilePrefs(stateDef, mon) : undefined;
     if (!prefs) return;
@@ -1243,6 +1252,75 @@ export class GridView extends Container {
         .fill({ color: isGoal ? 0x3498db : 0x5dade2, alpha: isGoal ? 0.55 : 0.42 });
     }
     this.brainHighlightLayer.setStrokeStyle({ width: 3, color: 0x1a5276, alpha: 0.95 });
+    for (let i = 0; i < plan.path.length - 1; i++) {
+      const a = plan.path[i]!;
+      const b = plan.path[i + 1]!;
+      this.brainHighlightLayer
+        .moveTo(a.x * TILE + TILE / 2, a.y * TILE + TILE / 2)
+        .lineTo(b.x * TILE + TILE / 2, b.y * TILE + TILE / 2)
+        .stroke();
+    }
+  }
+
+  /** Elite Skeleton Attacking: show simulation option tiles, weights, and chosen path. */
+  private drawEliteSkeletonAttackBrain(state: GameState, mon: GameState["monsters"][0]): void {
+    const prefs = eliteSkeletonAttackPrefs();
+    const player = { x: state.player.x, y: state.player.y };
+    const orthoAdjacent = manhattan({ x: mon.x, y: mon.y }, player) === 1;
+
+    for (let y = 0; y < state.height; y++) {
+      for (let x = 0; x < state.width; x++) {
+        const tile = { x, y };
+        if (state.fogOfWar && !state.discovered.has(keyOf(tile))) continue;
+        if (tileMatchesAnyPref(state, mon, tile, prefs.bad)) {
+          this.brainHighlightLayer
+            .rect(x * TILE, y * TILE, TILE, TILE)
+            .fill({ color: 0xe74c3c, alpha: 0.38 });
+        }
+      }
+    }
+
+    if (orthoAdjacent) {
+      this.brainHighlightLayer
+        .rect(mon.x * TILE, mon.y * TILE, TILE, TILE)
+        .fill({ color: 0xe67e22, alpha: 0.55 });
+      return;
+    }
+
+    const optionColors: Record<string, number> = {
+      scimitar: 0x2ecc71,
+      sword: 0xf1c40f,
+      spear: 0x3498db,
+    };
+
+    const evals = evaluateEliteSkeletonOptions(state, mon, {
+      tilePassable: monsterTilePassable,
+      occupancy: movementOcc,
+    });
+
+    for (const ev of evals) {
+      const color = optionColors[ev.id] ?? 0xffffff;
+      for (const g of ev.goals) {
+        if (state.fogOfWar && !state.discovered.has(keyOf(g))) continue;
+        this.brainHighlightLayer
+          .rect(g.x * TILE, g.y * TILE, TILE, TILE)
+          .fill({ color, alpha: ev.chosen ? 0.48 : 0.28 });
+      }
+    }
+
+    const chosen = evals.find((e) => e.chosen);
+    const plan = chosen?.plan;
+    if (!plan || plan.path.length < 2) return;
+
+    for (let i = 1; i < plan.path.length; i++) {
+      const p = plan.path[i]!;
+      if (state.fogOfWar && !state.discovered.has(keyOf(p))) continue;
+      const isGoal = i === plan.path.length - 1;
+      this.brainHighlightLayer
+        .rect(p.x * TILE, p.y * TILE, TILE, TILE)
+        .fill({ color: isGoal ? 0x1abc9c : 0x48c9b0, alpha: isGoal ? 0.55 : 0.42 });
+    }
+    this.brainHighlightLayer.setStrokeStyle({ width: 3, color: 0x117a65, alpha: 0.95 });
     for (let i = 0; i < plan.path.length - 1; i++) {
       const a = plan.path[i]!;
       const b = plan.path[i + 1]!;

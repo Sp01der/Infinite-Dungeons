@@ -26,6 +26,11 @@ export {
   type AtbmbPathContext,
 } from "./planPath";
 export type { ShortestPathResult } from "./pathfind";
+export {
+  evaluateEliteSkeletonOptions,
+  eliteSkeletonAttackPrefs,
+  type EliteSkeletonOptionEval,
+} from "./eliteSkeleton";
 
 function applyStateId(
   s: GameState,
