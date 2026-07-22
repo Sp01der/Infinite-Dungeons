@@ -32,6 +32,14 @@ body {
   gap: 1rem;
 }
 
+.top-bar-actions {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.4rem;
+}
+
 .game-title {
   margin: 0;
   font-size: 1.1rem;

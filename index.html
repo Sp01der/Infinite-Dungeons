@@ -11,12 +11,17 @@
       <header class="top-bar">
         <div class="top-bar-main">
           <h1 class="game-title">The Infinite Dungeon</h1>
-          <button type="button" id="btn-graphics-toggle" class="command-open-btn" title="Toggle pixel art / box sprites">
-            Pixel art
-          </button>
-          <button type="button" id="btn-command-window" class="command-open-btn" title="Open command window">
-            Commands
-          </button>
+          <div class="top-bar-actions">
+            <button type="button" id="btn-graphics-toggle" class="command-open-btn" title="Toggle pixel art / box sprites">
+              Pixel art
+            </button>
+            <button type="button" id="btn-controls-toggle" class="command-open-btn" title="Toggle keyboard control scheme">
+              Controls: Combat
+            </button>
+            <button type="button" id="btn-command-window" class="command-open-btn" title="Open command window">
+              Commands
+            </button>
+          </div>
         </div>
         <p class="tagline">Dungeon deck on the right · End turn is bottom-right</p>
       </header>
@@ -141,7 +146,7 @@
               class="btn-end-corner"
               disabled
               aria-label="End turn"
-              title="End turn (T)"
+              title="End turn (TT)"
             >
               ▶ End turn
             </button>

@@ -52,6 +52,7 @@ const hintEl = document.querySelector<HTMLParagraphElement>("#hint")!;
 const btnEnd = document.querySelector<HTMLButtonElement>("#btn-end-turn")!;
 const cancelBtn = document.querySelector<HTMLButtonElement>("#btn-cancel")!;
 const unequipBtn = document.querySelector<HTMLButtonElement>("#btn-unequip")!;
+const controlsToggleBtn = document.querySelector<HTMLButtonElement>("#btn-controls-toggle")!;
 const shiftyDialogueEl = document.querySelector<HTMLDivElement>("#shifty-dialogue")!;
 const shiftyDialogueBox = document.querySelector<HTMLDivElement>("#shifty-dialogue .shifty-dialogue-box")!;
 const shiftyDialogueText = document.querySelector<HTMLParagraphElement>("#shifty-dialogue-text")!;
@@ -157,6 +158,47 @@ let brainInspectMonsterId: string | null = null;
 let animating = false;
 
 const PIXEL_ART_STORAGE_KEY = "infinite-dungeon-pixel-art";
+const CONTROLS_SCHEME_STORAGE_KEY = "infinite-dungeon-controls-scheme";
+const END_TURN_DOUBLE_TAP_MS = 450;
+
+type ControlsScheme = "combat" | "classic";
+
+let controlsScheme: ControlsScheme = readStoredControlsScheme();
+/** Timestamp until which a second T press confirms end turn (combat scheme). */
+let endTurnArmedUntil = 0;
+
+function readStoredControlsScheme(): ControlsScheme {
+  try {
+    const v = localStorage.getItem(CONTROLS_SCHEME_STORAGE_KEY);
+    if (v === "classic") return "classic";
+    if (v === "combat") return "combat";
+  } catch {
+    /* ignore */
+  }
+  return "combat";
+}
+
+function syncControlsToggleButton(): void {
+  const combat = controlsScheme === "combat";
+  controlsToggleBtn.textContent = combat ? "Controls: Combat" : "Controls: Classic";
+  controlsToggleBtn.title = combat
+    ? "Combat: A/D hand · W play · Q equip · E/R/F discard · TT end turn — click for Classic"
+    : "Classic: ←/→ or 1–9 hand · Enter play · E equip · D discard · T end turn — click for Combat";
+  controlsToggleBtn.setAttribute("aria-pressed", combat ? "true" : "false");
+  btnEnd.title = combat ? "End turn (TT)" : "End turn (T)";
+}
+
+function setControlsScheme(scheme: ControlsScheme): void {
+  controlsScheme = scheme;
+  endTurnArmedUntil = 0;
+  try {
+    localStorage.setItem(CONTROLS_SCHEME_STORAGE_KEY, scheme);
+  } catch {
+    /* ignore */
+  }
+  syncControlsToggleButton();
+  renderAll();
+}
 
 function readStoredPixelArtPreference(): boolean {
   try {
@@ -1939,11 +1981,67 @@ function scrollHandCardIntoView(index: number): void {
 function selectHandCard(index: number | null): void {
   selectedHandIndex = index;
   discardMenuOpen = false;
+  endTurnArmedUntil = 0;
   renderAll();
   if (index !== null) {
     focusHandZone();
     scrollHandCardIntoView(index);
   }
+}
+
+function cycleHandSelection(delta: number): void {
+  const handLen = state.player.hand.length;
+  if (handLen === 0) return;
+  if (selectedHandIndex === null) {
+    selectHandCard(0);
+    return;
+  }
+  selectHandCard((selectedHandIndex + delta + handLen) % handLen);
+}
+
+function playSelectedCard(): void {
+  if (selectedHandIndex === null) return;
+  const idx = selectedHandIndex;
+  if (state.pending?.kind === "enter_blocked_tile") {
+    apply({ type: "CONFIRM_ENTER_BLOCKED", handIndex: idx });
+  } else if (state.pending?.kind === "water_escape") {
+    waterEscapeHandIndex = idx;
+    renderAll();
+  } else {
+    apply({ type: "REQUEST_PLAY_CARD", handIndex: idx });
+  }
+}
+
+function equipSelectedCard(): void {
+  if (selectedHandIndex === null) return;
+  apply({ type: "REQUEST_EQUIP", handIndex: selectedHandIndex });
+}
+
+function discardSelectedBonus(bonus: "move1" | "punch" | "investigate"): void {
+  if (selectedHandIndex === null) return;
+  discardMenuOpen = false;
+  apply({ type: "REQUEST_DISCARD_BONUS", handIndex: selectedHandIndex, bonus });
+}
+
+function tryEndTurn(): void {
+  if (!btnEnd.disabled) apply({ type: "END_TURN" });
+}
+
+function tryEndTurnDoubleTap(): void {
+  const now = performance.now();
+  if (now <= endTurnArmedUntil) {
+    endTurnArmedUntil = 0;
+    tryEndTurn();
+    return;
+  }
+  endTurnArmedUntil = now + END_TURN_DOUBLE_TAP_MS;
+}
+
+function cancelPendingAction(): void {
+  waterEscapeHandIndex = null;
+  endTurnArmedUntil = 0;
+  if (state.pending?.kind === "water_escape") apply({ type: "CANCEL_WATER_ESCAPE" });
+  else apply({ type: "CANCEL_PENDING" });
 }
 
 function handIndexFromDigitKey(e: KeyboardEvent): number | null {
@@ -2047,9 +2145,14 @@ function renderActionBar(): void {
       ),
     );
   } else {
+    const combat = controlsScheme === "combat";
     buttons.appendChild(
       mkBtn(
-        enterBlocked ? "Pay rubble cost" : "Play",
+        enterBlocked
+          ? "Pay rubble cost"
+          : combat
+            ? "Play (W)"
+            : "Play (⏎)",
         "primary",
         () => {
           if (!hasSelection) return;
@@ -2065,7 +2168,7 @@ function renderActionBar(): void {
 
     buttons.appendChild(
       mkBtn(
-        "Equip",
+        combat ? "Equip (Q)" : "Equip (E)",
         "",
         () => {
           if (!hasSelection) return;
@@ -2078,7 +2181,7 @@ function renderActionBar(): void {
     const discardWrap = document.createElement("div");
     discardWrap.className = "hand-discard-wrap";
     const discardBtn = mkBtn(
-      "Discard ▾",
+      combat ? "Discard ▾" : "Discard ▾ (D)",
       "",
       () => {
         if (!hasSelection) return;
@@ -2092,15 +2195,15 @@ function renderActionBar(): void {
     if (discardMenuOpen && hasSelection) {
       const menu = document.createElement("div");
       menu.className = "hand-discard-menu";
-      menu.appendChild(mkBtn("Move +1", "", () => {
+      menu.appendChild(mkBtn(combat ? "Move +1 (E)" : "Move +1 (M)", "", () => {
         discardMenuOpen = false;
         apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "move1" });
       }, isPenalty || dualHandChoice));
-      menu.appendChild(mkBtn("Punch", "", () => {
+      menu.appendChild(mkBtn(combat ? "Punch (R)" : "Punch (P)", "", () => {
         discardMenuOpen = false;
         apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "punch" });
       }, isPenalty || dualHandChoice));
-      menu.appendChild(mkBtn("Scout", "", () => {
+      menu.appendChild(mkBtn(combat ? "Scout (F)" : "Scout (S)", "", () => {
         discardMenuOpen = false;
         apply({ type: "REQUEST_DISCARD_BONUS", handIndex: idx, bonus: "investigate" });
       }, isPenalty || dualHandChoice));
@@ -2348,12 +2451,13 @@ function renderAll(): void {
     if (isSelected) card.classList.add("playing-card--selected");
     else if (selectedHandIndex !== null) card.classList.add("playing-card--dimmed");
 
-    const hotkey = document.createElement("span");
-    hotkey.className = "playing-card-hotkey";
-    hotkey.textContent = String(idx + 1);
-
     card.appendChild(rail);
-    card.appendChild(hotkey);
+    if (controlsScheme === "classic") {
+      const hotkey = document.createElement("span");
+      hotkey.className = "playing-card-hotkey";
+      hotkey.textContent = String(idx + 1);
+      card.appendChild(hotkey);
+    }
     card.appendChild(header);
     card.appendChild(body);
     if (typeRow) card.appendChild(typeRow);
@@ -2503,6 +2607,9 @@ graphicsToggleBtn.addEventListener("click", () => {
   const next = !(grid?.getPixelArtEnabled() ?? true);
   setPixelArtEnabled(next);
 });
+controlsToggleBtn.addEventListener("click", () => {
+  setControlsScheme(controlsScheme === "combat" ? "classic" : "combat");
+});
 commandWindowBackdrop.addEventListener("click", () => closeCommandWindow());
 commandWindowClose.addEventListener("click", () => closeCommandWindow());
 commandForm.addEventListener("submit", (e) => {
@@ -2584,9 +2691,69 @@ window.addEventListener(
   (e) => {
     if (gameplayKeyboardBlocked()) return;
 
+    const key = e.key.toLowerCase();
     const handLen = state.player.hand.length;
-    const digitIndex = handIndexFromDigitKey(e);
 
+    if (key === "c") {
+      e.preventDefault();
+      cancelPendingAction();
+      return;
+    }
+
+    if (controlsScheme === "combat") {
+      if (key === "a" || key === "d") {
+        if (handLen === 0) return;
+        e.preventDefault();
+        cycleHandSelection(key === "d" ? 1 : -1);
+        return;
+      }
+
+      if (key === "w") {
+        if (selectedHandIndex === null) return;
+        e.preventDefault();
+        playSelectedCard();
+        return;
+      }
+
+      if (key === "q") {
+        if (selectedHandIndex === null) return;
+        e.preventDefault();
+        equipSelectedCard();
+        return;
+      }
+
+      if (key === "e") {
+        if (selectedHandIndex === null) return;
+        e.preventDefault();
+        discardSelectedBonus("move1");
+        return;
+      }
+
+      if (key === "r") {
+        if (selectedHandIndex === null) return;
+        e.preventDefault();
+        discardSelectedBonus("punch");
+        return;
+      }
+
+      if (key === "f") {
+        if (selectedHandIndex === null) return;
+        e.preventDefault();
+        discardSelectedBonus("investigate");
+        return;
+      }
+
+      if (key === "t") {
+        e.preventDefault();
+        tryEndTurnDoubleTap();
+        return;
+      }
+
+      return;
+    }
+
+    // Classic scheme
+    const digitIndex = handIndexFromDigitKey(e);
     if (digitIndex !== null) {
       if (digitIndex < handLen) {
         e.preventDefault();
@@ -2598,36 +2765,23 @@ window.addEventListener(
     if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
       if (handLen === 0) return;
       e.preventDefault();
-      if (selectedHandIndex === null) {
-        selectHandCard(0);
-      } else {
-        const delta = e.key === "ArrowRight" ? 1 : -1;
-        selectHandCard((selectedHandIndex + delta + handLen) % handLen);
-      }
+      cycleHandSelection(e.key === "ArrowRight" ? 1 : -1);
       return;
     }
 
     if ((e.key === "Enter" || e.key === " ") && selectedHandIndex !== null) {
       e.preventDefault();
-      const idx = selectedHandIndex;
-      if (state.pending?.kind === "enter_blocked_tile") {
-        apply({ type: "CONFIRM_ENTER_BLOCKED", handIndex: idx });
-      } else if (state.pending?.kind === "water_escape") {
-        waterEscapeHandIndex = idx;
-        renderAll();
-      } else {
-        apply({ type: "REQUEST_PLAY_CARD", handIndex: idx });
-      }
+      playSelectedCard();
       return;
     }
 
-    if (e.key === "e" && selectedHandIndex !== null) {
+    if (key === "e" && selectedHandIndex !== null) {
       e.preventDefault();
-      apply({ type: "REQUEST_EQUIP", handIndex: selectedHandIndex });
+      equipSelectedCard();
       return;
     }
 
-    if (e.key === "d" && selectedHandIndex !== null) {
+    if (key === "d" && selectedHandIndex !== null) {
       e.preventDefault();
       discardMenuOpen = !discardMenuOpen;
       renderActionBar();
@@ -2640,25 +2794,16 @@ window.addEventListener(
         p: "punch",
         s: "investigate",
       };
-      if (bonusMap[e.key]) {
+      if (bonusMap[key]) {
         e.preventDefault();
-        discardMenuOpen = false;
-        apply({ type: "REQUEST_DISCARD_BONUS", handIndex: selectedHandIndex, bonus: bonusMap[e.key] });
+        discardSelectedBonus(bonusMap[key]);
       }
       return;
     }
 
-    if (e.key === "t" && selectedHandIndex === null) {
+    if (key === "t" && selectedHandIndex === null) {
       e.preventDefault();
-      if (!btnEnd.disabled) apply({ type: "END_TURN" });
-      return;
-    }
-
-    if (e.key === "c") {
-      e.preventDefault();
-      waterEscapeHandIndex = null;
-      if (state.pending?.kind === "water_escape") apply({ type: "CANCEL_WATER_ESCAPE" });
-      else apply({ type: "CANCEL_PENDING" });
+      tryEndTurn();
     }
   },
   true,
@@ -2690,6 +2835,7 @@ async function bootstrap(): Promise<void> {
   grid.setAttackFxFrames(attackFx);
   grid.setPixelArtEnabled(readStoredPixelArtPreference());
   syncGraphicsToggleButton();
+  syncControlsToggleButton();
 
   await app.init({
     width: VIEW_WIDTH_PX,
