@@ -1942,12 +1942,15 @@ function syncShiftyMerchantUi(): void {
   const showShop = merchantShopOpen(state);
   const isObamly = ms?.merchantId === "obamly";
   const isSennis = ms?.merchantId === "sennis";
+  const isSensei = ms?.merchantId === "sensei";
   shiftyDialogueBox.classList.toggle("merchant-obamly", !!isObamly);
   shiftyDialogueBox.classList.toggle("merchant-sennis", !!isSennis);
+  shiftyDialogueBox.classList.toggle("merchant-sensei", !!isSensei);
 
   if (!showDialogue || !ms) {
     shiftyDialogueEl.classList.remove("is-open");
     shiftyDialogueEl.setAttribute("aria-hidden", "true");
+    if (!showShop) hideSkillTooltip();
   } else {
     shiftyDialogueEl.classList.add("is-open");
     shiftyDialogueEl.setAttribute("aria-hidden", "false");
@@ -1957,6 +1960,18 @@ function syncShiftyMerchantUi(): void {
       const b = document.createElement("button");
       b.type = "button";
       b.textContent = choice.label;
+      if (choice.id.startsWith("sensei_buy:")) {
+        const listingId = choice.id.slice("sensei_buy:".length);
+        const listing = ms.listings.find((l) => l.id === listingId);
+        if (listing) {
+          const tip = merchantListingTooltipParts(listing);
+          b.addEventListener("mouseenter", (ev) =>
+            showGameTooltip(ev, tip.title, tip.body, tip.meta),
+          );
+          b.addEventListener("mousemove", (ev) => positionSkillTooltip(ev.clientX, ev.clientY));
+          b.addEventListener("mouseleave", hideSkillTooltip);
+        }
+      }
       b.addEventListener("click", () =>
         apply({ type: "RESOLVE_MERCHANT_DIALOGUE", choiceId: choice.id }),
       );
@@ -1972,40 +1987,80 @@ function syncShiftyMerchantUi(): void {
   } else {
     shiftyShopEl.classList.add("is-open");
     shiftyShopEl.setAttribute("aria-hidden", "false");
-    if (isSennis) {
-      shiftyShopTitle.textContent = "Sennis's wares";
-      shiftyShopNote.textContent =
-        "Magic goods from the Mage Guild. Discuss Magic Tomes below.";
-    } else if (isObamly) {
-      shiftyShopTitle.textContent = "Mr. Obamly's wares";
-      shiftyShopNote.textContent = "Six consumables and two cards. Prices stay put.";
-    } else {
-      shiftyShopTitle.textContent = "Shifty's wares";
-      shiftyShopNote.textContent =
-        "Three cards and three consumables. Prices shift each visit.";
-    }
-    shiftyShopTomes.hidden = !isSennis;
     shiftyShopListings.replaceChildren();
-    for (const listing of ms.listings) {
-      const b = document.createElement("button");
-      b.type = "button";
-      b.className = "shifty-shop-item";
-      const name = document.createElement("span");
-      name.className = "shifty-shop-item-name";
-      name.textContent = listing.name;
-      const meta = document.createElement("span");
-      meta.className = "shifty-shop-item-meta";
-      meta.textContent = `${listing.price}G · stock ${listing.stock}`;
-      b.appendChild(name);
-      b.appendChild(meta);
-      const tip = merchantListingTooltipParts(listing);
-      b.addEventListener("mouseenter", (ev) => showGameTooltip(ev, tip.title, tip.body, tip.meta));
-      b.addEventListener("mousemove", (ev) => positionSkillTooltip(ev.clientX, ev.clientY));
-      b.addEventListener("mouseleave", hideSkillTooltip);
-      b.addEventListener("click", () =>
-        apply({ type: "SELECT_MERCHANT_ITEM", listingId: listing.id }),
+    if (isSensei) {
+      shiftyShopTitle.textContent = "Sensei Tenori";
+      shiftyShopNote.textContent =
+        "Train for experience, or seek teaching in a skill branch.";
+      shiftyShopTomes.hidden = true;
+      const training = document.createElement("button");
+      training.type = "button";
+      training.className = "shifty-shop-item";
+      const tName = document.createElement("span");
+      tName.className = "shifty-shop-item-name";
+      tName.textContent = "Training";
+      const tMeta = document.createElement("span");
+      tMeta.className = "shifty-shop-item-meta";
+      tMeta.textContent = "3G · +5 EXP";
+      training.appendChild(tName);
+      training.appendChild(tMeta);
+      training.addEventListener("mouseenter", (ev) =>
+        showGameTooltip(ev, "Training", "Gain 5 experience. Sensei stands to train you.", "3G"),
       );
-      shiftyShopListings.appendChild(b);
+      training.addEventListener("mousemove", (ev) => positionSkillTooltip(ev.clientX, ev.clientY));
+      training.addEventListener("mouseleave", hideSkillTooltip);
+      training.addEventListener("click", () => apply({ type: "OPEN_SENSEI_TRAINING" }));
+      shiftyShopListings.appendChild(training);
+      for (const branch of ["Attack", "Defense", "Mobility", "Vitality", "Deck"] as const) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "shifty-shop-item";
+        const name = document.createElement("span");
+        name.className = "shifty-shop-item-name";
+        name.textContent = branch;
+        const meta = document.createElement("span");
+        meta.className = "shifty-shop-item-meta";
+        meta.textContent = "Teaching";
+        b.appendChild(name);
+        b.appendChild(meta);
+        b.addEventListener("click", () => apply({ type: "OPEN_SENSEI_BRANCH", branch }));
+        shiftyShopListings.appendChild(b);
+      }
+    } else {
+      if (isSennis) {
+        shiftyShopTitle.textContent = "Sennis's wares";
+        shiftyShopNote.textContent =
+          "Magic goods from the Mage Guild. Discuss Magic Tomes below.";
+      } else if (isObamly) {
+        shiftyShopTitle.textContent = "Mr. Obamly's wares";
+        shiftyShopNote.textContent = "Six consumables and two cards. Prices stay put.";
+      } else {
+        shiftyShopTitle.textContent = "Shifty's wares";
+        shiftyShopNote.textContent =
+          "Three cards and three consumables. Prices shift each visit.";
+      }
+      shiftyShopTomes.hidden = !isSennis;
+      for (const listing of ms.listings) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "shifty-shop-item";
+        const name = document.createElement("span");
+        name.className = "shifty-shop-item-name";
+        name.textContent = listing.name;
+        const meta = document.createElement("span");
+        meta.className = "shifty-shop-item-meta";
+        meta.textContent = `${listing.price}G · stock ${listing.stock}`;
+        b.appendChild(name);
+        b.appendChild(meta);
+        const tip = merchantListingTooltipParts(listing);
+        b.addEventListener("mouseenter", (ev) => showGameTooltip(ev, tip.title, tip.body, tip.meta));
+        b.addEventListener("mousemove", (ev) => positionSkillTooltip(ev.clientX, ev.clientY));
+        b.addEventListener("mouseleave", hideSkillTooltip);
+        b.addEventListener("click", () =>
+          apply({ type: "SELECT_MERCHANT_ITEM", listingId: listing.id }),
+        );
+        shiftyShopListings.appendChild(b);
+      }
     }
   }
 }

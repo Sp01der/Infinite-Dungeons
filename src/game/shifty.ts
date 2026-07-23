@@ -117,11 +117,12 @@ export function createShiftyListings(state: GameState): ShiftyListing[] {
 }
 
 /** Equal chance among available stair merchants. */
-export function pickStairMerchantId(): "shifty" | "obamly" | "sennis" {
+export function pickStairMerchantId(): "shifty" | "obamly" | "sennis" | "sensei" {
   const roll = Math.random();
-  if (roll < 1 / 3) return "shifty";
-  if (roll < 2 / 3) return "obamly";
-  return "sennis";
+  if (roll < 1 / 4) return "shifty";
+  if (roll < 2 / 4) return "obamly";
+  if (roll < 3 / 4) return "sennis";
+  return "sensei";
 }
 
 export function openingDialogue(metBefore: boolean, leftShopThisFloor: boolean): {

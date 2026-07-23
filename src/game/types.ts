@@ -598,7 +598,7 @@ export interface StairFeaturePositions {
   cornerTile: Point;
 }
 
-export type MerchantId = "shifty" | "obamly" | "sennis";
+export type MerchantId = "shifty" | "obamly" | "sennis" | "sensei";
 
 export type ShiftyListingKind =
   | "card"
@@ -638,11 +638,16 @@ export type ShiftyMerchantState = {
     | "tome_hub"
     | "tome_buy"
     | "tome_bind"
-    | "tome_sell";
+    | "tome_sell"
+    | "branch_menu";
   dialogueText: string;
   dialogueChoices: ShiftyDialogueChoice[];
   listings: ShiftyListing[];
   selectedListingId: string | null;
+  /** Sensei Tenori sprite pose. */
+  pose?: "meditating" | "sitting" | "standing";
+  /** Sensei branch currently being taught. */
+  senseiBranch?: "Attack" | "Defense" | "Mobility" | "Vitality" | "Deck" | null;
 };
 
 export interface GameState {
@@ -816,6 +821,8 @@ export interface GameState {
   sennisMet: boolean;
   /** True after Sennis's Magic Tome explanation has been heard this run. */
   sennisTomeExplained: boolean;
+  /** True after first conversation with Sensei Tenori this run. */
+  senseiMet: boolean;
   /** Active stair-room merchant UI/stock (null if none spawned). */
   merchantState: ShiftyMerchantState | null;
   /** Card pedestal in the stair room (after peace). */
@@ -998,6 +1005,8 @@ export type GameCommand =
   | { type: "RESOLVE_MERCHANT_DIALOGUE"; choiceId: string }
   | { type: "SELECT_MERCHANT_ITEM"; listingId: string }
   | { type: "OPEN_MERCHANT_TOMES" }
+  | { type: "OPEN_SENSEI_TRAINING" }
+  | { type: "OPEN_SENSEI_BRANCH"; branch: "Attack" | "Defense" | "Mobility" | "Vitality" | "Deck" }
   | { type: "CLOSE_MERCHANT_SHOP" }
   | { type: "RESOLVE_PEDESTAL_PICK"; pickIndex: number | null }
   | { type: "RESOLVE_DECK_DESTROY"; cardId: string | null }

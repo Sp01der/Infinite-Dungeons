@@ -27,6 +27,21 @@ import {
   openingDialogue,
   pickStairMerchantId,
 } from "./shifty";
+import { addExp } from "./progression";
+import {
+  branchMenuDialogue,
+  brokeDialogueSensei,
+  canBuySenseiSkill,
+  createSenseiMerchantState,
+  getSenseiBranch,
+  meditatingDialogue,
+  notReadyDialogueSensei,
+  SENSEI_TRAINING_COST,
+  SENSEI_TRAINING_EXP,
+  sittingDialogue,
+  wiseSayingDialogue,
+  type SenseiBranch,
+} from "./sensei";
 
 function log(state: GameState, line: string): GameState {
   return { ...state, log: [...state.log.slice(-50), line] };
@@ -45,7 +60,7 @@ function sameRoomAsMerchant(s: GameState): boolean {
 }
 
 function isConsumableListing(listing: ShiftyListing): boolean {
-  return listing.kind !== "card";
+  return listing.kind !== "card" && listing.kind !== "skill";
 }
 
 function nextBoundTomeId(s: GameState): string {
@@ -69,6 +84,19 @@ function grantListing(s: GameState, listing: ShiftyListing): GameState {
         },
       },
       `Bought ${nm} for ${listing.price} gold.`,
+    );
+  }
+  if (listing.kind === "skill" && listing.skillId) {
+    if (s.player.skillsUnlocked.includes(listing.skillId)) return s;
+    return log(
+      {
+        ...s,
+        player: {
+          ...s.player,
+          skillsUnlocked: [...s.player.skillsUnlocked, listing.skillId],
+        },
+      },
+      `Learned ${listing.name} for ${listing.price} gold.`,
     );
   }
   if (listing.kind === "bread") {
@@ -145,6 +173,15 @@ export function spawnMerchantAfterGauntlet(s: GameState): GameState {
       "Sennis the Wizard sets up shop in the stair chamber.",
     );
   }
+  if (id === "sensei") {
+    return log(
+      {
+        ...s,
+        merchantState: createSenseiMerchantState(s),
+      },
+      "Sensei Tenori meditates in the stair chamber.",
+    );
+  }
   const { merchant, nextRestockKeys } = createObamlyMerchantState(s);
   return log(
     {
@@ -159,12 +196,14 @@ export function spawnMerchantAfterGauntlet(s: GameState): GameState {
 function markMet(state: GameState, merchantId: MerchantId): GameState {
   if (merchantId === "shifty") return { ...state, shiftyMet: true };
   if (merchantId === "obamly") return { ...state, obamlyMet: true };
+  if (merchantId === "sensei") return { ...state, senseiMet: true };
   return { ...state, sennisMet: true };
 }
 
 function metBefore(state: GameState, merchantId: MerchantId): boolean {
   if (merchantId === "shifty") return state.shiftyMet;
   if (merchantId === "obamly") return state.obamlyMet;
+  if (merchantId === "sensei") return state.senseiMet;
   return state.sennisMet;
 }
 
@@ -174,6 +213,9 @@ function openingFor(state: GameState, merchantId: MerchantId, leftShopThisFloor:
   }
   if (merchantId === "sennis") {
     return openingDialogueSennis(metBefore(state, "sennis"), leftShopThisFloor);
+  }
+  if (merchantId === "sensei") {
+    return sittingDialogue(metBefore(state, "sensei"), leftShopThisFloor);
   }
   return openingDialogue(metBefore(state, "shifty"), leftShopThisFloor);
 }
@@ -212,6 +254,137 @@ function enterTomeFlow(state: GameState): GameState {
   }
   const d = tomeHubDialogue();
   return setDialogue(state, "tome_hub", d.text, d.choices);
+}
+
+function openSenseiShop(state: GameState): GameState {
+  return setDialogue(state, "shop", "", [], {
+    selectedListingId: null,
+    senseiBranch: null,
+  });
+}
+
+function openSenseiBranch(state: GameState, branch: SenseiBranch): GameState {
+  const ms = state.merchantState!;
+  const d = branchMenuDialogue(state, ms.listings, branch);
+  return setDialogue(state, "branch_menu", d.text, d.choices, { senseiBranch: branch });
+}
+
+function consumeListingStock(ms: NonNullable<GameState["merchantState"]>, listing: ShiftyListing) {
+  const newStock = listing.stock - 1;
+  return ms.listings
+    .map((l) => (l.id === listing.id ? { ...l, stock: newStock } : l))
+    .filter((l) => l.stock > 0);
+}
+
+function getSenseiBranchFromListing(listing: ShiftyListing | undefined): SenseiBranch | null {
+  if (!listing) return null;
+  for (const b of ["Attack", "Defense", "Mobility", "Vitality", "Deck"] as SenseiBranch[]) {
+    const offer = getSenseiBranch(b);
+    if (!offer) continue;
+    if (listing.cardId === offer.card.cardId || listing.skillId === offer.skill.skillId) {
+      return b;
+    }
+  }
+  return null;
+}
+
+function handleSenseiBuy(state: GameState, listingId: string): DispatchResult {
+  const ms = state.merchantState!;
+  const listing = ms.listings.find((l) => l.id === listingId && l.stock > 0);
+  const branch = (ms.senseiBranch ?? getSenseiBranchFromListing(listing)) as SenseiBranch | null;
+
+  if (!listing) {
+    if (branch) return noHits(openSenseiBranch(state, branch));
+    return noHits(openSenseiShop(state));
+  }
+
+  if (listing.kind === "skill" && listing.skillId && branch) {
+    if (!canBuySenseiSkill(state, branch, listing.skillId)) {
+      const d = notReadyDialogueSensei(`sensei_branch:${branch}`, "Back");
+      return noHits(setDialogue(state, "dialogue", d.text, d.choices, { senseiBranch: branch }));
+    }
+  }
+
+  if (state.player.gold < listing.price) {
+    const d = brokeDialogueSensei(branch ? `sensei_branch:${branch}` : "open_shop", "Back");
+    return noHits(setDialogue(state, "dialogue", d.text, d.choices, { senseiBranch: branch }));
+  }
+
+  let s: GameState = {
+    ...state,
+    player: { ...state.player, gold: state.player.gold - listing.price },
+  };
+  s = grantListing(s, listing);
+  const listings = consumeListingStock(ms, listing);
+  s = {
+    ...s,
+    merchantState: {
+      ...ms,
+      listings,
+      selectedListingId: null,
+    },
+  };
+  if (branch) return noHits(openSenseiBranch(s, branch));
+  return noHits(openSenseiShop(s));
+}
+
+function handleSenseiDialogueChoice(state: GameState, choiceId: string): DispatchResult {
+  const ms = state.merchantState!;
+
+  if (choiceId === "sensei_awaken") {
+    const wasMet = state.senseiMet;
+    const open = sittingDialogue(wasMet, ms.leftShopThisFloor);
+    return noHits({
+      ...markMet(state, "sensei"),
+      merchantState: {
+        ...ms,
+        pose: "sitting",
+        phase: "dialogue",
+        dialogueText: open.text,
+        dialogueChoices: open.choices,
+        selectedListingId: null,
+      },
+    });
+  }
+
+  if (choiceId === "sensei_wise_then_shop") {
+    const d = wiseSayingDialogue("open_shop", "Continue");
+    return noHits(setDialogue(state, "dialogue", d.text, d.choices));
+  }
+
+  if (choiceId === "open_shop") {
+    return noHits(openSenseiShop(markMet(state, "sensei")));
+  }
+
+  if (choiceId === "sensei_training_done") {
+    return noHits(openSenseiShop(state));
+  }
+
+  if (choiceId.startsWith("sensei_branch:")) {
+    const branch = choiceId.slice("sensei_branch:".length) as SenseiBranch;
+    return noHits(openSenseiBranch(state, branch));
+  }
+
+  if (choiceId.startsWith("sensei_buy:")) {
+    return handleSenseiBuy(state, choiceId.slice("sensei_buy:".length));
+  }
+
+  if (choiceId === "leave") {
+    return noHits({
+      ...markMet(state, "sensei"),
+      merchantState: {
+        ...ms,
+        phase: "idle",
+        leftShopThisFloor: true,
+        dialogueText: "",
+        dialogueChoices: [],
+        selectedListingId: null,
+        senseiBranch: null,
+      },
+    });
+  }
+
+  return noHits(state);
 }
 
 function handleSennisDialogueChoice(state: GameState, choiceId: string): DispatchResult {
@@ -366,6 +539,19 @@ export function handleMerchantCommand(state: GameState, cmd: GameCommand): Dispa
         return noHits(state);
       }
       const ms = state.merchantState;
+      if (ms.merchantId === "sensei" && (ms.pose ?? "meditating") === "meditating") {
+        const open = meditatingDialogue();
+        return noHits({
+          ...state,
+          merchantState: {
+            ...ms,
+            phase: "dialogue",
+            dialogueText: open.text,
+            dialogueChoices: open.choices,
+            selectedListingId: null,
+          },
+        });
+      }
       const open = openingFor(state, ms.merchantId, ms.leftShopThisFloor);
       return noHits({
         ...markMet(state, ms.merchantId),
@@ -383,9 +569,42 @@ export function handleMerchantCommand(state: GameState, cmd: GameCommand): Dispa
       if (!ms || ms.merchantId !== "sennis" || ms.phase !== "shop") return noHits(state);
       return noHits(enterTomeFlow(state));
     }
+    case "OPEN_SENSEI_TRAINING": {
+      const ms = state.merchantState;
+      if (!ms || ms.merchantId !== "sensei" || ms.phase !== "shop") return noHits(state);
+      if (state.player.gold < SENSEI_TRAINING_COST) {
+        const d = brokeDialogueSensei("open_shop", "Back to shop");
+        return noHits(setDialogue(state, "dialogue", d.text, d.choices));
+      }
+      let s: GameState = {
+        ...state,
+        player: { ...state.player, gold: state.player.gold - SENSEI_TRAINING_COST },
+      };
+      s = addExp(s, SENSEI_TRAINING_EXP);
+      s = log(s, `Trained with Sensei Tenori (+${SENSEI_TRAINING_EXP} EXP).`);
+      const d = wiseSayingDialogue("sensei_training_done", "Continue");
+      return noHits(
+        setDialogue(s, "dialogue", d.text, d.choices, {
+          pose: "standing",
+          senseiBranch: null,
+        }),
+      );
+    }
+    case "OPEN_SENSEI_BRANCH": {
+      const ms = state.merchantState;
+      if (!ms || ms.merchantId !== "sensei" || ms.phase !== "shop") return noHits(state);
+      return noHits(openSenseiBranch(state, cmd.branch));
+    }
     case "RESOLVE_MERCHANT_DIALOGUE": {
       const ms = state.merchantState;
       if (!ms) return noHits(state);
+
+      if (ms.merchantId === "sensei") {
+        if (ms.phase === "dialogue" || ms.phase === "branch_menu") {
+          return handleSenseiDialogueChoice(state, cmd.choiceId);
+        }
+        return noHits(state);
+      }
 
       if (ms.merchantId === "sennis") {
         if (ms.phase === "confirm") {
@@ -559,6 +778,7 @@ export function handleMerchantCommand(state: GameState, cmd: GameCommand): Dispa
     case "SELECT_MERCHANT_ITEM": {
       const ms = state.merchantState;
       if (!ms || ms.phase !== "shop") return noHits(state);
+      if (ms.merchantId === "sensei") return noHits(state);
       const listing = ms.listings.find((l) => l.id === cmd.listingId && l.stock > 0);
       if (!listing) return noHits(state);
       const conf = confirmFor(ms.merchantId, listing);
@@ -585,6 +805,7 @@ export function handleMerchantCommand(state: GameState, cmd: GameCommand): Dispa
           dialogueText: "",
           dialogueChoices: [],
           selectedListingId: null,
+          senseiBranch: null,
         },
       });
     }
@@ -600,6 +821,7 @@ const DIALOGUE_PHASES = new Set([
   "tome_buy",
   "tome_bind",
   "tome_sell",
+  "branch_menu",
 ]);
 
 export function merchantUiBlocks(s: GameState): boolean {
@@ -622,5 +844,6 @@ export function merchantDisplayName(s: GameState): string {
   if (id === "obamly") return "Mr. Robert Obamly";
   if (id === "shifty") return "Shifty";
   if (id === "sennis") return "Sennis";
+  if (id === "sensei") return "Sensei Tenori";
   return "the merchant";
 }

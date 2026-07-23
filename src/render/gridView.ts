@@ -1114,7 +1114,13 @@ export class GridView extends Container {
             ? "merchant_obamly"
             : state.merchantState.merchantId === "sennis"
               ? "merchant_sennis"
-              : "merchant_shifty";
+              : state.merchantState.merchantId === "sensei"
+                ? state.merchantState.pose === "standing"
+                  ? "merchant_sensei_standing"
+                  : state.merchantState.pose === "sitting"
+                    ? "merchant_sensei_sitting"
+                    : "merchant_sensei_meditating"
+                : "merchant_shifty";
         // Sennis is 20×25 — place bottom-aligned so the extra 5px stick out the top.
         this.entityLayer.addChild(
           merchantSprite === "merchant_sennis"

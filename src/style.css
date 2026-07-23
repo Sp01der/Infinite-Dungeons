@@ -2075,6 +2075,10 @@ button.pile-inspect:focus-visible {
   background: url("/assets/sennis_dialogue.png") center / 100% 100% no-repeat;
 }
 
+.shifty-dialogue-box.merchant-sensei {
+  background: url("/assets/sensei_dialogue.png") center / 100% 100% no-repeat;
+}
+
 .shifty-dialogue-text {
   margin: 0;
   flex: 1 1 auto;

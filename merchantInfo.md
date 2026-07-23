@@ -1,6 +1,6 @@
 # Merchants — Complete Reference
 
-Everything the game currently implements about stair-chamber merchants: shared rules, then full details for **Shifty**, **Mr. Robert Obamly**, and **Sennis the Wizard**.
+Everything the game currently implements about stair-chamber merchants: shared rules, then full details for **Shifty**, **Mr. Robert Obamly**, **Sennis the Wizard**, and **Sensei Tenori**.
 
 ---
 
@@ -8,7 +8,7 @@ Everything the game currently implements about stair-chamber merchants: shared r
 
 Merchants are NPCs that appear in the **stair chamber** after you clear the floor’s **gauntlet**. You talk to them in **peace** phase, browse a shop of cards and consumables, and pay with **gold**.
 
-There are three merchant IDs:
+There are four merchant IDs:
 
 
 | ID       | Display name      | Shop title         |
@@ -16,6 +16,7 @@ There are three merchant IDs:
 | `shifty` | Shifty            | Shifty's wares     |
 | `obamly` | Mr. Robert Obamly | Mr. Obamly's wares |
 | `sennis` | Sennis            | Sennis's wares     |
+| `sensei` | Sensei Tenori     | Sensei Tenori      |
 
 
 Only one merchant spawns per stair chamber. Stock and prices are rolled when they appear and stay until you leave the floor (`merchantState` is cleared on floor descent).
@@ -36,17 +37,19 @@ Only one merchant spawns per stair chamber. Stock and prices are rolled when the
 
 ### Which merchant?
 
-`pickStairMerchantId()` — equal chance among the three:
+`pickStairMerchantId()` — equal chance among the four:
 
-- **1/3** → Shifty  
-- **1/3** → Mr. Robert Obamly  
-- **1/3** → Sennis the Wizard  
+- **1/4** → Shifty  
+- **1/4** → Mr. Robert Obamly  
+- **1/4** → Sennis the Wizard  
+- **1/4** → Sensei Tenori  
 
 Spawn log lines:
 
 - Shifty: `"Shifty sets up shop in the stair chamber."`
 - Obamly: `"Mr. Robert Obamly sets up shop in the stair chamber."`
 - Sennis: `"Sennis the Wizard sets up shop in the stair chamber."`
+- Sensei: `"Sensei Tenori meditates in the stair chamber."`
 
 ---
 
@@ -68,11 +71,14 @@ Stair features (`StairFeaturePositions`), east-attached room origin `(x0, y0)`:
 The merchant tile is occupied (cannot place other props there). Sprites:
 
 
-| Merchant | Sprite key        | Texture                       | Fallback color |
-| -------- | ----------------- | ----------------------------- | -------------- |
-| Shifty   | `merchant_shifty` | `/assets/merchant_shifty.png` | `#7b3db8`      |
-| Obamly   | `merchant_obamly` | `/assets/merchant_obamly.png` | `#2c5aa0`      |
-| Sennis   | `merchant_sennis` | `/assets/merchant_sennis.png` | `#3d6ed8`      |
+| Merchant | Sprite key                    | Texture                                   | Fallback color |
+| -------- | ----------------------------- | ----------------------------------------- | -------------- |
+| Shifty   | `merchant_shifty`             | `/assets/merchant_shifty.png`             | `#7b3db8`      |
+| Obamly   | `merchant_obamly`             | `/assets/merchant_obamly.png`             | `#2c5aa0`      |
+| Sennis   | `merchant_sennis`             | `/assets/merchant_sennis.png`             | `#3d6ed8`      |
+| Sensei   | `merchant_sensei_meditating`  | `/assets/merchant_sensei_meditating.png`  | `#c4a574`      |
+| Sensei   | `merchant_sensei_sitting`     | `/assets/merchant_sensei_sitting.png`     | `#c4a574`      |
+| Sensei   | `merchant_sensei_standing`    | `/assets/merchant_sensei_standing.png`    | `#c4a574`      |
 
 
 Dialogue box backgrounds:
@@ -80,6 +86,7 @@ Dialogue box backgrounds:
 - Shifty: `/assets/shifty_dialogue.png` (CSS class `.shifty-dialogue-box`)
 - Obamly: `/assets/obamly_dialogue.png` (class `.shifty-dialogue-box.merchant-obamly`)
 - Sennis: `/assets/sennis_dialogue.png` (class `.shifty-dialogue-box.merchant-sennis`)
+- Sensei: `/assets/sensei_dialogue.png` (class `.shifty-dialogue-box.merchant-sensei`)
 
 ---
 
@@ -100,16 +107,17 @@ Click the merchant sprite → `TALK_TO_MERCHANT`.
 ### Merchant UI phases (`ShiftyMerchantState.phase`)
 
 
-| Phase       | Meaning                                               |
-| ----------- | ----------------------------------------------------- |
-| `idle`      | On the map; no overlay                                |
-| `dialogue`  | Dialogue box open (opening / sold-out / broke / etc.) |
-| `shop`      | Shop panel open                                       |
-| `confirm`   | Confirm purchase dialogue                             |
-| `tome_hub`  | Sennis only — Magic Tome hub                          |
-| `tome_buy`  | Sennis only — buy unbound Tome                        |
-| `tome_bind` | Sennis only — bind unbound Tome                       |
-| `tome_sell` | Sennis only — sell unbound / bound Tomes              |
+| Phase         | Meaning                                               |
+| ------------- | ----------------------------------------------------- |
+| `idle`        | On the map; no overlay                                |
+| `dialogue`    | Dialogue box open (opening / sold-out / broke / etc.) |
+| `shop`        | Shop panel open                                       |
+| `confirm`     | Confirm purchase dialogue                             |
+| `tome_hub`    | Sennis only — Magic Tome hub                          |
+| `tome_buy`    | Sennis only — buy unbound Tome                        |
+| `tome_bind`   | Sennis only — bind unbound Tome                       |
+| `tome_sell`   | Sennis only — sell unbound / bound Tomes              |
+| `branch_menu` | Sensei only — branch teaching submenu                 |
 
 
 While phase is `dialogue`, `confirm`, `shop`, or any `tome_*` phase, **merchant UI blocks** other progression (`merchantUiBlocks`). Attempting other actions logs:  
@@ -122,8 +130,9 @@ While phase is `dialogue`, `confirm`, `shop`, or any `tome_*` phase, **merchant 
 3. In shop: click a listing → confirm dialogue → **Buy** or **Cancel**.
 4. On buy: gold checked; if enough, deduct gold, grant item, reduce stock; remove listing if stock hits 0.
 5. **Sennis only:** shop also has **Discuss Magic Tomes** (`OPEN_MERCHANT_TOMES`) → tomes flow (see Sennis).
-6. Close shop (Leave button, backdrop click, or Escape) → phase `idle`, sets `leftShopThisFloor: true`.
-7. Talk again after leaving → “come back” style dialogue (merchants still have remaining stock).
+6. **Sensei only:** shop shows **Training** and five branch buttons (see Sensei). Before shop and after Training, a random wise saying is shown.
+7. Close shop (Leave button, backdrop click, or Escape) → phase `idle`, sets `leftShopThisFloor: true`.
+8. Talk again after leaving → “come back” style dialogue (merchants still have remaining stock).
 
 Escape:
 
@@ -144,6 +153,7 @@ Carried into the next floor (`advanceFloor` / equivalent):
 | `obamlyRestockKeys`   | Catalog keys sold out at Obamly (for next Obamly visit)       |
 | `sennisMet`           | True after first conversation with Sennis this run            |
 | `sennisTomeExplained` | True after first Magic Tomes explanation from Sennis this run |
+| `senseiMet`           | True after first conversation with Sensei Tenori this run     |
 
 
 **Not** carried: `merchantState` (reset to `null` on descend). Fresh listings are rolled when a merchant spawns on a later floor.
@@ -745,6 +755,53 @@ Choice: **Done** (`tome_hub`). If nothing to sell, dialogue notes that and offer
 
 
 
+# Sensei Tenori
+
+Expert fighter and trainer. Sells a few special cards, but his main services are **Training** (EXP) and unique **merchant-only skills** by skill-tree branch.
+
+- Merchant ID: `sensei`
+- Display name: **Sensei Tenori**
+- Module: `src/game/sensei.ts`
+- Pose field: `merchantState.pose` — `meditating` (spawn) → `sitting` (after first meditating line) → `standing` (after Training)
+
+## Dialogue flow
+
+1. **Meditating** (first talk this visit):  
+   `"The stars shine upon our meeting. Experience is the teacher of all things, and I offer it to you. I will train you, if you wish."` → Continue → sits.
+2. **Sitting — first meeting** (run): intro as Sensei Tenori, trained by Sensei Gernio…
+3. **Sitting — met before**: `"Greetings once more. Do you wish to train with me?"`
+4. **Sitting — left shop this floor**: `"Do you seek my teaching?"`
+5. Choosing train → random **wise saying** → Continue → shop.
+
+## Shop
+
+Not a flat listing. Buttons:
+
+| Button | Effect |
+| ------ | ------ |
+| **Training** | 3G → +5 EXP; pose → standing; random wise saying; return to shop |
+| **Attack / Defense / Mobility / Vitality / Deck** | Branch quote + buy card and/or skill |
+
+### Branch offers
+
+| Branch | Card (price) | Skill (10G) | Skill prerequisite |
+| ------ | ------------ | ----------- | ------------------ |
+| Attack | Perfected Strike (10G, Rare) | Guard Destroyer | ≥2 non-merchant Attack skills |
+| Defense | Fortify (8G, Uncommon) | Keep up your Guard | ≥2 non-merchant Defense skills |
+| Mobility | Stay on the Move (8G, Uncommon) | Always Moving | ≥2 non-merchant Mobility skills |
+| Vitality | Heal (10G, Rare) | Keep Fighting | ≥2 non-merchant Vitality skills |
+| Deck | Evaluate (10G, Rare) | Foresight | ≥2 non-merchant Deck skills |
+
+Skills are `merchantOnly` (hidden from the skill tree UI). Cards are `special` (excluded from normal loot).
+
+Broke: `"I am sorry. My time is valuable, and I cannot train you if you cannot make it worth my while."`
+
+Not ready for skill: `"You are not yet ready. Return when you have learned two skills of this path."`
+
+---
+
+
+
 ## UI / player-facing hints
 
 Hints while merchant is active (peace):
@@ -753,13 +810,19 @@ Hints while merchant is active (peace):
 - Shop: `"Browse {name}'s shop, or leave when you're done."`
 - Idle on map: `"Peace — click {name} to talk, the pedestal first, then the east stair to descend."`
 
-Display names from `merchantDisplayName`: `Shifty` / `Mr. Robert Obamly` / `Sennis` / fallback `"the merchant"`.
+Display names from `merchantDisplayName`: `Shifty` / `Mr. Robert Obamly` / `Sennis` / `Sensei Tenori` / fallback `"the merchant"`.
 
 Sennis shop extras:
 
 - Title: `"Sennis's wares"`
 - Note: `"Magic goods from the Mage Guild. Discuss Magic Tomes below."`
 - Button: **Discuss Magic Tomes** (hidden for other merchants)
+
+Sensei shop extras:
+
+- Title: `"Sensei Tenori"`
+- Note: `"Train for experience, or seek teaching in a skill branch."`
+- Buttons: Training + five branches (no flat stock list)
 
 ---
 
@@ -774,12 +837,13 @@ Sennis shop extras:
 | Shifty catalogs, prices, dialogue  | `src/game/shifty.ts`                                                      |
 | Obamly catalogs, restock, dialogue | `src/game/obamly.ts`                                                      |
 | Sennis catalogs, tomes, dialogue   | `src/game/sennis.ts`                                                      |
+| Sensei poses, training, branches   | `src/game/sensei.ts`                                                      |
 | Types / flags                      | `src/game/types.ts`                                                       |
 | Gauntlet → stair → spawn           | `src/game/reducer.ts` (`processGauntletVictory`), `src/game/stairRoom.ts` |
 | Floor persistence of met/restock   | `src/game/initialState.ts`                                                |
 | UI sync, shop notes, Tomes button  | `src/main.ts`, `index.html`                                               |
 | Sprites                            | `src/content/sprites-manifest.json`, `src/render/gridView.ts`             |
-| Styles                             | `src/style.css` (`.shifty-dialogue`, `.merchant-sennis`, `.shifty-shop-*`) |
+| Styles                             | `src/style.css` (`.shifty-dialogue`, `.merchant-sennis`, `.merchant-sensei`, `.shifty-shop-*`) |
 | Consumable / gem / tome use        | `src/game/reducer.ts` (`USE_*`)                                           |
 
 
@@ -790,16 +854,15 @@ Sennis shop extras:
 ## Quick comparison
 
 
-|                   | Shifty                  | Obamly                                   | Sennis                                              |
-| ----------------- | ----------------------- | ---------------------------------------- | --------------------------------------------------- |
-| Spawn chance      | 1/3                     | 1/3                                      | 1/3                                                 |
-| Listings          | 3 cards + 3 consumables | 6 consumables + 2 cards                  | 2+3 or 3+2 (consumables/cards)                      |
-| Card pool         | Fixed 16-card catalog   | All playable deck cards, rarity-weighted | Fixed 6 Magic / Mage Guild cards (Arcane Charge ×2) |
-| Prices            | Shift each visit        | Fixed                                    | Fixed                                               |
-| Exclusive stock   | —                       | Stew                                     | Magic Tomes service; Mage Guild spell catalog       |
-| Flame in shop     | No                      | Yes (stock 1)                            | Yes (stock 2)                                       |
-| Gem prices        | Higher (8–10)           | Lower (5–7)                              | Mid (6–7); no Speed                                 |
-| Sold-out tracking | None                    | Restock queue + bonus stock              | None                                                |
-| Broke tone        | Accusatory              | Polite                                   | Matter-of-fact (“Magic is expensive”)               |
-| Extra service     | —                       | —                                        | Buy / bind / sell Magic Tomes                       |
-
+|                   | Shifty                  | Obamly                                   | Sennis                                              | Sensei Tenori                                      |
+| ----------------- | ----------------------- | ---------------------------------------- | --------------------------------------------------- | -------------------------------------------------- |
+| Spawn chance      | 1/4                     | 1/4                                      | 1/4                                                 | 1/4                                                |
+| Listings          | 3 cards + 3 consumables | 6 consumables + 2 cards                  | 2+3 or 3+2 (consumables/cards)                      | Training + 5 branch menus (card + skill each)      |
+| Card pool         | Fixed 16-card catalog   | All playable deck cards, rarity-weighted | Fixed 6 Magic / Mage Guild cards (Arcane Charge ×2) | 5 special cards (Sensei-only)                      |
+| Prices            | Shift each visit        | Fixed                                    | Fixed                                               | Fixed (3 / 8 / 10)                                 |
+| Exclusive stock   | —                       | Stew                                     | Magic Tomes service; Mage Guild spell catalog       | Training EXP; merchant-only skills                 |
+| Flame in shop     | No                      | Yes (stock 1)                            | Yes (stock 2)                                       | No                                                 |
+| Gem prices        | Higher (8–10)           | Lower (5–7)                              | Mid (6–7); no Speed                                 | —                                                  |
+| Sold-out tracking | None                    | Restock keys + bonus stock               | None                                                | Cards/skills stock 1                               |
+| Broke tone        | Accusatory              | Polite                                   | Matter-of-fact (“Magic is expensive”)               | Valuable time                                      |
+| Extra service     | —                       | —                                        | Buy / bind / sell Magic Tomes                       | Training (+5 EXP); branch teaching                 |
