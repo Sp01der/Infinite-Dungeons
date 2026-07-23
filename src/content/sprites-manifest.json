@@ -1,7 +1,45 @@
 {
   "sprites": {
-    "floor": { "fallbackColor": "#3d4354" },
-    "floor_alt": { "fallbackColor": "#343948" },
+    "floor": {
+      "texture": "/assets/floor_tiles.png",
+      "frame": [0, 0, 20, 20],
+      "fallbackColor": "#434c54"
+    },
+    "floor_alt": {
+      "texture": "/assets/floor_tiles.png",
+      "frame": [20, 0, 20, 20],
+      "fallbackColor": "#2d353d"
+    },
+    "floor_crack_a": {
+      "texture": "/assets/floor_tiles.png",
+      "frame": [40, 0, 20, 20],
+      "fallbackColor": "#434c54"
+    },
+    "floor_alt_crack_a": {
+      "texture": "/assets/floor_tiles.png",
+      "frame": [60, 0, 20, 20],
+      "fallbackColor": "#2d353d"
+    },
+    "floor_crack_b": {
+      "texture": "/assets/floor_tiles.png",
+      "frame": [80, 0, 20, 20],
+      "fallbackColor": "#434c54"
+    },
+    "floor_alt_bone": {
+      "texture": "/assets/floor_tiles.png",
+      "frame": [100, 0, 20, 20],
+      "fallbackColor": "#2d353d"
+    },
+    "floor_sigil": {
+      "texture": "/assets/floor_tiles.png",
+      "frame": [120, 0, 20, 20],
+      "fallbackColor": "#434c54"
+    },
+    "floor_alt_crack_b": {
+      "texture": "/assets/floor_tiles.png",
+      "frame": [140, 0, 20, 20],
+      "fallbackColor": "#2d353d"
+    },
     "water": { "fallbackColor": "#3eb0ff" },
     "floor_overgrown": { "fallbackColor": "#3f9a4a" },
     "floor_overgrown_alt": { "fallbackColor": "#2f7a38" },

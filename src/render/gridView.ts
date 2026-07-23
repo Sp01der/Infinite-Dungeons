@@ -678,8 +678,16 @@ export class GridView extends Container {
           id = this.pickThemedFloorSpriteId(state, x, y, rid, rkind);
         }
         const spr = this.makeSprite(id);
-        spr.x = x * TILE;
-        spr.y = y * TILE;
+        const rot = this.floorTileRotation(id, x, y);
+        if (rot !== 0) {
+          spr.anchor.set(0.5);
+          spr.x = x * TILE + TILE / 2;
+          spr.y = y * TILE + TILE / 2;
+          spr.rotation = rot;
+        } else {
+          spr.x = x * TILE;
+          spr.y = y * TILE;
+        }
         this.floorLayer.addChild(spr);
         this.gridLines
           .rect(x * TILE, y * TILE, TILE, TILE)
@@ -1359,6 +1367,43 @@ export class GridView extends Container {
     return new Set(state.bridgeTiles.map((b) => keyOf(b)));
   }
 
+  /** Checkerboard base + rare decorative variants (stable per tile). */
+  private pickBaseFloorSpriteId(x: number, y: number): string {
+    const light = (x + y) % 2 === 0;
+    // Plain tiles heavily weighted; decorative variants are rare accents.
+    const lightIds = ["floor", "floor_crack_a", "floor_crack_b", "floor_sigil"] as const;
+    const darkIds = [
+      "floor_alt",
+      "floor_alt_crack_a",
+      "floor_alt_bone",
+      "floor_alt_crack_b",
+    ] as const;
+    const ids = light ? lightIds : darkIds;
+    const weights = [40, 1, 1, 1];
+    const h =
+      (Math.imul(x + 1, 374761) ^ Math.imul(y + 1, 668265) ^ 0x9e3779b9) >>> 0;
+    let r = h % 43;
+    for (let i = 0; i < weights.length; i++) {
+      r -= weights[i]!;
+      if (r < 0) return ids[i]!;
+    }
+    return ids[0]!;
+  }
+
+  /** Special floor accents (not sigil, not plain) get a stable 0/90/180/270° rotation. */
+  private floorTileRotation(id: string, x: number, y: number): number {
+    const rotatable =
+      id === "floor_crack_a" ||
+      id === "floor_crack_b" ||
+      id === "floor_alt_crack_a" ||
+      id === "floor_alt_bone" ||
+      id === "floor_alt_crack_b";
+    if (!rotatable) return 0;
+    const h =
+      (Math.imul(x + 3, 915799) ^ Math.imul(y + 7, 465493) ^ 0x85ebca6b) >>> 0;
+    return (h % 4) * (Math.PI / 2);
+  }
+
   private pickThemedFloorSpriteId(
     state: GameState,
     x: number,
@@ -1370,7 +1415,7 @@ export class GridView extends Container {
       return (x + y) % 2 === 0 ? "gauntlet_corridor" : "gauntlet_corridor_alt";
     }
     if (rkind === "stair_room") {
-      return (x + y) % 2 === 0 ? "floor" : "floor_alt";
+      return this.pickBaseFloorSpriteId(x, y);
     }
     if (rkind === "greenhouse") return "floor_greenhouse";
     const alt = (x + y) % 2 === 0;
@@ -1380,10 +1425,10 @@ export class GridView extends Container {
       const h = Math.imul(x + 1, 374761) ^ Math.imul(y + 1, 668265) ^ 0x9e3779b9;
       const tinted = (h >>> 0) % 10 === 0;
       if (tinted) return alt ? "floor_overgrown" : "floor_overgrown_alt";
-      return alt ? "floor" : "floor_alt";
+      return this.pickBaseFloorSpriteId(x, y);
     }
     if (th === "brownstone") return alt ? "floor_brownstone" : "floor_brownstone_alt";
-    return alt ? "floor" : "floor_alt";
+    return this.pickBaseFloorSpriteId(x, y);
   }
 
   private peaceStepTiles(state: GameState): Set<string> {
