@@ -115,11 +115,16 @@ export function isPlayableDeckCard(d: CardDef): boolean {
   );
 }
 
+/** Normal world loot (chests / pots / pedestals) — excludes Special cards. */
+export function isLootPoolCard(d: CardDef): boolean {
+  return isPlayableDeckCard(d) && !d.special;
+}
+
 const NON_CHEST_BASE_RARITIES = new Set(["Basic", "Common", "Uncommon"]);
 
 /** Random playable card from ground / pots / similar (not chest rare+ draft). */
 export function pickRandomLootCardId(cardDefs: Map<string, CardDef>, depth: number): string {
-  const playable = [...cardDefs.entries()].filter(([, d]) => isPlayableDeckCard(d));
+  const playable = [...cardDefs.entries()].filter(([, d]) => isLootPoolCard(d));
   const basic = playable.filter(([, d]) => NON_CHEST_BASE_RARITIES.has(d.rarity)).map(([id]) => id);
   const rare = playable.filter(([, d]) => d.rarity === "Rare").map(([id]) => id);
   const leg = playable.filter(([, d]) => d.rarity === "Legendary").map(([id]) => id);
@@ -191,18 +196,18 @@ export function pickChestOfferCards(
 ): [string, string, string] {
   if (tier === "basicToUncommon") {
     const pool = [...cardDefs.entries()]
-      .filter(([, d]) => ["Basic", "Common", "Uncommon"].includes(d.rarity) && isPlayableDeckCard(d))
+      .filter(([, d]) => ["Basic", "Common", "Uncommon"].includes(d.rarity) && isLootPoolCard(d))
       .map(([id]) => id);
     return pickThreeFromPool(pool, "move");
   }
 
   const rare = [...cardDefs.entries()]
-    .filter(([, d]) => d.rarity === "Rare" && isPlayableDeckCard(d))
+    .filter(([, d]) => d.rarity === "Rare" && isLootPoolCard(d))
     .map(([id]) => id);
   const leg =
     floorDepth >= 4
       ? [...cardDefs.entries()]
-          .filter(([, d]) => d.rarity === "Legendary" && isPlayableDeckCard(d))
+          .filter(([, d]) => d.rarity === "Legendary" && isLootPoolCard(d))
           .map(([id]) => id)
       : [];
   const out: string[] = [];
@@ -223,7 +228,7 @@ export function pickPedestalOfferCards(
 ): [string, string, string] {
   const pool = [...cardDefs.entries()]
     .filter(([, d]) => {
-      if (!isPlayableDeckCard(d)) return false;
+      if (!isLootPoolCard(d)) return false;
       if (floorDepth <= 1) return NON_CHEST_BASE_RARITIES.has(d.rarity);
       if (floorDepth <= 3) return d.rarity !== "Legendary";
       return true;

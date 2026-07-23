@@ -393,22 +393,32 @@ function makeAtbmbHost(hooks: MonsterPhaseHooks, hits: HitVisual[]): AtbmbHost {
     magicMissile: (state, mon, minDamage, maxDamage) => {
       const name = state.monsterDefs.get(mon.defId)?.name ?? "Mystic Core";
       const raw = rollInt(minDamage, maxDamage) + monsterDamageBonus(mon.level);
+      const beforeRes = state.player.resistance;
+      const taken = applyDamageToPlayer(state, raw, { ignoreDefense: true });
       const px = state.player.x;
       const py = state.player.y;
-      const hp = Math.max(0, state.player.hp - raw);
-      let next = appendLog(state, `${name} magic missile hits you for ${raw} (ignores defense).`);
-      next = { ...next, player: { ...next.player, hp } };
+      let next = taken.state;
+      if (taken.damage > 0) {
+        next = appendLog(
+          next,
+          `${name} magic missile hits you for ${taken.damage} (ignores defense).`,
+        );
+      } else if (beforeRes > next.player.resistance) {
+        next = appendLog(next, `${name}'s magic missile is absorbed by Resistance!`);
+      } else {
+        next = appendLog(next, `${name} magic missile hits you for 0 (ignores defense).`);
+      }
       recordHit(
         hits,
         {
           gridX: px,
           gridY: py,
-          damage: raw,
+          damage: taken.damage,
           fx: { kind: "magic_missile", fromX: mon.x, fromY: mon.y },
         },
         next,
       );
-      return { state: next, dead: hp <= 0 };
+      return { state: next, dead: next.player.hp <= 0 };
     },
     loadBow: (state, mon, nextState) => {
       const name = state.monsterDefs.get(mon.defId)?.name ?? "Skeleton Archer";
@@ -844,22 +854,32 @@ function takeMysticTurn(
     magicMissilePathClearToPlayer(next.tiles, next.monsters, mp, P, m.id)
   ) {
     const raw = rollInt(1, 6) + monsterDamageBonus(m.level);
+    const beforeRes = next.player.resistance;
+    const taken = applyDamageToPlayer(next, raw, { ignoreDefense: true });
     const px = next.player.x;
     const py = next.player.y;
-    const hp = Math.max(0, next.player.hp - raw);
-    next = appendLog(next, `${name} magic missile hits you for ${raw} (ignores defense).`);
-    next = { ...next, player: { ...next.player, hp } };
+    next = taken.state;
+    if (taken.damage > 0) {
+      next = appendLog(
+        next,
+        `${name} magic missile hits you for ${taken.damage} (ignores defense).`,
+      );
+    } else if (beforeRes > next.player.resistance) {
+      next = appendLog(next, `${name}'s magic missile is absorbed by Resistance!`);
+    } else {
+      next = appendLog(next, `${name} magic missile hits you for 0 (ignores defense).`);
+    }
     recordHit(
       hits,
       {
         gridX: px,
         gridY: py,
-        damage: raw,
+        damage: taken.damage,
         fx: { kind: "magic_missile", fromX: mp.x, fromY: mp.y },
       },
       next,
     );
-    return { state: next, dead: hp <= 0 };
+    return { state: next, dead: next.player.hp <= 0 };
   }
 
   const occ = movementOcc(next, m.id);

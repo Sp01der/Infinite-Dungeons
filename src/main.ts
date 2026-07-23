@@ -113,7 +113,7 @@ const skillTreeBackdrop = document.querySelector<HTMLDivElement>("#skill-tree-ba
 const skillTreeClose = document.querySelector<HTMLButtonElement>("#skill-tree-close")!;
 const skillTreeScroll = document.querySelector<HTMLDivElement>("#skill-tree-scroll")!;
 const skillTreeCanvas = document.querySelector<HTMLDivElement>("#skill-tree-canvas")!;
-const skillTreeTooltip = document.querySelector<HTMLDivElement>("#skill-tree-tooltip")!;
+const skillTreeTooltip = document.querySelector<HTMLDivElement>("#game-tooltip")!;
 const skillTreeSkillPts = document.querySelector<HTMLSpanElement>("#skill-tree-skill-pts")!;
 const btnSkillTree = document.querySelector<HTMLButtonElement>("#btn-skill-tree")!;
 const turnTokensEl = document.querySelector<HTMLDivElement>("#turn-tokens")!;
@@ -127,6 +127,13 @@ const dualWieldOfferEl = document.querySelector<HTMLDivElement>("#dual-wield-off
 const dualWieldBackdrop = document.querySelector<HTMLDivElement>("#dual-wield-backdrop")!;
 const dualWieldCards = document.querySelector<HTMLDivElement>("#dual-wield-cards")!;
 const dualWieldCancel = document.querySelector<HTMLButtonElement>("#dual-wield-cancel")!;
+const senseiOfferEl = document.querySelector<HTMLDivElement>("#sensei-offer")!;
+const senseiOfferBackdrop = document.querySelector<HTMLDivElement>("#sensei-offer-backdrop")!;
+const senseiOfferTitle = document.querySelector<HTMLHeadingElement>("#sensei-offer-title")!;
+const senseiOfferNote = document.querySelector<HTMLParagraphElement>("#sensei-offer-note")!;
+const senseiOfferBody = document.querySelector<HTMLDivElement>("#sensei-offer-body")!;
+const senseiOfferConfirm = document.querySelector<HTMLButtonElement>("#sensei-offer-confirm")!;
+const senseiOfferCancel = document.querySelector<HTMLButtonElement>("#sensei-offer-cancel")!;
 const commandWindowBtn = document.querySelector<HTMLButtonElement>("#btn-command-window")!;
 const graphicsToggleBtn = document.querySelector<HTMLButtonElement>("#btn-graphics-toggle")!;
 const commandWindow = document.querySelector<HTMLDivElement>("#command-window")!;
@@ -239,6 +246,7 @@ function choiceModalBlocksPlay(s: GameState): boolean {
     s.flameDestroyPending ||
     s.bindTomePending ||
     !!s.deckBuilderOffer ||
+    !!s.senseiOffer ||
     s.dualWieldStage?.step === "choose_discard_attack" ||
     merchantUiBlocks(s)
   );
@@ -275,26 +283,112 @@ function positionSkillTooltip(clientX: number, clientY: number): void {
   skillTreeTooltip.style.top = `${Math.max(8, y)}px`;
 }
 
-function showSkillTooltip(e: MouseEvent, sk: SkillDef, reqLabel: string): void {
+function showGameTooltip(
+  e: MouseEvent,
+  titleText: string,
+  bodyText: string,
+  metaText?: string,
+): void {
   skillTreeTooltip.replaceChildren();
   const title = document.createElement("strong");
-  title.textContent = sk.name;
+  title.textContent = titleText;
   const desc = document.createElement("p");
   desc.style.margin = "0";
-  desc.textContent = sk.description;
-  const meta = document.createElement("p");
-  meta.className = "skill-tip-meta";
-  meta.textContent =
-    `Cost: ${sk.cost} SP` + (reqLabel ? ` · Requires: ${reqLabel}` : "");
+  desc.textContent = bodyText;
   skillTreeTooltip.appendChild(title);
   skillTreeTooltip.appendChild(desc);
-  skillTreeTooltip.appendChild(meta);
+  if (metaText) {
+    const meta = document.createElement("p");
+    meta.className = "game-tip-meta";
+    meta.textContent = metaText;
+    skillTreeTooltip.appendChild(meta);
+  }
   skillTreeTooltip.hidden = false;
   positionSkillTooltip(e.clientX, e.clientY);
 }
 
+function showSkillTooltip(e: MouseEvent, sk: SkillDef, reqLabel: string): void {
+  showGameTooltip(
+    e,
+    sk.name,
+    sk.description,
+    `Cost: ${sk.cost} SP` + (reqLabel ? ` · Requires: ${reqLabel}` : ""),
+  );
+}
+
 function hideSkillTooltip(): void {
   skillTreeTooltip.hidden = true;
+}
+
+function merchantConsumableDescription(listing: {
+  kind: string;
+  gemId?: string;
+  name: string;
+}): string {
+  switch (listing.kind) {
+    case "bread":
+      return "Restore 2 HP (plus Feaster bonus if unlocked). Cannot use at full HP.";
+    case "herb":
+      return "Restore 1 HP. Cannot use at full HP.";
+    case "cheese":
+      return "Restore up to 3 HP. Cannot use at full HP.";
+    case "stew":
+      return "+1 max HP, then heal 6 HP (capped at new max). Usable even at full HP.";
+    case "flame":
+      return "Destroy one card from your discard pile permanently.";
+    case "gem":
+      switch (listing.gemId) {
+        case "strength":
+          return "Next physical attack deals ×1.5 damage.";
+        case "speed":
+          return "Next movement range is doubled.";
+        case "luck":
+          return "Chance mode set to Highest for the rest of this turn.";
+        case "cards":
+          return "Draw 2 cards.";
+        case "healing":
+          return "Heal 10% of max HP (floored, minimum 1).";
+        case "defense":
+          return "+4 defense for the rest of this turn.";
+        default:
+          return "A gem of concentrated power. Break it to release its effect.";
+      }
+    default:
+      return listing.name;
+  }
+}
+
+function merchantListingTooltipParts(listing: {
+  kind: string;
+  name: string;
+  price: number;
+  stock: number;
+  cardId?: string;
+  gemId?: string;
+  skillId?: string;
+}): { title: string; body: string; meta: string } {
+  const meta = `${listing.price}G · stock ${listing.stock}`;
+  if (listing.kind === "card" && listing.cardId) {
+    const def = state.cardDefs.get(listing.cardId);
+    return {
+      title: def?.name ?? listing.name,
+      body: def?.description ?? "A playable card added to your discard pile.",
+      meta: `${meta}${def ? ` · ${def.rarity}` : ""}`,
+    };
+  }
+  if (listing.kind === "skill" && listing.skillId) {
+    const sk = getSkillDef(listing.skillId);
+    return {
+      title: sk?.name ?? listing.name,
+      body: sk?.description ?? "A unique skill.",
+      meta,
+    };
+  }
+  return {
+    title: listing.name,
+    body: merchantConsumableDescription(listing),
+    meta,
+  };
 }
 
 function drawSkillTreeEdges(wrap: HTMLElement, svg: SVGSVGElement): void {
@@ -331,10 +425,11 @@ function renderSkillTree(): void {
   skillTreeSkillPts.textContent = `${n} skill point${n === 1 ? "" : "s"}`;
   skillTreeCanvas.replaceChildren();
   for (const cat of SKILL_CATEGORIES) {
-    const skills = SKILL_DEFS.filter((s) => s.category === cat).sort((a, b) => {
+    const skills = SKILL_DEFS.filter((s) => s.category === cat && !s.merchantOnly).sort((a, b) => {
       if (a.layoutCol !== b.layoutCol) return a.layoutCol - b.layoutCol;
       return a.id.localeCompare(b.id);
     });
+    if (skills.length === 0) continue;
     const maxCol = skills.reduce((m, s) => Math.max(m, s.layoutCol), 0);
 
     const wrap = document.createElement("div");
@@ -495,6 +590,20 @@ function cardChrome(cardId: string): { icon: string; accent: string } {
       return { icon: "†", accent: "#e6a23c" };
     case "potion_of_harming":
       return { icon: "⚗", accent: "#a0522d" };
+    case "perfected_strike":
+      return { icon: "✱", accent: "#c45c26" };
+    case "fortify":
+      return { icon: "⛨", accent: "#4a7ab5" };
+    case "stay_on_the_move":
+      return { icon: "⇄", accent: "#3d9e7a" };
+    case "heal":
+      return { icon: "✚", accent: "#3cb371" };
+    case "evaluate":
+      return { icon: "☰", accent: "#7a6bb5" };
+    case "reckless_assault":
+      return { icon: "‼", accent: "#b53c3c" };
+    case "thieving_strike":
+      return { icon: "¤", accent: "#d4a72c" };
     default:
       return { icon: "?", accent: "#888888" };
   }
@@ -774,6 +883,18 @@ function findNamedId(defs: ReadonlyMap<string, { name: string }>, rawName: strin
   return null;
 }
 
+function findNamedSkillId(rawName: string): string | null {
+  const needle = normalizeLookupName(rawName);
+  if (!needle) return null;
+  for (const def of SKILL_DEFS) {
+    if (def.id.toLowerCase() === rawName.trim().toLowerCase()) return def.id;
+    if (normalizeLookupName(def.id) === needle || normalizeLookupName(def.name) === needle) {
+      return def.id;
+    }
+  }
+  return null;
+}
+
 function parseCommandNumber(raw: string): number | null {
   if (!/^-?\d+$/.test(raw.trim())) return null;
   const n = Number(raw);
@@ -834,6 +955,18 @@ function runCommandLine(raw: string): string {
     }
     apply({ type: "DEV_CARD", cardId, action });
     return `${action === "add" ? "Added" : "Removed"} ${state.cardDefs.get(cardId)?.name ?? cardId}.`;
+  }
+
+  if (verb === "skill") {
+    if (args.length < 1) return "Usage: Skill [skill name]";
+    const skillName = args.join(" ");
+    const skillId = findNamedSkillId(skillName);
+    if (!skillId) return `Unknown skill: ${skillName}`;
+    if (state.player.skillsUnlocked.includes(skillId)) {
+      return `You already have ${getSkillDef(skillId)?.name ?? skillId}.`;
+    }
+    apply({ type: "DEV_SKILL", skillId });
+    return `Unlocked ${getSkillDef(skillId)?.name ?? skillId}.`;
   }
 
   if (verb === "item") {
@@ -967,7 +1100,7 @@ function runCommandLine(raw: string): string {
     return `Editor mode ${enabled ? "enabled" : "disabled"}.`;
   }
 
-  return "Unknown command. Try Set, Card, Item, Deck, Dungeon, Floor, Theme, Graphics, Summon, Chance, or Editor.";
+  return "Unknown command. Try Set, Card, Skill, Item, Deck, Dungeon, Floor, Theme, Graphics, Summon, Chance, or Editor.";
 }
 
 function openPileInspector(which: "deck" | "discard" | "dungeon"): void {
@@ -1695,6 +1828,114 @@ function syncDualWieldModal(): void {
   }
 }
 
+function syncSenseiOfferModal(): void {
+  const offer = state.senseiOffer;
+  if (!offer) {
+    senseiOfferEl.classList.remove("is-open");
+    senseiOfferEl.setAttribute("aria-hidden", "true");
+    senseiOfferBody.replaceChildren();
+    return;
+  }
+  senseiOfferEl.classList.add("is-open");
+  senseiOfferEl.setAttribute("aria-hidden", "false");
+  senseiOfferBody.replaceChildren();
+  senseiOfferConfirm.hidden = false;
+
+  if (offer.kind === "perfected_strike_discard") {
+    senseiOfferTitle.textContent = "Perfected Strike";
+    senseiOfferNote.textContent =
+      "Select Attack cards to discard (click to toggle), then Confirm. Need at least one for the strike.";
+    state.player.hand.forEach((id, idx) => {
+      if (idx === offer.cardHandIndex) return;
+      const def = state.cardDefs.get(id);
+      if (!def?.types.includes("Attack")) return;
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "chest-offer-slot";
+      if (offer.selected.includes(idx)) b.classList.add("is-selected");
+      b.appendChild(buildOfferCardArticle(id));
+      b.addEventListener("click", () =>
+        apply({ type: "TOGGLE_SENSEI_OFFER_SELECT", handIndex: idx }),
+      );
+      senseiOfferBody.appendChild(b);
+    });
+  } else if (offer.kind === "evaluate_discard") {
+    senseiOfferTitle.textContent = "Evaluate";
+    senseiOfferNote.textContent =
+      "Select any cards to discard (click to toggle), then Confirm to draw that many.";
+    state.player.hand.forEach((id, idx) => {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className = "chest-offer-slot";
+      if (offer.selected.includes(idx)) b.classList.add("is-selected");
+      b.appendChild(buildOfferCardArticle(id));
+      b.addEventListener("click", () =>
+        apply({ type: "TOGGLE_SENSEI_OFFER_SELECT", handIndex: idx }),
+      );
+      senseiOfferBody.appendChild(b);
+    });
+  } else if (offer.kind === "stay_on_the_move") {
+    senseiOfferTitle.textContent = "Stay on the Move";
+    senseiOfferNote.textContent = "Choose a Move card from your discard pile to play immediately.";
+    senseiOfferConfirm.hidden = true;
+    const seen = new Set<string>();
+    for (const id of state.player.discardPile) {
+      if (seen.has(id)) continue;
+      if (!state.cardDefs.get(id)?.types.includes("Move")) continue;
+      seen.add(id);
+      const slot = document.createElement("div");
+      slot.className = "chest-offer-slot";
+      slot.appendChild(buildOfferCardArticle(id));
+      const play = document.createElement("button");
+      play.type = "button";
+      play.className = "primary";
+      play.textContent = "Play now";
+      play.addEventListener("click", () =>
+        apply({ type: "RESOLVE_STAY_ON_THE_MOVE", cardId: id }),
+      );
+      slot.appendChild(play);
+      senseiOfferBody.appendChild(slot);
+    }
+  } else if (offer.kind === "reckless_assault_hp") {
+    senseiOfferTitle.textContent = "Reckless Assault";
+    senseiOfferNote.textContent = `Lose HP before the strike (+2 damage per HP). Current sacrifice: ${offer.hpLost}. Max ${Math.max(0, state.player.hp - 1)}.`;
+    const row = document.createElement("div");
+    row.style.display = "flex";
+    row.style.gap = "0.5rem";
+    row.style.flexWrap = "wrap";
+    row.style.alignItems = "center";
+    const dec = document.createElement("button");
+    dec.type = "button";
+    dec.textContent = "−";
+    dec.addEventListener("click", () =>
+      apply({ type: "SET_RECKLESS_ASSAULT_HP", hpLost: offer.hpLost - 1 }),
+    );
+    const inc = document.createElement("button");
+    inc.type = "button";
+    inc.textContent = "+";
+    inc.addEventListener("click", () =>
+      apply({ type: "SET_RECKLESS_ASSAULT_HP", hpLost: offer.hpLost + 1 }),
+    );
+    const label = document.createElement("span");
+    label.textContent = `${offer.hpLost} HP (+${offer.hpLost * 2} dmg)`;
+    row.appendChild(dec);
+    row.appendChild(label);
+    row.appendChild(inc);
+    senseiOfferBody.appendChild(row);
+  }
+}
+
+function updateForesightDeckTitle(): void {
+  const hasForesight = state.player.skillsUnlocked.includes("deck_foresight");
+  if (!hasForesight || state.player.drawPile.length === 0) {
+    inspectDeckBtn.title = "Inspect draw pile";
+    return;
+  }
+  const topId = state.player.drawPile[0]!;
+  const def = state.cardDefs.get(topId);
+  inspectDeckBtn.title = `Foresight: ${def?.name ?? topId}${def?.description ? ` — ${def.description}` : ""}`;
+}
+
 function syncShiftyMerchantUi(): void {
   const ms = state.merchantState;
   const showDialogue = merchantDialogueOpen(state);
@@ -1727,6 +1968,7 @@ function syncShiftyMerchantUi(): void {
     shiftyShopEl.classList.remove("is-open");
     shiftyShopEl.setAttribute("aria-hidden", "true");
     shiftyShopTomes.hidden = true;
+    hideSkillTooltip();
   } else {
     shiftyShopEl.classList.add("is-open");
     shiftyShopEl.setAttribute("aria-hidden", "false");
@@ -1756,6 +1998,10 @@ function syncShiftyMerchantUi(): void {
       meta.textContent = `${listing.price}G · stock ${listing.stock}`;
       b.appendChild(name);
       b.appendChild(meta);
+      const tip = merchantListingTooltipParts(listing);
+      b.addEventListener("mouseenter", (ev) => showGameTooltip(ev, tip.title, tip.body, tip.meta));
+      b.addEventListener("mousemove", (ev) => positionSkillTooltip(ev.clientX, ev.clientY));
+      b.addEventListener("mouseleave", hideSkillTooltip);
       b.addEventListener("click", () =>
         apply({ type: "SELECT_MERCHANT_ITEM", listingId: listing.id }),
       );
@@ -2350,6 +2596,20 @@ function renderAll(): void {
     hintEl.textContent = "Click a gold-highlighted tile on the map to move (up to 2 steps).";
   } else if (state.pending?.kind === "play_melee") {
     hintEl.textContent = "Click an adjacent enemy on the map to strike with your sword.";
+  } else if (state.pending?.kind === "play_perfected_strike") {
+    hintEl.textContent = `Perfected Strike — click an adjacent target (${state.pending.damage} damage).`;
+  } else if (state.pending?.kind === "play_reckless_assault") {
+    hintEl.textContent = `Reckless Assault — click an adjacent target (${state.pending.hpLost} HP already committed).`;
+  } else if (state.pending?.kind === "play_thieving_strike") {
+    hintEl.textContent = "Thieving Strike — click an adjacent target.";
+  } else if (state.senseiOffer?.kind === "perfected_strike_discard") {
+    hintEl.textContent = "Perfected Strike — select Attack cards to discard, then Confirm.";
+  } else if (state.senseiOffer?.kind === "evaluate_discard") {
+    hintEl.textContent = "Evaluate — select cards to discard, then Confirm.";
+  } else if (state.senseiOffer?.kind === "stay_on_the_move") {
+    hintEl.textContent = "Stay on the Move — choose a Move card from discard.";
+  } else if (state.senseiOffer?.kind === "reckless_assault_hp") {
+    hintEl.textContent = "Reckless Assault — choose HP to sacrifice, then Confirm.";
   } else if (state.pending?.kind === "discard_move1") {
     const mr = state.pending.maxRange;
     hintEl.textContent =
@@ -2491,7 +2751,9 @@ function renderAll(): void {
   syncCardPickupModal();
   syncDeckBuilderModal();
   syncDualWieldModal();
+  syncSenseiOfferModal();
   syncShiftyMerchantUi();
+  updateForesightDeckTitle();
 
   if (skillTreeModal.classList.contains("is-open")) {
     renderSkillTree();
@@ -2505,6 +2767,9 @@ cancelBtn.addEventListener("click", () => {
 });
 dualWieldCancel.addEventListener("click", () => apply({ type: "CANCEL_PENDING" }));
 dualWieldBackdrop.addEventListener("click", () => apply({ type: "CANCEL_PENDING" }));
+senseiOfferCancel.addEventListener("click", () => apply({ type: "CANCEL_PENDING" }));
+senseiOfferBackdrop.addEventListener("click", () => apply({ type: "CANCEL_PENDING" }));
+senseiOfferConfirm.addEventListener("click", () => apply({ type: "CONFIRM_SENSEI_OFFER" }));
 unequipBtn.addEventListener("click", () => apply({ type: "UNEQUIP" }));
 shiftyShopTomes.addEventListener("click", () => apply({ type: "OPEN_MERCHANT_TOMES" }));
 shiftyShopLeave.addEventListener("click", () => apply({ type: "CLOSE_MERCHANT_SHOP" }));
@@ -2659,6 +2924,14 @@ document.addEventListener("keydown", (e) => {
   }
   if (e.key === "Escape" && flameDestroyOfferEl.classList.contains("is-open")) {
     if (state.flameDestroyPending) skipFlameDestroy();
+    return;
+  }
+  if (e.key === "Escape" && dualWieldOfferEl.classList.contains("is-open")) {
+    apply({ type: "CANCEL_PENDING" });
+    return;
+  }
+  if (e.key === "Escape" && senseiOfferEl.classList.contains("is-open")) {
+    apply({ type: "CANCEL_PENDING" });
     return;
   }
   if (e.key === "Escape" && bindTomeOfferEl.classList.contains("is-open")) {

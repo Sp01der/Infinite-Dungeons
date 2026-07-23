@@ -22,6 +22,8 @@ export interface SkillDef {
   layoutCol: number;
   /** Shown under the node: resources granted each turn. */
   grantsTokens?: { kind: SkillTokenGrantKind; perTurn: number }[];
+  /** Sold by merchants (e.g. Sensei); hidden from the skill-point tree UI. */
+  merchantOnly?: boolean;
 }
 
 type RawSkill = Omit<SkillDef, "layoutCol">;
@@ -234,6 +236,54 @@ const RAW_SKILLS: RawSkill[] = [
     description: "Your starting hand size increases by 1 again.",
     cost: 6,
     requires: ["deck_card_player_ii"],
+  },
+  {
+    id: "atk_guard_destroyer",
+    category: "Attack",
+    name: "Guard Destroyer",
+    description:
+      "After attacking an enemy, your next attack on that enemy will do one additional damage. This stacks, but if you play an attack that does not hit that enemy, the additional damage is reset.",
+    cost: 0,
+    requires: [],
+    merchantOnly: true,
+  },
+  {
+    id: "def_keep_up_your_guard",
+    category: "Defense",
+    name: "Keep up your Guard",
+    description:
+      "Each turn you gain 1 level of resistance. This resistance lasts between turns. However, if you have resistance equal or higher than your Level, you gain none.",
+    cost: 0,
+    requires: [],
+    merchantOnly: true,
+  },
+  {
+    id: "mob_always_moving",
+    category: "Mobility",
+    name: "Always Moving",
+    description: "If you draw no cards with the type Move you gain another movement token this turn.",
+    cost: 0,
+    requires: [],
+    merchantOnly: true,
+  },
+  {
+    id: "vit_keep_fighting",
+    category: "Vitality",
+    name: "Keep Fighting",
+    description:
+      "If you took more than 5 damage between now and last turn, gain 5 levels of resistance for this turn.",
+    cost: 0,
+    requires: [],
+    merchantOnly: true,
+  },
+  {
+    id: "deck_foresight",
+    category: "Deck",
+    name: "Foresight",
+    description: "You will see what card is on top of your deck if you hover over it.",
+    cost: 0,
+    requires: [],
+    merchantOnly: true,
   },
 ];
 

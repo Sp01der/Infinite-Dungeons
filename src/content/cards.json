@@ -335,5 +335,69 @@
     "description": "Gain 10 Resistance this turn. Resistance absorbs incoming damage (ignoring defense) until depleted.",
     "types": ["Magic", "Aid"],
     "effect": { "type": "arcane_shield", "resistance": 10 }
+  },
+  {
+    "id": "perfected_strike",
+    "name": "Perfected Strike",
+    "rarity": "Rare",
+    "special": true,
+    "description": "Discard any number of Attack cards from your hand. If you discard at least one, attack an adjacent target dealing 5 damage plus 5 more for each card discarded.",
+    "types": ["Attack"],
+    "tags": ["physical attack", "melee"],
+    "effect": { "type": "perfected_strike" }
+  },
+  {
+    "id": "fortify",
+    "name": "Fortify",
+    "rarity": "Uncommon",
+    "special": true,
+    "description": "For this turn your defense and resistance is doubled.",
+    "types": ["Aid"],
+    "effect": { "type": "fortify" }
+  },
+  {
+    "id": "stay_on_the_move",
+    "name": "Stay on the Move",
+    "rarity": "Uncommon",
+    "special": true,
+    "description": "Choose a Move card from your discard pile which is immediately played.",
+    "types": ["Skill", "Move"],
+    "effect": { "type": "stay_on_the_move" }
+  },
+  {
+    "id": "heal",
+    "name": "Heal",
+    "rarity": "Rare",
+    "special": true,
+    "description": "Heal 10% of your max health. Cannot be played if you have played any cards this turn, and you may not play any cards after this.",
+    "types": ["Aid"],
+    "effect": { "type": "heal" }
+  },
+  {
+    "id": "evaluate",
+    "name": "Evaluate",
+    "rarity": "Rare",
+    "special": true,
+    "description": "Draw a card. Discard any number of cards and draw one for each discarded.",
+    "types": ["Deck"],
+    "effect": { "type": "evaluate" }
+  },
+  {
+    "id": "reckless_assault",
+    "name": "Reckless Assault",
+    "rarity": "Uncommon",
+    "description": "Deal 3–6 damage to an adjacent target. Before dealing damage, choose to lose any amount of health. For every health you lose, the attack gains 2 damage.",
+    "types": ["Attack"],
+    "tags": ["physical attack", "melee"],
+    "effect": { "type": "reckless_assault", "minDamage": 3, "maxDamage": 6 }
+  },
+  {
+    "id": "thieving_strike",
+    "name": "Thieving Strike",
+    "rarity": "Uncommon",
+    "description": "Deal 1–4 damage to an adjacent target. 25% chance of gaining one gold, or 100% if you kill the target with this attack. +1 gold if the target is hit with knockback this turn.",
+    "types": ["Attack"],
+    "tags": ["physical attack", "melee"],
+    "effect": { "type": "thieving_strike", "minDamage": 1, "maxDamage": 4 }
   }
 ]

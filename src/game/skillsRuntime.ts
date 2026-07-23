@@ -8,26 +8,31 @@ export const SID = {
   ATK_HEAVY_PUNCHES: "atk_heavy_punches",
   ATK_FIGHTER: "atk_fighter_training",
   ATK_MAGE: "atk_mage_training",
+  ATK_GUARD_DESTROYER: "atk_guard_destroyer",
   DEF_BLOCK: "def_block",
   DEF_BLOCK_II: "def_block_ii",
   DEF_PROTECTIVE: "def_protective_stance",
   DEF_BLOCK_III: "def_block_iii",
   DEF_PROTECTIVE_II: "def_protective_stance_ii",
+  DEF_KEEP_UP_YOUR_GUARD: "def_keep_up_your_guard",
   MOB_SPEEDY: "mob_speedy",
   MOB_SPEEDY_II: "mob_speedy_ii",
   MOB_CAREFUL: "mob_careful_looting",
   MOB_GOLD: "mob_gold_seeker",
   MOB_SPRINTER: "mob_sprinter",
   MOB_EXPLORATION: "mob_exploration",
+  MOB_ALWAYS_MOVING: "mob_always_moving",
   VIT_RES: "vit_resilience",
   VIT_RES_II: "vit_resilience_ii",
   VIT_FEASTER: "vit_feaster",
   VIT_TOUGH: "vit_tough",
+  VIT_KEEP_FIGHTING: "vit_keep_fighting",
   DECK_CP: "deck_card_player",
   DECK_CP_II: "deck_card_player_ii",
   DECK_DESC: "deck_descendant",
   DECK_BUILDER: "deck_builder",
   DECK_CP_III: "deck_card_player_iii",
+  DECK_FORESIGHT: "deck_foresight",
 } as const;
 
 export function hasSkill(s: GameState, id: string): boolean {
@@ -75,29 +80,88 @@ export function incomingDamageToPlayer(s: GameState, raw: number): number {
 /**
  * Apply incoming damage: Resistance absorbs raw damage (no defense), then leftover
  * is reduced by defense/block and subtracted from HP.
+ * Pass `ignoreDefense: true` for effects like Mystic Core magic missile.
  */
 export function applyDamageToPlayer(
   s: GameState,
   raw: number,
+  opts?: { ignoreDefense?: boolean },
 ): { state: GameState; damage: number } {
+  const fortify = s.player.fortifyThisTurn;
   let resistance = s.player.resistance;
   let remaining = Math.max(0, Math.trunc(raw));
   if (resistance > 0 && remaining > 0) {
-    const used = Math.min(resistance, remaining);
-    resistance -= used;
-    remaining -= used;
+    const effectiveResist = fortify ? resistance * 2 : resistance;
+    const usedEffective = Math.min(effectiveResist, remaining);
+    remaining -= usedEffective;
+    const usedUnderlying = fortify ? Math.ceil(usedEffective / 2) : usedEffective;
+    resistance = Math.max(0, resistance - usedUnderlying);
   }
   let next: GameState = {
     ...s,
     player: { ...s.player, resistance },
   };
-  const damage =
-    remaining <= 0
-      ? 0
-      : applyDefense(remaining, next.player.defenseBonusThisTurn + playerBlockRollForHit(next));
+  let damage: number;
+  if (remaining <= 0) {
+    damage = 0;
+  } else if (opts?.ignoreDefense) {
+    damage = remaining;
+  } else {
+    const defenseBonus = next.player.defenseBonusThisTurn + playerBlockRollForHit(next);
+    const effectiveDefense = fortify ? defenseBonus * 2 : defenseBonus;
+    damage = applyDefense(remaining, effectiveDefense);
+  }
   const hp = Math.max(0, next.player.hp - damage);
-  next = { ...next, player: { ...next.player, hp } };
+  next = {
+    ...next,
+    player: {
+      ...next.player,
+      hp,
+      damageTakenThisTurn: next.player.damageTakenThisTurn + damage,
+    },
+  };
   return { state: next, damage };
+}
+
+export function guardDestroyerBonus(s: GameState, monsterId: string | null): number {
+  if (!hasSkill(s, SID.ATK_GUARD_DESTROYER) || !monsterId) return 0;
+  if (s.player.guardDestroyerTargetId !== monsterId) return 0;
+  return s.player.guardDestroyerStacks;
+}
+
+export function applyGuardDestroyerAfterAttack(
+  s: GameState,
+  hitMonsterId: string | null,
+  wasAttack: boolean,
+): GameState {
+  if (!hasSkill(s, SID.ATK_GUARD_DESTROYER) || !wasAttack) return s;
+  if (!hitMonsterId) {
+    return {
+      ...s,
+      player: {
+        ...s.player,
+        guardDestroyerTargetId: null,
+        guardDestroyerStacks: 0,
+      },
+    };
+  }
+  if (s.player.guardDestroyerTargetId === hitMonsterId) {
+    return {
+      ...s,
+      player: {
+        ...s.player,
+        guardDestroyerStacks: s.player.guardDestroyerStacks + 1,
+      },
+    };
+  }
+  return {
+    ...s,
+    player: {
+      ...s.player,
+      guardDestroyerTargetId: hitMonsterId,
+      guardDestroyerStacks: 1,
+    },
+  };
 }
 
 export function attackStrengthBonus(s: GameState): number {

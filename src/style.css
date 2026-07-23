@@ -1391,6 +1391,12 @@ button.pile-inspect:focus-visible {
   gap: 0.5rem;
 }
 
+.chest-offer-slot.is-selected {
+  outline: 2px solid #e6a23c;
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+
 .chest-offer-slot .playing-card {
   flex: 1;
   min-height: 0;
@@ -1841,9 +1847,9 @@ button.pile-inspect:focus-visible {
   cursor: default;
 }
 
-.skill-tree-tooltip {
+.game-tooltip {
   position: fixed;
-  z-index: 220;
+  z-index: 400;
   max-width: 18rem;
   padding: 0.55rem 0.65rem;
   font-size: 0.78rem;
@@ -1856,18 +1862,18 @@ button.pile-inspect:focus-visible {
   pointer-events: none;
 }
 
-.skill-tree-tooltip[hidden] {
+.game-tooltip[hidden] {
   display: none !important;
 }
 
-.skill-tree-tooltip strong {
+.game-tooltip strong {
   display: block;
   margin-bottom: 0.35rem;
   font-size: 0.85rem;
   color: #f0ebe3;
 }
 
-.skill-tree-tooltip .skill-tip-meta {
+.game-tooltip .game-tip-meta {
   margin: 0.4rem 0 0;
   font-size: 0.7rem;
   color: #9aa3b2;

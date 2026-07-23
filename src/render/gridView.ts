@@ -1571,6 +1571,9 @@ export class GridView extends Container {
       pending.kind === "play_axe" ||
       pending.kind === "play_mace_smash" ||
       pending.kind === "play_poisoned_blade" ||
+      pending.kind === "play_perfected_strike" ||
+      pending.kind === "play_reckless_assault" ||
+      pending.kind === "play_thieving_strike" ||
       pending.kind === "discard_punch"
     ) {
       const adj = new Set<string>();

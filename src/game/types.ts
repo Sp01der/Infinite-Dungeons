@@ -21,6 +21,11 @@ export interface CardDef {
   types: CardType[];
   /** Internal gameplay traits used across effects and skills; not player-facing card types. */
   tags?: CardTag[];
+  /**
+   * Special cards are excluded from normal loot pools (chests/pots/pedestals)
+   * but remain available to Deck Builder and merchants.
+   */
+  special?: boolean;
   effect:
     | { type: "move"; range: number }
     | { type: "melee_attack"; minDamage: number; maxDamage: number }
@@ -57,7 +62,14 @@ export interface CardDef {
     | { type: "potion_of_harming"; range: number; damage: number; cloudTurns: number }
     | { type: "arcane_charge"; draw: number }
     | { type: "shining_blade"; minDamage: number; maxDamage: number; diagonals: boolean }
-    | { type: "arcane_shield"; resistance: number };
+    | { type: "arcane_shield"; resistance: number }
+    | { type: "perfected_strike" }
+    | { type: "fortify" }
+    | { type: "stay_on_the_move" }
+    | { type: "heal" }
+    | { type: "evaluate" }
+    | { type: "reckless_assault"; minDamage: number; maxDamage: number }
+    | { type: "thieving_strike"; minDamage: number; maxDamage: number };
 }
 
 export type CardTag = "punch" | "physical attack" | "ranged" | "melee";
@@ -559,6 +571,24 @@ export type PendingIntent =
       range: number;
       damage: number;
       cloudTurns: number;
+    }
+  | {
+      kind: "play_perfected_strike";
+      cardHandIndex: number;
+      damage: number;
+    }
+  | {
+      kind: "play_reckless_assault";
+      cardHandIndex: number;
+      minDamage: number;
+      maxDamage: number;
+      hpLost: number;
+    }
+  | {
+      kind: "play_thieving_strike";
+      cardHandIndex: number;
+      minDamage: number;
+      maxDamage: number;
     };
 
 export interface StairFeaturePositions {
@@ -577,7 +607,8 @@ export type ShiftyListingKind =
   | "gem"
   | "cheese"
   | "stew"
-  | "flame";
+  | "flame"
+  | "skill";
 
 export interface ShiftyListing {
   id: string;
@@ -590,6 +621,8 @@ export interface ShiftyListing {
   gemId?: ShiftyGemId;
   /** Stable key for Obamly sell-out restock tracking. */
   catalogKey?: string;
+  /** Sensei (and similar): skill unlock for sale. */
+  skillId?: string;
 }
 
 export type ShiftyDialogueChoice = { id: string; label: string };
@@ -690,9 +723,23 @@ export interface GameState {
     arcaneChargeActive: boolean;
     /**
      * Resistance status: absorbs raw incoming damage (ignores defense) until
-     * depleted. Does not tick down each turn; Arcane Shield clears at next turn start.
+     * depleted. Cleared at next turn start unless Keep up your Guard is unlocked.
      */
     resistance: number;
+    /** Fortify: defense bonus and resistance are treated as doubled this turn. */
+    fortifyThisTurn: boolean;
+    /** Cards successfully played this turn (for Heal gating). */
+    cardsPlayedThisTurn: number;
+    /** Heal: no further cards may be played this turn. */
+    noMoreCardsThisTurn: boolean;
+    /** Guard Destroyer: last monster hit by an attack. */
+    guardDestroyerTargetId: string | null;
+    /** Guard Destroyer: bonus damage stacks for the tracked target. */
+    guardDestroyerStacks: number;
+    /** Damage taken this turn (for Keep Fighting). */
+    damageTakenThisTurn: number;
+    /** Monster ids knockbacked this turn (for Thieving Strike bonus gold). */
+    knockbackedMonsterIdsThisTurn: string[];
     /** Fire levels on the player (for future use). */
     fireLevels: number;
   };
@@ -734,6 +781,15 @@ export interface GameState {
     | { step: "resolving_hand_attack"; firstCardId: string }
     | { step: "choose_discard_attack"; firstCardId: string }
     | { step: "resolving_discard_attack"; firstCardId: string };
+  /**
+   * Sensei / Special card multi-step offers (discard pickers, HP sacrifice, etc.).
+   */
+  senseiOffer:
+    | null
+    | { kind: "perfected_strike_discard"; cardHandIndex: number; selected: number[] }
+    | { kind: "evaluate_discard"; selected: number[] }
+    | { kind: "stay_on_the_move" }
+    | { kind: "reckless_assault_hp"; cardHandIndex: number; hpLost: number };
   /** Chest opened: pick one of three cards to add to discard, or resolve with neither. */
   chestOffer: null | { cards: [string, string, string] };
   /** Pot / ground card finds: take into discard or decline (queue if several). */
@@ -884,6 +940,7 @@ export type GameCommand =
       value: number;
     }
   | { type: "DEV_CARD"; cardId: string; action: "add" | "remove" }
+  | { type: "DEV_SKILL"; skillId: string }
   | {
       type: "DEV_ITEM";
       item:
@@ -907,6 +964,10 @@ export type GameCommand =
   | { type: "DEV_EDITOR_CELL_ACTION"; x: number; y: number }
   | { type: "REQUEST_PLAY_CARD"; handIndex: number }
   | { type: "RESOLVE_DUAL_WIELD_DISCARD"; cardId: string }
+  | { type: "TOGGLE_SENSEI_OFFER_SELECT"; handIndex: number }
+  | { type: "CONFIRM_SENSEI_OFFER" }
+  | { type: "SET_RECKLESS_ASSAULT_HP"; hpLost: number }
+  | { type: "RESOLVE_STAY_ON_THE_MOVE"; cardId: string }
   | { type: "REQUEST_DISCARD_BONUS"; handIndex: number; bonus: "move1" | "punch" | "investigate" }
   | { type: "REQUEST_EQUIP"; handIndex: number }
   | { type: "UNEQUIP" }

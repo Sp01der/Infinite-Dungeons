@@ -166,10 +166,11 @@
         <div id="skill-tree-scroll" class="skill-tree-scroll">
           <div id="skill-tree-canvas" class="skill-tree-canvas"></div>
         </div>
-        <div id="skill-tree-tooltip" class="skill-tree-tooltip" hidden></div>
         <button type="button" class="skill-tree-close" id="skill-tree-close">Close</button>
       </div>
     </div>
+
+    <div id="game-tooltip" class="game-tooltip" hidden></div>
 
     <div id="command-window" class="command-window" aria-hidden="true" role="dialog" aria-labelledby="command-window-title">
       <div class="command-window-backdrop" id="command-window-backdrop" tabindex="-1"></div>
@@ -345,6 +346,19 @@
         <div id="dual-wield-cards" class="chest-offer-cards"></div>
         <div class="chest-offer-actions">
           <button type="button" class="chest-offer-skip" id="dual-wield-cancel">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="sensei-offer" class="chest-offer" aria-hidden="true" role="dialog" aria-labelledby="sensei-offer-title">
+      <div class="chest-offer-backdrop" id="sensei-offer-backdrop" tabindex="-1"></div>
+      <div class="chest-offer-panel">
+        <h2 id="sensei-offer-title" class="chest-offer-heading">Card choice</h2>
+        <p id="sensei-offer-note" class="chest-offer-note"></p>
+        <div id="sensei-offer-body" class="chest-offer-cards"></div>
+        <div class="chest-offer-actions">
+          <button type="button" class="chest-offer-skip" id="sensei-offer-confirm">Confirm</button>
+          <button type="button" class="chest-offer-skip" id="sensei-offer-cancel">Cancel</button>
         </div>
       </div>
     </div>
