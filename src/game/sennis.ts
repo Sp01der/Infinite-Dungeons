@@ -172,7 +172,7 @@ export function confirmDialogueSennis(listing: ShiftyListing): {
       "These Flames were created with magic, and thus can permanently destroy cards in the dungeon. Very useful.";
   } else if (listing.cardId === "shining_blade" || listing.cardId === "arcane_shield") {
     text =
-      "Basic Spells in card form. The simplest of magic. But even the simplest magic can be highly effective.";
+      "A Basic Spell in card form. The simplest of magic. But even the simplest magic can be highly effective.";
   } else if (listing.cardId === "fireball") {
     text =
       "Beware. The rash mage will throw fireballs with no regard, and in doing so burn themselves.";
