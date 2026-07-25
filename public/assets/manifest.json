@@ -41,12 +41,172 @@
       "fallbackColor": "#2d353d"
     },
     "water": { "fallbackColor": "#3eb0ff" },
-    "floor_overgrown": { "fallbackColor": "#3f9a4a" },
-    "floor_overgrown_alt": { "fallbackColor": "#2f7a38" },
+    "floor_overgrown": {
+      "texture": "/assets/floor_tiles_theme.png",
+      "frame": [40, 0, 20, 20],
+      "fallbackColor": "#3f9a4a"
+    },
+    "floor_overgrown_alt": {
+      "texture": "/assets/floor_tiles_theme.png",
+      "frame": [60, 0, 20, 20],
+      "fallbackColor": "#2f7a38"
+    },
+    "floor_overgrown_b": {
+      "texture": "/assets/floor_tiles_theme.png",
+      "frame": [80, 0, 20, 20],
+      "fallbackColor": "#3f9a4a"
+    },
+    "floor_overgrown_b_alt": {
+      "texture": "/assets/floor_tiles_theme.png",
+      "frame": [100, 0, 20, 20],
+      "fallbackColor": "#2f7a38"
+    },
+    "floor_overgrown_c": {
+      "texture": "/assets/floor_tiles_theme.png",
+      "frame": [120, 0, 20, 20],
+      "fallbackColor": "#3f9a4a"
+    },
+    "floor_overgrown_c_alt": {
+      "texture": "/assets/floor_tiles_theme.png",
+      "frame": [140, 0, 20, 20],
+      "fallbackColor": "#2f7a38"
+    },
     "floor_brownstone": { "fallbackColor": "#c9843f" },
     "floor_brownstone_alt": { "fallbackColor": "#a86a2e" },
-    "floor_greenhouse": { "fallbackColor": "#2f9a45" },
+    "floor_greenhouse": {
+      "texture": "/assets/floor_tiles_theme.png",
+      "frame": [160, 0, 20, 20],
+      "fallbackColor": "#2f9a45"
+    },
+    "floor_greenhouse_b": {
+      "texture": "/assets/floor_tiles_theme.png",
+      "frame": [180, 0, 20, 20],
+      "fallbackColor": "#2f9a45"
+    },
+    "floor_greenhouse_c": {
+      "texture": "/assets/floor_tiles_theme.png",
+      "frame": [200, 0, 20, 20],
+      "fallbackColor": "#1e8a3a"
+    },
+    "floor_greenhouse_d": {
+      "texture": "/assets/floor_tiles_theme.png",
+      "frame": [220, 0, 20, 20],
+      "fallbackColor": "#2f9a45"
+    },
+    "floor_greenhouse_e": {
+      "texture": "/assets/floor_tiles_theme.png",
+      "frame": [240, 0, 20, 20],
+      "fallbackColor": "#1e8a3a"
+    },
     "wall": { "fallbackColor": "#0f1118" },
+    "wall_face": {
+      "texture": "/assets/wall_faces.png",
+      "frame": [0, 0, 20, 20],
+      "fallbackColor": "#0f1118"
+    },
+    "wall_face_2": {
+      "texture": "/assets/wall_faces.png",
+      "frame": [20, 0, 20, 20],
+      "fallbackColor": "#0f1118"
+    },
+    "wall_face_3": {
+      "texture": "/assets/wall_faces.png",
+      "frame": [40, 0, 20, 20],
+      "fallbackColor": "#0f1118"
+    },
+    "wall_face_4": {
+      "texture": "/assets/wall_faces.png",
+      "frame": [60, 0, 20, 20],
+      "fallbackColor": "#0f1118"
+    },
+    "wall_face_5": {
+      "texture": "/assets/wall_faces.png",
+      "frame": [80, 0, 20, 20],
+      "fallbackColor": "#0f1118"
+    },
+    "wall_face_6": {
+      "texture": "/assets/wall_faces.png",
+      "frame": [100, 0, 20, 20],
+      "fallbackColor": "#0f1118"
+    },
+    "wall_face_7": {
+      "texture": "/assets/wall_faces.png",
+      "frame": [120, 0, 20, 20],
+      "fallbackColor": "#0f1118"
+    },
+    "wall_face_8": {
+      "texture": "/assets/wall_faces.png",
+      "frame": [140, 0, 20, 20],
+      "fallbackColor": "#0f1118"
+    },
+    "wall_face_9": {
+      "texture": "/assets/wall_faces.png",
+      "frame": [160, 0, 20, 20],
+      "fallbackColor": "#0f1118"
+    },
+    "wall_face_10": {
+      "texture": "/assets/wall_faces.png",
+      "frame": [180, 0, 20, 20],
+      "fallbackColor": "#0f1118"
+    },
+    "wall_face_11": {
+      "texture": "/assets/wall_faces.png",
+      "frame": [200, 0, 20, 20],
+      "fallbackColor": "#1e8a3a"
+    },
+    "wall_face_12": {
+      "texture": "/assets/wall_faces.png",
+      "frame": [220, 0, 20, 20],
+      "fallbackColor": "#1e8a3a"
+    },
+    "wall_face_13": {
+      "texture": "/assets/wall_faces.png",
+      "frame": [240, 0, 20, 20],
+      "fallbackColor": "#1e8a3a"
+    },
+    "wall_face_14": {
+      "texture": "/assets/wall_faces.png",
+      "frame": [260, 0, 20, 20],
+      "fallbackColor": "#1e8a3a"
+    },
+    "wall_face_brownstone": {
+      "texture": "/assets/wall_faces_brownstone.png",
+      "frame": [0, 0, 20, 20],
+      "fallbackColor": "#8f5039"
+    },
+    "wall_face_brownstone_2": {
+      "texture": "/assets/wall_faces_brownstone.png",
+      "frame": [20, 0, 20, 20],
+      "fallbackColor": "#8f5039"
+    },
+    "wall_face_brownstone_3": {
+      "texture": "/assets/wall_faces_brownstone.png",
+      "frame": [40, 0, 20, 20],
+      "fallbackColor": "#8f5039"
+    },
+    "wall_face_brownstone_4": {
+      "texture": "/assets/wall_faces_brownstone.png",
+      "frame": [60, 0, 20, 20],
+      "fallbackColor": "#8f5039"
+    },
+    "wall_face_brownstone_5": {
+      "texture": "/assets/wall_faces_brownstone.png",
+      "frame": [80, 0, 20, 20],
+      "fallbackColor": "#8f5039"
+    },
+    "wall_face_brownstone_6": {
+      "texture": "/assets/wall_faces_brownstone.png",
+      "frame": [100, 0, 20, 20],
+      "fallbackColor": "#8f5039"
+    },
+    "wall_border": {
+      "texture": "/assets/wall_border.png",
+      "fallbackColor": "#161617"
+    },
+    "wall_border_brownstone": {
+      "texture": "/assets/wall_border_brownstone.png",
+      "fallbackColor": "#6f4034"
+    },
     "player": { "fallbackColor": "#2ecc71" },
     "enemy_slime": { "texture": "/assets/enemy_slime.png", "fallbackColor": "#6bcf4a" },
     "enemy_drosir": { "texture": "/assets/creatures_statuses.png", "frame": [32, 32, 16, 16], "fallbackColor": "#1fc4d4" },
@@ -77,8 +237,16 @@
     "pot": { "texture": "/assets/pot.png", "fallbackColor": "#e09040" },
     "magic_pot": { "texture": "/assets/magic_pot.png", "fallbackColor": "#3eb0ff" },
     "chest": { "texture": "/assets/chest.png", "fallbackColor": "#e6b422" },
-    "gauntlet_corridor": { "fallbackColor": "#6a3038" },
-    "gauntlet_corridor_alt": { "fallbackColor": "#555a66" },
+    "gauntlet_corridor": {
+      "texture": "/assets/floor_tiles_theme.png",
+      "frame": [0, 0, 20, 20],
+      "fallbackColor": "#6a3038"
+    },
+    "gauntlet_corridor_alt": {
+      "texture": "/assets/floor_tiles_theme.png",
+      "frame": [20, 0, 20, 20],
+      "fallbackColor": "#555a66"
+    },
     "fog": { "fallbackColor": "#050508", "alpha": 0.94 },
     "highlight": { "fallbackColor": "#f1c40f", "alpha": 0.45 },
     "merchant_shifty": { "texture": "/assets/merchant_shifty.png", "fallbackColor": "#7b3db8" },

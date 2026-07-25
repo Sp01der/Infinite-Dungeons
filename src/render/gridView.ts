@@ -65,6 +65,7 @@ function stableBinaryVariant(id: string): "a" | "b" {
 export class GridView extends Container {
   private floorLayer = new Container();
   private wallRimLayer = new Graphics();
+  private wallBorderLayer = new Container();
   private gridLines = new Graphics();
   private potLayer = new Container();
   private rockLayer = new Container();
@@ -138,6 +139,7 @@ export class GridView extends Container {
     this.sortableChildren = true;
     this.floorLayer.zIndex = 0;
     this.wallRimLayer.zIndex = 1;
+    this.wallBorderLayer.zIndex = 1.5;
     this.gridLines.zIndex = 2;
     this.potLayer.zIndex = 3;
     this.rockLayer.zIndex = 4;
@@ -152,6 +154,7 @@ export class GridView extends Container {
     this.fxLayer.zIndex = 10;
     this.addChild(this.floorLayer);
     this.addChild(this.wallRimLayer);
+    this.addChild(this.wallBorderLayer);
     this.addChild(this.gridLines);
     this.addChild(this.potLayer);
     this.addChild(this.rockLayer);
@@ -629,6 +632,7 @@ export class GridView extends Container {
 
     this.floorLayer.removeChildren();
     this.wallRimLayer.clear();
+    this.wallBorderLayer.removeChildren();
     this.potLayer.removeChildren();
     this.rockLayer.removeChildren();
     this.lootLayer.removeChildren();
@@ -644,11 +648,12 @@ export class GridView extends Container {
 
     const w = state.width;
     const h = state.height;
-    const rimHalf = WALL_RIM_THICK / 2;
 
+    // Faced walls read as part of the room, so they never produce a border edge.
     const isSolidWall = (tx: number, ty: number): boolean => {
       if (tx < 0 || ty < 0 || tx >= w || ty >= h) return true;
-      return state.tiles[ty][tx] === "wall";
+      if (state.tiles[ty][tx] !== "wall") return false;
+      return !this.isWallFaceTile(state, tx, ty);
     };
 
     const bridgeKeys = this.bridgeKeySet(state);
@@ -669,7 +674,9 @@ export class GridView extends Container {
         const rkind = rid >= 0 ? state.roomKinds[rid] : undefined;
         let id: string;
         if (kind === "wall") {
-          id = "wall";
+          id = this.isWallFaceTile(state, x, y)
+            ? this.pickWallFaceSpriteId(state, x, y)
+            : "wall";
         } else if (kind === "water") {
           id = bridgeKeys.has(keyOf({ x, y }))
             ? this.pickThemedFloorSpriteId(state, x, y, rid, rkind)
@@ -714,64 +721,21 @@ export class GridView extends Container {
       this.floorLayer.addChild(g);
     }
 
-    if (state.fogOfWar) {
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          if (!state.discovered.has(keyOf({ x, y }))) continue;
-          const discKind = state.tiles[y][x];
-          if (discKind !== "floor" && !(discKind === "water" && bridgeKeys.has(keyOf({ x, y })))) continue;
-          const ox = x * TILE;
-          const oy = y * TILE;
-          if (isSolidWall(x, y - 1)) {
-            this.wallRimLayer
-              .rect(ox, oy - rimHalf, TILE, WALL_RIM_THICK)
-              .fill({ color: 0x05060a, alpha: 0.95 });
-          }
-          if (isSolidWall(x + 1, y)) {
-            this.wallRimLayer
-              .rect(ox + TILE - rimHalf, oy, WALL_RIM_THICK, TILE)
-              .fill({ color: 0x05060a, alpha: 0.95 });
-          }
-          if (isSolidWall(x, y + 1)) {
-            this.wallRimLayer
-              .rect(ox, oy + TILE - rimHalf, TILE, WALL_RIM_THICK)
-              .fill({ color: 0x05060a, alpha: 0.95 });
-          }
-          if (isSolidWall(x - 1, y)) {
-            this.wallRimLayer
-              .rect(ox - rimHalf, oy, WALL_RIM_THICK, TILE)
-              .fill({ color: 0x05060a, alpha: 0.95 });
-          }
-        }
-      }
-    } else {
-      for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-          const fk = state.tiles[y][x];
-          if (fk !== "floor" && !(fk === "water" && bridgeKeys.has(keyOf({ x, y })))) continue;
-          const ox = x * TILE;
-          const oy = y * TILE;
-          if (isSolidWall(x, y - 1)) {
-            this.wallRimLayer
-              .rect(ox, oy - rimHalf, TILE, WALL_RIM_THICK)
-              .fill({ color: 0x05060a, alpha: 0.95 });
-          }
-          if (isSolidWall(x + 1, y)) {
-            this.wallRimLayer
-              .rect(ox + TILE - rimHalf, oy, WALL_RIM_THICK, TILE)
-              .fill({ color: 0x05060a, alpha: 0.95 });
-          }
-          if (isSolidWall(x, y + 1)) {
-            this.wallRimLayer
-              .rect(ox, oy + TILE - rimHalf, TILE, WALL_RIM_THICK)
-              .fill({ color: 0x05060a, alpha: 0.95 });
-          }
-          if (isSolidWall(x - 1, y)) {
-            this.wallRimLayer
-              .rect(ox - rimHalf, oy, WALL_RIM_THICK, TILE)
-              .fill({ color: 0x05060a, alpha: 0.95 });
-          }
-        }
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        if (state.fogOfWar && !this.isRevealedForDraw(state, x, y)) continue;
+        const tk = state.tiles[y][x];
+        const bordered =
+          tk === "floor" ||
+          (tk === "water" && bridgeKeys.has(keyOf({ x, y }))) ||
+          this.isWallFaceTile(state, x, y);
+        if (!bordered) continue;
+        const ox = x * TILE;
+        const oy = y * TILE;
+        if (isSolidWall(x, y - 1)) this.addWallBorder(state, "top", ox, oy);
+        if (isSolidWall(x + 1, y)) this.addWallBorder(state, "right", ox, oy);
+        if (isSolidWall(x, y + 1)) this.addWallBorder(state, "bottom", ox, oy);
+        if (isSolidWall(x - 1, y)) this.addWallBorder(state, "left", ox, oy);
       }
     }
 
@@ -906,7 +870,7 @@ export class GridView extends Container {
     if (state.fogOfWar) {
       for (let y = 0; y < h; y++) {
         for (let x = 0; x < w; x++) {
-          if (state.discovered.has(keyOf({ x, y }))) continue;
+          if (this.isRevealedForDraw(state, x, y)) continue;
           const spr = this.makeSprite("fog");
           spr.x = x * TILE;
           spr.y = y * TILE;
@@ -1367,6 +1331,114 @@ export class GridView extends Container {
     return new Set(state.bridgeTiles.map((b) => keyOf(b)));
   }
 
+  /**
+   * A wall directly above ground shows its face, so it reads as part of the room
+   * below it for fog, drawing, and border edges. It stays impassable.
+   */
+  private isWallFaceTile(state: GameState, x: number, y: number): boolean {
+    if (state.tiles[y]?.[x] !== "wall") return false;
+    const below = state.tiles[y + 1]?.[x];
+    return below === "floor" || below === "water";
+  }
+
+  /** Discovered ground, plus the faced walls belonging to discovered ground. */
+  private isRevealedForDraw(state: GameState, x: number, y: number): boolean {
+    if (state.discovered.has(keyOf({ x, y }))) return true;
+    return (
+      this.isWallFaceTile(state, x, y) && state.discovered.has(keyOf({ x, y: y + 1 }))
+    );
+  }
+
+  /**
+   * Wall-face variant (stable per tile).
+   * 1 default; 2–7 uncommon accents; 8–9 rare from depth 3+ (under 5% by depth 5+);
+   * 10 is 1% from depth 5+; 11–14 only on overgrown floors.
+   */
+  private pickWallFaceSpriteId(state: GameState, x: number, y: number): string {
+    const h =
+      (Math.imul(x + 17, 2246822519) ^
+        Math.imul(y + 3, 3266489917) ^
+        Math.imul(state.depth + 1, 668265263) ^
+        0x9e3779b9) >>>
+      0;
+    const depth = state.depth;
+    const roll = (shift: number, mod: number) => ((h >>> shift) % mod);
+
+    if (state.floorTheme === "brownstone") {
+      const brownstoneIds = [
+        "wall_face_brownstone",
+        "wall_face_brownstone_2",
+        "wall_face_brownstone_3",
+        "wall_face_brownstone_4",
+        "wall_face_brownstone_5",
+        "wall_face_brownstone_6",
+      ] as const;
+      return brownstoneIds[roll(12, brownstoneIds.length)]!;
+    }
+
+    // Sprite 10 — 1% on floor 5+.
+    if (depth >= 5 && roll(0, 100) === 0) return "wall_face_10";
+
+    // Sprites 8–9 — from floor 3; ~1% / ~2% / ~4% at depths 3 / 4 / 5+.
+    if (depth >= 3) {
+      const rarePct = depth >= 5 ? 4 : depth === 4 ? 2 : 1;
+      if (roll(8, 100) < rarePct) {
+        return roll(16, 2) === 0 ? "wall_face_8" : "wall_face_9";
+      }
+    }
+
+    // Sprites 11–14 — overgrown vines (~18%, sparse more common).
+    if (state.floorTheme === "overgrown" && roll(4, 100) < 18) {
+      const vineIds = [
+        "wall_face_11",
+        "wall_face_12",
+        "wall_face_13",
+        "wall_face_14",
+      ] as const;
+      const vineWeights = [4, 3, 2, 1];
+      let r = roll(20, 10);
+      for (let i = 0; i < vineWeights.length; i++) {
+        r -= vineWeights[i]!;
+        if (r < 0) return vineIds[i]!;
+      }
+      return vineIds[0]!;
+    }
+
+    // Sprites 2–7 — ~15% chance of a common accent.
+    if (roll(12, 100) < 15) {
+      const common = [
+        "wall_face_2",
+        "wall_face_3",
+        "wall_face_4",
+        "wall_face_5",
+        "wall_face_6",
+        "wall_face_7",
+      ] as const;
+      return common[roll(24, common.length)]!;
+    }
+
+    return "wall_face";
+  }
+
+  /** Textured trim centered on a floor tile's edge that abuts a wall. */
+  private addWallBorder(
+    state: GameState,
+    side: "top" | "right" | "bottom" | "left",
+    ox: number,
+    oy: number,
+  ): void {
+    const id = state.floorTheme === "brownstone" ? "wall_border_brownstone" : "wall_border";
+    const spr = this.makeSprite(id);
+    spr.anchor.set(0.5);
+    spr.width = TILE;
+    spr.height = WALL_RIM_THICK;
+    const horizontal = side === "top" || side === "bottom";
+    spr.rotation = horizontal ? 0 : Math.PI / 2;
+    spr.x = side === "left" ? ox : side === "right" ? ox + TILE : ox + TILE / 2;
+    spr.y = side === "top" ? oy : side === "bottom" ? oy + TILE : oy + TILE / 2;
+    this.wallBorderLayer.addChild(spr);
+  }
+
   /** Checkerboard base + rare decorative variants (stable per tile). */
   private pickBaseFloorSpriteId(x: number, y: number): string {
     const light = (x + y) % 2 === 0;
@@ -1397,11 +1469,47 @@ export class GridView extends Container {
       id === "floor_crack_b" ||
       id === "floor_alt_crack_a" ||
       id === "floor_alt_bone" ||
-      id === "floor_alt_crack_b";
+      id === "floor_alt_crack_b" ||
+      id.startsWith("floor_overgrown") ||
+      id.startsWith("floor_greenhouse");
     if (!rotatable) return 0;
     const h =
       (Math.imul(x + 3, 915799) ^ Math.imul(y + 7, 465493) ^ 0x85ebca6b) >>> 0;
     return (h % 4) * (Math.PI / 2);
+  }
+
+  private pickOvergrownMossSpriteId(x: number, y: number): string {
+    const light = (x + y) % 2 === 0;
+    const lightIds = ["floor_overgrown", "floor_overgrown_b", "floor_overgrown_c"] as const;
+    const darkIds = [
+      "floor_overgrown_alt",
+      "floor_overgrown_b_alt",
+      "floor_overgrown_c_alt",
+    ] as const;
+    const ids = light ? lightIds : darkIds;
+    // Sparser moss more common than heavy patches.
+    const weights = [3, 2, 1];
+    const h =
+      (Math.imul(x + 11, 265443) ^ Math.imul(y + 5, 975313) ^ 0xc2b2ae3d) >>> 0;
+    let r = h % 6;
+    for (let i = 0; i < weights.length; i++) {
+      r -= weights[i]!;
+      if (r < 0) return ids[i]!;
+    }
+    return ids[0]!;
+  }
+
+  private pickGreenhouseSpriteId(x: number, y: number): string {
+    const ids = [
+      "floor_greenhouse",
+      "floor_greenhouse_b",
+      "floor_greenhouse_c",
+      "floor_greenhouse_d",
+      "floor_greenhouse_e",
+    ] as const;
+    const h =
+      (Math.imul(x + 9, 224682) ^ Math.imul(y + 2, 326648) ^ 0x27d4eb2f) >>> 0;
+    return ids[h % ids.length]!;
   }
 
   private pickThemedFloorSpriteId(
@@ -1417,14 +1525,14 @@ export class GridView extends Container {
     if (rkind === "stair_room") {
       return this.pickBaseFloorSpriteId(x, y);
     }
-    if (rkind === "greenhouse") return "floor_greenhouse";
+    if (rkind === "greenhouse") return this.pickGreenhouseSpriteId(x, y);
     const alt = (x + y) % 2 === 0;
     const th = state.floorTheme;
     if (th === "overgrown") {
-      // ~10% of tiles get the green tint (stable per tile so redraws don't flicker).
+      // ~10% of tiles get moss overlays (stable per tile so redraws don't flicker).
       const h = Math.imul(x + 1, 374761) ^ Math.imul(y + 1, 668265) ^ 0x9e3779b9;
-      const tinted = (h >>> 0) % 10 === 0;
-      if (tinted) return alt ? "floor_overgrown" : "floor_overgrown_alt";
+      const mossy = (h >>> 0) % 10 === 0;
+      if (mossy) return this.pickOvergrownMossSpriteId(x, y);
       return this.pickBaseFloorSpriteId(x, y);
     }
     if (th === "brownstone") return alt ? "floor_brownstone" : "floor_brownstone_alt";
