@@ -3833,13 +3833,21 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
               { x: 0, y: -1 },
             ];
         const raw = magicAttackRollRaw(s, cardId, def.effect.minDamage, def.effect.maxDamage);
-        const hits: HitVisual[] = [];
+        const hits: HitVisual[] = [
+          {
+            gridX: s.player.x,
+            gridY: s.player.y,
+            damage: 0,
+            showDamage: false,
+            fx: playerAttackFx(s, "shining_blade"),
+          },
+        ];
         for (const d of dirs) {
           const t = { x: s.player.x + d.x, y: s.player.y + d.y };
           if (!inBounds(t, s.width, s.height)) continue;
           const result = damageAttackTargetsAt(s, t, raw, "magic_missile");
           s = result.state;
-          hits.push(...result.hits);
+          for (const h of result.hits) hits.push({ ...h, fx: undefined });
         }
         return withHits(
           log(

@@ -9,6 +9,7 @@ export type AttackFxFrames = {
   douvlonOrb: Texture;
   fireball: Texture;
   fireballExplosion: Texture[];
+  shiningBlade: Texture[];
   fireOverlays: [Texture, Texture, Texture, Texture, Texture];
   meleeSlash: [Texture, Texture, Texture];
   potionHarming: Texture;
@@ -18,6 +19,8 @@ export type AttackFxFrames = {
 const CELL = 16;
 const EXPLOSION_FRAME_SIZE = 48;
 const EXPLOSION_FRAME_COUNT = 7;
+const SHINING_BLADE_FRAME_SIZE = 60;
+const SHINING_BLADE_FRAME_COUNT = 16;
 
 function cellRect(col: number, row: number): Rectangle {
   return new Rectangle(col * CELL, row * CELL, CELL, CELL);
@@ -25,30 +28,36 @@ function cellRect(col: number, row: number): Rectangle {
 
 /** Load the attack and elemental-status sheets into named frame textures. */
 export async function loadAttackFxFrames(url = "/assets/attack_fx.png"): Promise<AttackFxFrames> {
-  const [sheet, explosionSheet, statusSheet, potionHarming, vineWhipSegment] = await Promise.all([
-    Assets.load<Texture>({
-      src: url,
-      data: { scaleMode: "nearest" },
-    }),
-    Assets.load<Texture>({
-      src: "/assets/fireball_explosion.png",
-      data: { scaleMode: "nearest" },
-    }),
-    Assets.load<Texture>({
-      src: "/assets/elemental_status.png",
-      data: { scaleMode: "nearest" },
-    }),
-    Assets.load<Texture>({
-      src: "/assets/potion_of_harming.png",
-      data: { scaleMode: "nearest" },
-    }),
-    Assets.load<Texture>({
-      src: "/assets/vine_whip_segment.png",
-      data: { scaleMode: "nearest" },
-    }),
-  ]);
+  const [sheet, explosionSheet, shiningBladeSheet, statusSheet, potionHarming, vineWhipSegment] =
+    await Promise.all([
+      Assets.load<Texture>({
+        src: url,
+        data: { scaleMode: "nearest" },
+      }),
+      Assets.load<Texture>({
+        src: "/assets/fireball_explosion.png",
+        data: { scaleMode: "nearest" },
+      }),
+      Assets.load<Texture>({
+        src: "/assets/shining_blade.png",
+        data: { scaleMode: "nearest" },
+      }),
+      Assets.load<Texture>({
+        src: "/assets/elemental_status.png",
+        data: { scaleMode: "nearest" },
+      }),
+      Assets.load<Texture>({
+        src: "/assets/potion_of_harming.png",
+        data: { scaleMode: "nearest" },
+      }),
+      Assets.load<Texture>({
+        src: "/assets/vine_whip_segment.png",
+        data: { scaleMode: "nearest" },
+      }),
+    ]);
   if (sheet.source) sheet.source.scaleMode = "nearest";
   if (explosionSheet.source) explosionSheet.source.scaleMode = "nearest";
+  if (shiningBladeSheet.source) shiningBladeSheet.source.scaleMode = "nearest";
   if (statusSheet.source) statusSheet.source.scaleMode = "nearest";
   if (potionHarming.source) potionHarming.source.scaleMode = "nearest";
   if (vineWhipSegment.source) vineWhipSegment.source.scaleMode = "nearest";
@@ -70,6 +79,19 @@ export async function loadAttackFxFrames(url = "/assets/attack_fx.png"): Promise
         ),
       }),
   );
+  const shiningBladeFrames = Array.from(
+    { length: SHINING_BLADE_FRAME_COUNT },
+    (_, col) =>
+      new Texture({
+        source: shiningBladeSheet.source,
+        frame: new Rectangle(
+          col * SHINING_BLADE_FRAME_SIZE,
+          0,
+          SHINING_BLADE_FRAME_SIZE,
+          SHINING_BLADE_FRAME_SIZE,
+        ),
+      }),
+  );
 
   return {
     // Row 0
@@ -81,6 +103,7 @@ export async function loadAttackFxFrames(url = "/assets/attack_fx.png"): Promise
     fireball: frame(1, 1),
     arrowDiag: frame(2, 1),
     fireballExplosion: explosionFrames,
+    shiningBlade: shiningBladeFrames,
     // Fire levels 1–5: top row, then middle-left and middle.
     fireOverlays: [
       statusFrame(0, 0),
@@ -162,6 +185,8 @@ export function pickProjectileTexture(
         texture: frames.meleeSlash[0]!,
         rotation: aimRotation(dx, dy, "southeast") - Math.PI / 2,
       };
+    case "shining_blade":
+      return { texture: frames.shiningBlade[0]!, rotation: 0 };
   }
 }
 
@@ -188,3 +213,10 @@ export function pickMeleeSlashTexture(
 export function meleeSlashFrameIndex(elapsedMs: number, frameMs = 72): number {
   return Math.min(2, Math.floor(elapsedMs / frameMs));
 }
+
+/** Pick shining blade frame from elapsed ms (50 ms per frame). */
+export function shiningBladeFrameIndex(elapsedMs: number, frameMs = 50): number {
+  return Math.min(SHINING_BLADE_FRAME_COUNT - 1, Math.floor(elapsedMs / frameMs));
+}
+
+export const SHINING_BLADE_MS = SHINING_BLADE_FRAME_COUNT * 50;

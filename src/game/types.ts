@@ -868,7 +868,8 @@ export type AttackFxKind =
   | "douvlon_orb"
   | "melee_slash"
   | "potion_harming"
-  | "vine_whip";
+  | "vine_whip"
+  | "shining_blade";
 
 export interface AttackFx {
   kind: AttackFxKind;

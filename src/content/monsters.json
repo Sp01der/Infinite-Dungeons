@@ -543,7 +543,7 @@
   {
     "id": "shadow_rodent",
     "name": "Shadow Rodent",
-    "spriteId": "enemy_rat",
+    "spriteId": "enemy_shadow_rodent",
     "hp": 7,
     "defense": 0,
     "damage": 3,

@@ -211,6 +211,7 @@
     "enemy_slime": { "texture": "/assets/enemy_slime.png", "fallbackColor": "#6bcf4a" },
     "enemy_drosir": { "texture": "/assets/creatures_statuses.png", "frame": [32, 32, 16, 16], "fallbackColor": "#1fc4d4" },
     "enemy_rat": { "texture": "/assets/enemy_rat.png", "fallbackColor": "#c4a06a" },
+    "enemy_shadow_rodent": { "texture": "/assets/enemy_shadow_rodent.png", "fallbackColor": "#3a2a4a" },
     "enemy_skeleton": { "texture": "/assets/enemy_skeleton_sword.png", "fallbackColor": "#e8ecf0" },
     "enemy_skeleton_sword": { "texture": "/assets/enemy_skeleton_sword.png", "fallbackColor": "#e8ecf0" },
     "enemy_skeleton_axe": { "texture": "/assets/enemy_skeleton_axe.png", "fallbackColor": "#e8ecf0" },

@@ -29,6 +29,8 @@ import {
   meleeSlashFrameIndex,
   pickMeleeSlashTexture,
   pickProjectileTexture,
+  shiningBladeFrameIndex,
+  SHINING_BLADE_MS,
 } from "./attackFx";
 import { groundLootSpriteId } from "../game/lootIcons";
 
@@ -413,6 +415,7 @@ export class GridView extends Container {
     if (!fx || !this.usePixelArt || !this.attackFxFrames) return 0;
     if (fx.kind === "melee_slash") return MELEE_SLASH_MS;
     if (fx.kind === "vine_whip") return VINE_EXTEND_MS;
+    if (fx.kind === "shining_blade") return SHINING_BLADE_MS;
     return PROJECTILE_TRAVEL_MS;
   }
 
@@ -431,6 +434,7 @@ export class GridView extends Container {
     if (!fx || !this.usePixelArt || !this.attackFxFrames) return 0;
     if (fx.kind === "fireball") return PROJECTILE_TRAVEL_MS + FIREBALL_EXPLOSION_MS;
     if (fx.kind === "vine_whip") return VINE_EXTEND_MS + this.vineRetractMs(fx, catchX, catchY);
+    if (fx.kind === "shining_blade") return SHINING_BLADE_MS;
     return this.fxTravelMs(fx);
   }
 
@@ -542,6 +546,21 @@ export class GridView extends Container {
             this.fxLayer.addChild(this.makeFxSprite(texture, toCx, toCy, rotation));
           }
           damageStart = MELEE_SLASH_MS;
+        } else if (fx.kind === "shining_blade") {
+          if (elapsed < SHINING_BLADE_MS) {
+            const fi = shiningBladeFrameIndex(elapsed);
+            const spr = this.makeFxSprite(
+              frames.shiningBlade[fi]!,
+              fromCx,
+              fromCy,
+              0,
+            );
+            // 60×60 art; central 20×20 maps onto the caster's tile (TILE).
+            spr.width = TILE * 3;
+            spr.height = TILE * 3;
+            this.fxLayer.addChild(spr);
+          }
+          damageStart = 0;
         } else if (fx.kind === "vine_whip") {
           const retractMs = this.vineRetractMs(fx, a.gx, a.gy);
           const total = VINE_EXTEND_MS + retractMs;
