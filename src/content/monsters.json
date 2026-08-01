@@ -932,5 +932,75 @@
         }
       ]
     }
+  },
+  {
+    "id": "boneling",
+    "name": "Boneling",
+    "spriteId": "enemy_boneling_0",
+    "hp": 3,
+    "defense": 0,
+    "damage": 2,
+    "power": 1,
+    "description": "Scrap bones that hunt in packs. Rattle up to 2 spaces or nibble — one ability per turn. Leaders chase; packmates clump then follow.",
+    "ai": {
+      "initialState": "basic",
+      "moveStyle": "ortho",
+      "oneAbilityKindPerTurn": true,
+      "maxActionsPerTurn": 1,
+      "abilities": [
+        {
+          "id": "rattle",
+          "kind": "move",
+          "uses": 1,
+          "params": { "steps": 2 }
+        },
+        {
+          "id": "nibble",
+          "kind": "melee",
+          "params": {
+            "minDamage": 2,
+            "maxDamage": 3,
+            "rangeMetric": "manhattan",
+            "rangeMax": 1
+          }
+        }
+      ],
+      "states": [
+        {
+          "id": "basic",
+          "attackRange": { "metric": "manhattan", "max": 1 },
+          "tilePrefs": {
+            "favored": [{ "kind": "adjacent_to_player", "metric": "manhattan" }],
+            "secondary": [{ "kind": "adjacent_to_ally" }],
+            "bad": [
+              { "kind": "pending_collapse" },
+              { "kind": "pending_targeted_collapse" }
+            ]
+          },
+          "decide": [
+            {
+              "id": "leader_bite",
+              "when": { "flagTrue": "leader", "inAttackRange": true },
+              "actions": [{ "ability": "nibble" }]
+            },
+            {
+              "id": "leader_hunt",
+              "when": { "flagTrue": "leader" },
+              "actions": [{ "ability": "rattle", "seek": "toward_player" }]
+            },
+            {
+              "id": "pack_bite",
+              "when": { "flagFalse": "leader", "inAttackRange": true },
+              "actions": [{ "ability": "nibble" }]
+            },
+            {
+              "id": "pack_hunt_or_clump",
+              "when": { "flagFalse": "leader", "onFavoredTile": false },
+              "actions": [{ "ability": "rattle", "seek": "favored" }]
+            }
+          ]
+        }
+      ]
+    }
   }
 ]

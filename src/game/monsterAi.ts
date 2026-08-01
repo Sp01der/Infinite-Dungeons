@@ -5,6 +5,7 @@ import { cullMonstersWithDouvlonPairs, setMonsterHpWithDouvlonSync } from "./dou
 import { maybeDropMonsterCoin } from "./loot";
 import { addExp } from "./progression";
 import { SHADE_DECK_TEMPLATE } from "./monsterSpawn";
+import { convertBonelingToBonePile, tickBonePiles } from "./boneling";
 import { applyDamageToPlayer } from "./skillsRuntime";
 import { pushAttackAnim, pushMoveAnim } from "./turnAnims";
 import { hasAtbmb, runAtbmbTurn, type AtbmbHost } from "./atbmb";
@@ -213,10 +214,17 @@ function monsterKillRewards(
   const power = state.monsterDefs.get(defId)?.power ?? 3;
   // Mimic chest loot is applied in the reducer when the player lands the killing blow.
   const drop = maybeDropMonsterCoin(state.groundLoot, x, y);
-  const next = drop.dropped
+  let next = drop.dropped
     ? appendLog({ ...state, groundLoot: drop.groundLoot }, "The monster dropped 1 gold.")
     : state;
-  return addExp(next, power);
+  next = addExp(next, power);
+  if (defId === "boneling") {
+    const dead = next.monsters.find(
+      (m) => m.defId === "boneling" && m.hp <= 0 && m.x === x && m.y === y,
+    );
+    next = convertBonelingToBonePile(next, x, y, dead?.id);
+  }
+  return next;
 }
 
 function fireBurnDamage(maxHp: number): number {
@@ -1812,7 +1820,9 @@ export function runMonsterPhaseWithHooks(
   hooks: MonsterPhaseHooks,
 ): { state: GameState; hits: HitVisual[]; anims: TurnAnimEvent[] } {
   phaseAnims = [];
-  let s = updateDisconnectedTangleweeds(state);
+  const pileTick = tickBonePiles(updateDisconnectedTangleweeds(state));
+  let s = pileTick.state;
+  if (phaseAnims) phaseAnims.push(...pileTick.mergeAnims);
   const hits: HitVisual[] = [];
   const playerPos: Point = { x: s.player.x, y: s.player.y };
   const processedDouvlonPairs = new Set<string>();
@@ -2049,6 +2059,19 @@ export function runMonsterPhaseWithHooks(
       if (r.dead) return finish({ ...s, phase: "defeat" });
       s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
+    }
+
+    if (curMon.defId === "boneling") {
+      const ai = s.monsterDefs.get(curMon.defId)?.ai;
+      if (hasAtbmb(ai)) {
+        const r = runAtbmbTurn(s, curMon, makeAtbmbHost(hooks, hits));
+        if (r) {
+          s = r.state;
+          if (r.dead) return finish({ ...s, phase: "defeat" });
+          s = tickMonsterFireAfterTurn(s, monId, hits);
+          continue;
+        }
+      }
     }
 
     if (curMon.defId === "elite_skeleton") {

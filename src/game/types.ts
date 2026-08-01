@@ -165,7 +165,12 @@ export type AtbmbTilePref =
    * Orthogonally or diagonally adjacent to any living entity with fireLevels ≥ 1
    * (player or monster).
    */
-  | { kind: "adjacent_to_fire" };
+  | { kind: "adjacent_to_fire" }
+  /**
+   * Orthogonally adjacent to another living monster with the same defId
+   * (or `allyDefId` if set). When `preferLeader` is true, only leaders count.
+   */
+  | { kind: "adjacent_to_ally"; allyDefId?: string; preferLeader?: boolean };
 
 export interface AtbmbTilePrefs {
   favored?: AtbmbTilePref[];
@@ -227,6 +232,8 @@ export interface AtbmbWhen {
   onFavoredTile?: boolean;
   /** True when standing on a disliked / bad tile. */
   onBadTile?: boolean;
+  /** True when standing on a secondary preference tile. */
+  onSecondaryTile?: boolean;
   inAttackRange?: boolean;
   /** Clear queen-ray magic-missile shot to the player. */
   clearQueenRayToPlayer?: boolean;
@@ -489,6 +496,16 @@ export interface TangleweedPropInstance {
   bloomId: string;
   /** True when no orthogonal vine path connects this segment to its living bloom. */
   withered?: boolean;
+}
+
+/** Bone pile remnant: walkable, no name/HP UI; merges after settling. */
+export interface BonePilePropInstance {
+  id: string;
+  x: number;
+  y: number;
+  hp: number;
+  /** Monster phases left before this pile may merge (starts at 2). */
+  settleTurnsRemaining: number;
 }
 
 /** Dropped loot; may share a tile with monsters (not with pots/chests). */
@@ -768,6 +785,8 @@ export interface GameState {
   harmingClouds: { id: string; x: number; y: number; turnsLeft: number }[];
   /** Tangleweed obstacles (Overgrown). */
   tangleweeds: TangleweedPropInstance[];
+  /** Bone piles left by slain Bonelings (walkable props). */
+  bonePiles: BonePilePropInstance[];
   /** Count of times each theme was picked this run (weighted re-roll). */
   themePickHistory: Partial<Record<FloorTheme, number>>;
   /** -1 wall; else index into roomKinds */
@@ -856,6 +875,10 @@ export interface GameState {
   editorMode: boolean;
   /** Normal health and fog settings restored when editor mode is disabled. */
   editorModeBackup: { hp: number; maxHp: number; fogOfWar: boolean } | null;
+  /**
+   * Dev Test mode: spawn Bonelings in packs of 3–5 instead of normal room monsters.
+   */
+  testBonelingSpawns: boolean;
   log: string[];
   turn: number;
 }
@@ -968,6 +991,7 @@ export type GameCommand =
   | { type: "DEV_SET_THEME"; theme: FloorTheme }
   | { type: "DEV_SUMMON"; defId: string; level: number }
   | { type: "DEV_CHANCE"; mode: ChanceMode; playerOnly: boolean }
+  | { type: "DEV_TEST"; feature: "boneling" }
   | { type: "DEV_EDITOR"; enabled: boolean }
   | { type: "DEV_EDITOR_CELL_ACTION"; x: number; y: number }
   | { type: "REQUEST_PLAY_CARD"; handIndex: number }

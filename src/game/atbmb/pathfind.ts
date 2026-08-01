@@ -15,7 +15,8 @@ function pointKey(p: Point): string {
 
 /**
  * Unweighted shortest path from `from` to any of `goals`.
- * Among equal-length paths, picks randomly via `rng` (default Math.random).
+ * Among equal-length paths, prefers `preferGoal` matches when any exist at that
+ * distance, then picks randomly via `rng` (default Math.random).
  * Pass `rng` that is deterministic for stable brain overlays.
  */
 export function findShortestPath(
@@ -24,6 +25,7 @@ export function findShortestPath(
   dirs: readonly Point[],
   canEnter: (p: Point) => boolean,
   rng: () => number = Math.random,
+  preferGoal?: (p: Point) => boolean,
 ): ShortestPathResult | null {
   if (!goals.length) return null;
   const goalSet = new Set(goals.map(pointKey));
@@ -74,7 +76,9 @@ export function findShortestPath(
 
   if (!goalsAtBest.length) return null;
 
-  const goal = goalsAtBest[Math.floor(rng() * goalsAtBest.length)]!;
+  const preferred = preferGoal ? goalsAtBest.filter(preferGoal) : [];
+  const pool = preferred.length > 0 ? preferred : goalsAtBest;
+  const goal = pool[Math.floor(rng() * pool.length)]!;
   const pathRev: Point[] = [goal];
   let cursor: Point = goal;
   while (pointKey(cursor) !== startKey) {

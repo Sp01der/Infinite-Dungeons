@@ -915,6 +915,13 @@ export class GridView extends Container {
     }
     playerRoot.addChild(this.makeEntityLabel("You", 0, 0, 0xffffff));
 
+    for (const bp of state.bonePiles) {
+      if (bp.hp <= 0) continue;
+      if (state.fogOfWar && !state.discovered.has(keyOf(bp))) continue;
+      const root = this.ensureEntityRoot(bp.id, bp.x, bp.y);
+      root.addChild(this.makePlacedSprite("enemy_bone_pile", 0, 0));
+    }
+
     const douvlonPairs = new Map<string, { red?: { x: number; y: number }; blue?: { x: number; y: number }; visibleCount: number }>();
     for (const m of state.monsters) {
       if (m.hp <= 0) continue;
@@ -939,7 +946,9 @@ export class GridView extends Container {
           ? `enemy_skeleton_${m.skeletonWeapon}`
           : archerAiming
             ? "enemy_skeleton_archer_aiming"
-            : def?.spriteId ?? "enemy_slime";
+            : m.defId === "boneling"
+              ? `enemy_boneling_${Math.max(0, Math.min(5, Number(m.aiFlags?.spriteVariant ?? 0)))}`
+              : def?.spriteId ?? "enemy_slime";
       const root = this.ensureEntityRoot(m.id, m.x, m.y);
       const useTall = m.defId === "elite_skeleton" || def?.spriteId === "enemy_elite_skeleton";
       const spr = useTall
@@ -1623,6 +1632,7 @@ export class GridView extends Container {
     for (const m of state.monsters) if (m.hp > 0) addAttackTarget(m);
     for (const pot of state.pots) addAttackTarget(pot);
     for (const tw of state.tangleweeds) if (tw.hp > 0) addAttackTarget(tw);
+    for (const bp of state.bonePiles) if (bp.hp > 0) addAttackTarget(bp);
     if (pending.kind === "water_escape") {
       const occW = new Set<string>();
       for (const m of state.monsters) {

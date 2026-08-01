@@ -115,6 +115,33 @@ export function tileMatchesPref(
       }
       return false;
     }
+    case "adjacent_to_ally": {
+      const allyId = pref.allyDefId ?? m.defId;
+      const dirs = [
+        { x: 1, y: 0 },
+        { x: -1, y: 0 },
+        { x: 0, y: 1 },
+        { x: 0, y: -1 },
+      ];
+      for (const o of dirs) {
+        const nx = tile.x + o.x;
+        const ny = tile.y + o.y;
+        if (
+          s.monsters.some(
+            (other) =>
+              other.hp > 0 &&
+              other.id !== m.id &&
+              other.defId === allyId &&
+              other.x === nx &&
+              other.y === ny &&
+              (!pref.preferLeader || !!other.aiFlags?.leader),
+          )
+        ) {
+          return true;
+        }
+      }
+      return false;
+    }
     case "diagonal_adjacent_to_player": {
       const adx = Math.abs(tile.x - player.x);
       const ady = Math.abs(tile.y - player.y);
@@ -181,6 +208,15 @@ export function isOnFavoredTile(
   // Favored never includes disliked tiles.
   if (isOnBadTile(s, m, prefs)) return false;
   return tileMatchesAnyPref(s, m, { x: m.x, y: m.y }, prefs?.favored);
+}
+
+export function isOnSecondaryTile(
+  s: GameState,
+  m: MonsterInstance,
+  prefs: AtbmbTilePrefs | undefined,
+): boolean {
+  if (isOnBadTile(s, m, prefs)) return false;
+  return tileMatchesAnyPref(s, m, { x: m.x, y: m.y }, prefs?.secondary);
 }
 
 export function isOnBadTile(
@@ -251,7 +287,10 @@ export function scoreTile(
   return score;
 }
 
-/** Collect passable, unoccupied, non-disliked tiles that match a pref list. */
+/** Collect passable, unoccupied, non-disliked tiles that match a pref list.
+ * Prefs are tried in order: if an earlier pref yields any tiles, later prefs are skipped.
+ * (Lets `preferLeader` ally tiles win over generic ally tiles.)
+ */
 export function collectPrefTiles(
   s: GameState,
   m: MonsterInstance,
@@ -261,18 +300,20 @@ export function collectPrefTiles(
   occupied: Set<string>,
 ): Point[] {
   if (!prefList?.length) return [];
-  const out: Point[] = [];
-  for (let y = 0; y < s.height; y++) {
-    for (let x = 0; x < s.width; x++) {
-      const p = { x, y };
-      if (occupied.has(keyOf(p)) && !(p.x === m.x && p.y === m.y)) continue;
-      if (!passable(p)) continue;
-      // Goals are never disliked tiles, even when escaping a disliked start.
-      if (isDislikedTile(s, m, p, prefs)) continue;
-      if (tileMatchesAnyPref(s, m, p, prefList)) out.push(p);
+  for (const pref of prefList) {
+    const out: Point[] = [];
+    for (let y = 0; y < s.height; y++) {
+      for (let x = 0; x < s.width; x++) {
+        const p = { x, y };
+        if (occupied.has(keyOf(p)) && !(p.x === m.x && p.y === m.y)) continue;
+        if (!passable(p)) continue;
+        if (isDislikedTile(s, m, p, prefs)) continue;
+        if (tileMatchesPref(s, m, p, pref)) out.push(p);
+      }
     }
+    if (out.length) return out;
   }
-  return out;
+  return [];
 }
 
 /** Collect passable, unoccupied tiles that are not disliked. */

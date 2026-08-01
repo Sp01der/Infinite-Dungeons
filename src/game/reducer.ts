@@ -26,7 +26,13 @@ import {
 import { runMonsterPhaseWithHooks } from "./monsterAi";
 import { cullMonstersWithDouvlonPairs, setMonsterHpWithDouvlonSync } from "./douvlon";
 import { animsFromHits, finalizeAnims, mergeAnimResults, pushMoveAnim } from "./turnAnims";
-import { createMonsterInstance, monsterDefenseForIncoming } from "./monsterSpawn";
+import {
+  bonelingLeaderForRoom,
+  createMonsterInstance,
+  monsterDefenseForIncoming,
+  withBonelingLeaderFlag,
+} from "./monsterSpawn";
+import { convertBonelingToBonePile } from "./boneling";
 import { attachStairRoom } from "./stairRoom";
 import {
   handleMerchantCommand,
@@ -393,7 +399,7 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
     }
     const pos = adj[Math.floor(Math.random() * adj.length)]!;
     const serial = nextMonsterSerial(state.monsters);
-    const inst = createMonsterInstance(
+    let inst = createMonsterInstance(
       `monster_${serial}`,
       cmd.defId,
       pos.x,
@@ -401,13 +407,45 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
       state.monsterDefs,
       cmd.level,
     );
+    if (cmd.defId === "boneling") {
+      const leader = bonelingLeaderForRoom(state.monsters, state.roomIds, pos.x, pos.y);
+      inst = withBonelingLeaderFlag(inst, leader);
+    }
     const nm = state.monsterDefs.get(cmd.defId)?.name ?? cmd.defId;
     return noHits(
       log(
         { ...state, monsters: [...state.monsters, inst] },
-        `Command: summoned ${nm} at level ${inst.level}.`,
+        `Command: summoned ${nm} at level ${inst.level}${inst.aiFlags?.leader ? " (leader)" : ""}.`,
       ),
     );
+  }
+
+  if (cmd.type === "DEV_TEST") {
+    if (cmd.feature === "boneling") {
+      let next = {
+        ...state,
+        testBonelingSpawns: true,
+      };
+      next = createNextFloorState(next, {
+        depth: state.depth,
+        theme: state.floorTheme,
+        danger: state.danger,
+      });
+      next = reshufflePlayerDeck(next);
+      const drawN = playerDrawCountPerTurn(next);
+      next = ensureEquippedOnTopOfDraw(next);
+      next = drawFromPlayerDeck(next, drawN, true);
+      next = applyPerTurnSkillResourcesAfterDraw(next);
+      next = revealAtPlayer(next);
+      next = collectAdjacentLoot(next);
+      return noHits(
+        log(
+          { ...next, phase: "player", pending: null },
+          "Test: Boneling packs (3–5) now spawn in rooms. Floor regenerated.",
+        ),
+      );
+    }
+    return noHits(log(state, `Command: unknown Test feature "${cmd.feature}".`));
   }
 
   if (cmd.type === "DEV_CHANCE") {
@@ -571,7 +609,14 @@ function applyMonsterKillRewards(
   const drop = maybeDropMonsterCoin(next.groundLoot, x, y);
   if (drop.dropped) next = log({ ...next, groundLoot: drop.groundLoot }, "The monster dropped 1 gold.");
   const power = next.monsterDefs.get(defId)?.power ?? 3;
-  return addExp(next, power);
+  next = addExp(next, power);
+  if (defId === "boneling") {
+    const dead = next.monsters.find(
+      (m) => m.defId === "boneling" && m.hp <= 0 && m.x === x && m.y === y,
+    );
+    next = convertBonelingToBonePile(next, x, y, dead?.id);
+  }
+  return next;
 }
 
 /** Mimics spill chest-table loot when slain. */
@@ -970,6 +1015,11 @@ function applyPendingStalactiteDamage(s: GameState): GameState {
       tangleweeds: next.tangleweeds.map((tw) =>
         tw.x === pos.x && tw.y === pos.y ? { ...tw, hp: tw.hp - envDmg } : tw,
       ),
+      bonePiles: next.bonePiles
+        .map((bp) =>
+          bp.x === pos.x && bp.y === pos.y ? { ...bp, hp: bp.hp - envDmg } : bp,
+        )
+        .filter((bp) => bp.hp > 0),
     };
   }
   return next;
@@ -2835,7 +2885,8 @@ function hasAttackTargetAt(s: GameState, x: number, y: number): boolean {
   return (
     s.monsters.some((m) => m.hp > 0 && m.x === x && m.y === y) ||
     s.pots.some((p) => p.x === x && p.y === y) ||
-    s.tangleweeds.some((tw) => tw.hp > 0 && tw.x === x && tw.y === y)
+    s.tangleweeds.some((tw) => tw.hp > 0 && tw.x === x && tw.y === y) ||
+    s.bonePiles.some((bp) => bp.hp > 0 && bp.x === x && bp.y === y)
   );
 }
 
@@ -2848,6 +2899,7 @@ function attackTargetTiles(s: GameState): Point[] {
   for (const m of s.monsters) if (m.hp > 0) add(m);
   for (const p of s.pots) add(p);
   for (const tw of s.tangleweeds) if (tw.hp > 0) add(tw);
+  for (const bp of s.bonePiles) if (bp.hp > 0) add(bp);
   return [...byKey.values()];
 }
 
@@ -2876,6 +2928,10 @@ function damageAttackTargetsAt(
   const monsterIds = s.monsters
     .filter((m) => m.hp > 0 && m.x === target.x && m.y === target.y)
     .map((m) => m.id);
+  // Snapshot before kills so a Boneling death pile is not hit by this same attack.
+  const bonePileIds = s.bonePiles
+    .filter((bp) => bp.hp > 0 && bp.x === target.x && bp.y === target.y)
+    .map((bp) => bp.id);
 
   for (const id of monsterIds) {
     const mon = s.monsters.find((m) => m.id === id && m.hp > 0);
@@ -2910,6 +2966,25 @@ function damageAttackTargetsAt(
     };
     hits.push(hitAt(s, target.x, target.y, rawDamage, fxKind));
     if (hp <= 0) s = log(s, "Tangleweed destroyed.");
+  }
+
+  for (const id of bonePileIds) {
+    const bp = s.bonePiles.find((x) => x.id === id && x.hp > 0);
+    if (!bp) continue;
+    targetCount++;
+    const hp = Math.max(0, bp.hp - rawDamage);
+    s = {
+      ...s,
+      bonePiles: s.bonePiles.map((x) => (x.id === id ? { ...x, hp } : x)),
+    };
+    hits.push(hitAt(s, target.x, target.y, rawDamage, fxKind));
+    if (hp <= 0) {
+      s = {
+        ...s,
+        bonePiles: s.bonePiles.filter((x) => x.id !== id),
+        log: [...s.log.slice(-50), "The bone pile is scattered."],
+      };
+    }
   }
 
   while (s.pots.some((p) => p.x === target.x && p.y === target.y)) {
@@ -3304,6 +3379,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
     cmd.type === "DEV_GOTO_FLOOR" ||
     cmd.type === "DEV_SET_THEME" ||
     cmd.type === "DEV_SUMMON" ||
+    cmd.type === "DEV_TEST" ||
     cmd.type === "DEV_CHANCE" ||
     cmd.type === "DEV_EDITOR" ||
     cmd.type === "DEV_EDITOR_CELL_ACTION"
@@ -5171,6 +5247,18 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
               hits.push({ gridX: tx, gridY: ty, damage: dmg });
               if (hp <= 0) s = log(s, "Tangleweed burned away.");
             }
+            for (const bp of s.bonePiles.filter((w) => w.hp > 0 && w.x === tx && w.y === ty)) {
+              const hp = Math.max(0, bp.hp - dmg);
+              s = {
+                ...s,
+                bonePiles:
+                  hp <= 0
+                    ? s.bonePiles.filter((w) => w.id !== bp.id)
+                    : s.bonePiles.map((w) => (w.id === bp.id ? { ...w, hp } : w)),
+              };
+              hits.push({ gridX: tx, gridY: ty, damage: dmg });
+              if (hp <= 0) s = log(s, "The bone pile is scattered.");
+            }
             if (s.player.x === tx && s.player.y === ty) {
               const taken = applyDamageToPlayer(s, dmg);
               s = taken.state;
@@ -5227,6 +5315,9 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
             fx: { kind: "potion_harming", fromX: P.x, fromY: P.y },
           },
         ];
+        const preexistingBonePileIds = s.bonePiles
+          .filter((t) => t.hp > 0 && t.x === dest.x && t.y === dest.y)
+          .map((t) => t.id);
         for (const mon of s.monsters.filter((m) => m.hp > 0 && m.x === dest.x && m.y === dest.y)) {
           const hp = Math.max(0, mon.hp - p.damage);
           s = { ...s, monsters: patchMonsterHp(s.monsters, mon.id, hp) };
@@ -5245,6 +5336,20 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
             tangleweeds: s.tangleweeds.map((t) => (t.id === tw.id ? { ...t, hp } : t)),
           };
           hits.push({ gridX: dest.x, gridY: dest.y, damage: p.damage });
+        }
+        for (const id of preexistingBonePileIds) {
+          const bp = s.bonePiles.find((t) => t.id === id && t.hp > 0);
+          if (!bp) continue;
+          const hp = Math.max(0, bp.hp - p.damage);
+          s = {
+            ...s,
+            bonePiles:
+              hp <= 0
+                ? s.bonePiles.filter((t) => t.id !== bp.id)
+                : s.bonePiles.map((t) => (t.id === bp.id ? { ...t, hp } : t)),
+          };
+          hits.push({ gridX: dest.x, gridY: dest.y, damage: p.damage });
+          if (hp <= 0) s = log(s, "The bone pile is scattered.");
         }
         if (s.player.x === dest.x && s.player.y === dest.y) {
           const _taken_dmg = applyDamageToPlayer(s, p.damage);

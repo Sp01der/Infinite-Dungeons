@@ -18,7 +18,11 @@ import { generateFloor } from "../engine/floorGen";
 import { keyOf, parseFloor } from "../engine/grid";
 import { buildFreshDungeonDeck } from "./dungeonDeck";
 import { loadCardDefs, loadDungeonCardDefs, loadMonsterDefs } from "./loadContent";
-import { createMonsterInstance } from "./monsterSpawn";
+import {
+  bonelingLeaderForRoom,
+  createMonsterInstance,
+  withBonelingLeaderFlag,
+} from "./monsterSpawn";
 import { rollGroundLootPiece } from "./loot";
 
 const ORTHO_NEIGHBORS: Point[] = [
@@ -251,6 +255,7 @@ function placePropsByRoom(
   dangerLevel: number,
   floorDepth: number,
   floorTheme: FloorTheme,
+  testBonelingSpawns = false,
 ): { monsters: MonsterInstance[]; pots: PotInstance[]; chests: ChestInstance[] } {
   const cellsByRoom = new Map<number, Point[]>();
   for (let y = 0; y < height; y++) {
@@ -274,6 +279,15 @@ function placePropsByRoom(
   const pushMonster = (p: Point, defId: string) => {
     monsters.push(
       createMonsterInstance(`monster_${mi++}`, defId, p.x, p.y, monsterDefs, dangerLevel),
+    );
+  };
+  const pushBoneling = (p: Point) => {
+    const leader = bonelingLeaderForRoom(monsters, roomIds, p.x, p.y);
+    monsters.push(
+      withBonelingLeaderFlag(
+        createMonsterInstance(`monster_${mi++}`, "boneling", p.x, p.y, monsterDefs, dangerLevel),
+        leader,
+      ),
     );
   };
   const pickId = (k: RoomKind) => pickMonsterId(k, monsterDefs, floorDepth, floorTheme);
@@ -302,7 +316,12 @@ function placePropsByRoom(
       case "corridor": {
         const nPot = rollInt(0, 1);
         for (const p of take(nPot)) pushPot(p);
-        if (cells.length - idx > 0 && Math.random() < 0.38) {
+        if (testBonelingSpawns) {
+          if (cells.length - idx >= 3 && Math.random() < 0.45) {
+            const n = Math.min(rollInt(3, 5), cells.length - idx);
+            for (const p of take(n)) pushBoneling(p);
+          }
+        } else if (cells.length - idx > 0 && Math.random() < 0.38) {
           const [p] = take(1);
           if (p) pushMonster(p, pickId("corridor"));
         }
@@ -314,20 +333,30 @@ function placePropsByRoom(
       case "normal": {
         const nPot = rollInt(1, 3);
         for (const p of take(nPot)) pushPot(p);
-        const nMon = Math.random() < 0.68 ? 1 : 2;
-        for (let k = 0; k < nMon; k++) {
-          const [p] = take(1);
-          if (p) pushMonster(p, pickId("normal"));
+        if (testBonelingSpawns) {
+          const n = Math.min(rollInt(3, 5), Math.max(0, cells.length - idx));
+          for (const p of take(n)) pushBoneling(p);
+        } else {
+          const nMon = Math.random() < 0.68 ? 1 : 2;
+          for (let k = 0; k < nMon; k++) {
+            const [p] = take(1);
+            if (p) pushMonster(p, pickId("normal"));
+          }
         }
         break;
       }
       case "treasure": {
         const nPot = rollInt(0, 2);
         for (const p of take(nPot)) pushPot(p);
-        const nMon = Math.random() < 0.65 ? 1 : 2;
-        for (let k = 0; k < nMon; k++) {
-          const [p] = take(1);
-          if (p) pushMonster(p, pickId("treasure"));
+        if (testBonelingSpawns) {
+          const n = Math.min(rollInt(3, 5), Math.max(0, cells.length - idx));
+          for (const p of take(n)) pushBoneling(p);
+        } else {
+          const nMon = Math.random() < 0.65 ? 1 : 2;
+          for (let k = 0; k < nMon; k++) {
+            const [p] = take(1);
+            if (p) pushMonster(p, pickId("treasure"));
+          }
         }
         break;
       }
@@ -566,6 +595,7 @@ export function createInitialState(floorDef: FloorDef): GameState {
     1,
     1,
     "normal",
+    false,
   );
   const cardDefs = loadCardDefs();
   const groundLoot = spawnGroundLoot(
@@ -649,6 +679,7 @@ export function createInitialState(floorDef: FloorDef): GameState {
     pendingStalactites: [],
     harmingClouds: [],
     tangleweeds: [],
+    bonePiles: [],
     themePickHistory: {},
     roomIds,
     roomKinds,
@@ -688,6 +719,7 @@ export function createInitialState(floorDef: FloorDef): GameState {
     chancePlayerOnly: false,
     editorMode: false,
     editorModeBackup: null,
+    testBonelingSpawns: false,
     log: [
       "Welcome to the dungeon.",
       `${monsters.length} monster(s), ${pots.length} pot(s), ${chests.length} chest(s), ${groundLoot.length} ground loot spot(s).`,
@@ -715,6 +747,7 @@ export function createInitialStateGenerated(depth = 1): GameState {
     gen.spawnDanger,
     1,
     gen.floorTheme,
+    false,
   );
   const cardDefs = loadCardDefs();
   const groundLoot = spawnGroundLoot(
@@ -798,6 +831,7 @@ export function createInitialStateGenerated(depth = 1): GameState {
     pendingStalactites: [],
     harmingClouds: [],
     tangleweeds: [],
+    bonePiles: [],
     themePickHistory: bumpThemeHistory({}, gen.floorTheme),
     roomIds,
     roomKinds,
@@ -837,6 +871,7 @@ export function createInitialStateGenerated(depth = 1): GameState {
     chancePlayerOnly: false,
     editorMode: false,
     editorModeBackup: null,
+    testBonelingSpawns: false,
     log: [
       "Welcome to the dungeon.",
       `Theme: ${themeDisplayName(gen.floorTheme)}.`,
@@ -871,6 +906,7 @@ export function createNextFloorState(
     danger,
     depth,
     gen.floorTheme,
+    prev.testBonelingSpawns,
   );
   const cardDefs = prev.cardDefs;
   let groundLoot = spawnGroundLoot(
@@ -954,6 +990,7 @@ export function createNextFloorState(
     pendingStalactites: [],
     harmingClouds: [],
     tangleweeds: [],
+    bonePiles: [],
     themePickHistory: bumpThemeHistory(prev.themePickHistory, gen.floorTheme),
     roomIds,
     roomKinds,
@@ -993,6 +1030,7 @@ export function createNextFloorState(
     chancePlayerOnly: prev.chancePlayerOnly,
     editorMode: prev.editorMode,
     editorModeBackup: prev.editorModeBackup,
+    testBonelingSpawns: prev.testBonelingSpawns,
     log: [
       ...prev.log.slice(-48),
       `You descend to Floor ${depth} · ${themeDisplayName(gen.floorTheme)}.`,

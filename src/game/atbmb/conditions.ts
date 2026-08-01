@@ -11,7 +11,7 @@ import type {
 } from "../types";
 import type { AtbmbTurnCtx } from "./abilities";
 import { skeletonWeaponCanHit } from "./skeletonWeapon";
-import { distByMetric, isOnBadTile, isOnFavoredTile } from "./tilePrefs";
+import { distByMetric, isOnBadTile, isOnFavoredTile, isOnSecondaryTile } from "./tilePrefs";
 
 function hpFraction(s: GameState, m: MonsterInstance): number {
   const base = s.monsterDefs.get(m.defId)?.hp ?? m.hp;
@@ -65,6 +65,9 @@ export function whenMatches(
   }
   if (when.onBadTile !== undefined) {
     if (isOnBadTile(s, m, prefs) !== when.onBadTile) return false;
+  }
+  if (when.onSecondaryTile !== undefined) {
+    if (isOnSecondaryTile(s, m, prefs) !== when.onSecondaryTile) return false;
   }
   if (when.inAttackRange !== undefined) {
     if (inAttackRange(monPos, player, attackRange) !== when.inAttackRange) return false;

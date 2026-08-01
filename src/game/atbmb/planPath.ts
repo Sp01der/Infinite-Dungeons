@@ -20,7 +20,7 @@ import {
   collectPrefTiles,
   distByMetric,
   isDislikedTile,
-  nearestManhattan,
+  tileMatchesPref,
 } from "./tilePrefs";
 
 export type AtbmbPathContext = {
@@ -49,6 +49,32 @@ function makeCanEnter(
   };
 }
 
+function pathStepsToNearestGoal(
+  from: Point,
+  goals: Point[],
+  dirs: readonly Point[],
+  canEnter: (p: Point) => boolean,
+): number {
+  if (!goals.length) return Infinity;
+  if (goals.some((g) => keyOf(g) === keyOf(from))) return 0;
+  const plan = findShortestPath(from, goals, dirs, canEnter, () => 0);
+  if (!plan) return Infinity;
+  return Math.max(0, plan.path.length - 1);
+}
+
+/** Prefer secondary tiles next to a leader ally when path lengths tie. */
+function preferLeaderAdjacentSecondary(
+  s: GameState,
+  m: MonsterInstance,
+): (p: Point) => boolean {
+  return (p: Point) =>
+    tileMatchesPref(s, m, p, {
+      kind: "adjacent_to_ally",
+      preferLeader: true,
+      allyDefId: m.defId,
+    });
+}
+
 function resolveGoalTiles(
   s: GameState,
   m: MonsterInstance,
@@ -59,6 +85,7 @@ function resolveGoalTiles(
   tileOk: (p: Point) => boolean,
   occ: Set<string>,
   canEnter: (p: Point) => boolean,
+  dirs: readonly Point[],
 ): Point[] {
   const from: Point = { x: m.x, y: m.y };
   const passableGoal = (p: Point) => tileOk(p) && !isDislikedTile(s, m, p, prefs);
@@ -68,7 +95,6 @@ function resolveGoalTiles(
   const safeTiles = collectNonDislikedTiles(s, m, prefs, passableGoal, occ);
   const player: Point = { x: s.player.x, y: s.player.y };
   const metric = ai.moveStyle === "any8" ? "chebyshev" : "manhattan";
-  const dirs = dirsForMoveStyle(ai.moveStyle);
 
   switch (seek) {
     case "secondary":
@@ -95,17 +121,14 @@ function resolveGoalTiles(
       );
     case "favored":
     default: {
-      let goals = favored;
+      // Reach favored this turn (actual path length)? Else nearest secondary.
       if (prefs?.secondary?.length) {
-        const favDist = nearestManhattan(from, favored);
-        if (favDist > moveUsesRemaining) {
-          const secDist = nearestManhattan(from, secondary);
-          if (secondary.length && secDist <= moveUsesRemaining) {
-            goals = secondary;
-          }
+        const favDist = pathStepsToNearestGoal(from, favored, dirs, canEnter);
+        if (favDist > moveUsesRemaining && secondary.length) {
+          return secondary;
         }
       }
-      return goals;
+      return favored;
     }
   }
 }
@@ -139,6 +162,7 @@ export function planAtbmbPath(
   };
   const from: Point = { x: m.x, y: m.y };
   const onDisliked = isDislikedTile(s, m, from, prefs);
+  const preferGoal = preferLeaderAdjacentSecondary(s, m);
 
   const tryPlan = (allowDisliked: boolean): ShortestPathResult | null => {
     const canEnter = makeCanEnter(s, m, prefs, occ, tileOk, allowDisliked, onDisliked);
@@ -152,12 +176,13 @@ export function planAtbmbPath(
       tileOk,
       occ,
       canEnter,
+      dirs,
     ).filter((g) => {
       if (keyOf(g) === keyOf(from)) return true;
       return canEnter(g);
     });
     if (!goals.length) return null;
-    return findShortestPath(from, goals, dirs, canEnter, rng);
+    return findShortestPath(from, goals, dirs, canEnter, rng, preferGoal);
   };
 
   const preferred = tryPlan(false);

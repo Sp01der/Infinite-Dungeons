@@ -227,7 +227,7 @@ export function tryExecuteAction(
         prefs,
         host,
         seek,
-        remaining(budget, def.id),
+        steps - i,
         waterOnly,
       );
       if (!step) break;

@@ -701,6 +701,14 @@ function applyMoveToDisplay(s: GameState, ev: Extract<TurnAnimEvent, { kind: "mo
       player: { ...s.player, x: ev.toX, y: ev.toY },
     };
   }
+  if (s.bonePiles.some((bp) => bp.id === ev.entityId)) {
+    return {
+      ...s,
+      bonePiles: s.bonePiles.map((bp) =>
+        bp.id === ev.entityId ? { ...bp, x: ev.toX, y: ev.toY } : bp,
+      ),
+    };
+  }
   return {
     ...s,
     monsters: s.monsters.map((m) =>
@@ -1089,6 +1097,16 @@ function runCommandLine(raw: string): string {
     return `Chance set to ${mode}${playerOnly ? " (player rolls only)" : ""}.`;
   }
 
+  if (verb === "test") {
+    if (args.length !== 1) return "Usage: Test [boneling]";
+    const feature = normalizeLookupName(args[0]!);
+    if (feature === "boneling") {
+      apply({ type: "DEV_TEST", feature: "boneling" });
+      return "Test: Boneling packs enabled — floor regenerated.";
+    }
+    return `Unknown Test feature "${args[0]}". Use boneling.`;
+  }
+
   if (verb === "editor") {
     if (args.length !== 1) return "Usage: Editor [true|false]";
     const value = args[0]!.toLowerCase();
@@ -1308,7 +1326,8 @@ function renderMonsterBrain(): void {
   const def = state.monsterDefs.get(mon.defId);
   const name = def?.name ?? mon.defId;
   monsterBrainTitle.textContent = name;
-  monsterBrainSubtitle.textContent = `${mon.defId} · HP ${mon.hp} · Lv ${mon.level}`;
+  const leaderTag = mon.aiFlags?.leader ? " · Leader" : "";
+  monsterBrainSubtitle.textContent = `${mon.defId} · HP ${mon.hp} · Lv ${mon.level}${leaderTag}`;
   monsterBrainBody.replaceChildren();
 
   const ai = def?.ai;
@@ -1361,6 +1380,14 @@ function renderMonsterBrain(): void {
       : false;
     flags.textContent = `On favored: ${onFav ? "yes" : "no"} · On disliked: ${onBad ? "yes" : "no"} · In range: ${inRange ? "yes" : "no"}`;
     stateSec.appendChild(flags);
+    if (mon.defId === "boneling") {
+      const leaderLine = document.createElement("div");
+      leaderLine.className = mon.aiFlags?.leader ? "" : "monster-brain-muted";
+      leaderLine.textContent = mon.aiFlags?.leader
+        ? "Pack role: Leader"
+        : "Pack role: Follower";
+      stateSec.appendChild(leaderLine);
+    }
     if (mon.leapDir) {
       const leap = document.createElement("div");
       leap.className = "monster-brain-muted";

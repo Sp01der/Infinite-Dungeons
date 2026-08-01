@@ -75,6 +75,15 @@ export function createMonsterInstance(
   if (defId === "drosir") {
     return { ...withAi, aquatic: true };
   }
+  if (defId === "boneling") {
+    return {
+      ...withAi,
+      aiFlags: {
+        ...(withAi.aiFlags ?? {}),
+        spriteVariant: Math.floor(Math.random() * 6),
+      },
+    };
+  }
   if (defId === "douvlon" && opts?.douvlonColor && opts?.douvlonPairId) {
     return {
       ...withAi,
@@ -88,4 +97,37 @@ export function createMonsterInstance(
 export function monsterDefenseForIncoming(m: MonsterInstance, def: MonsterDef | undefined): number {
   const base = m.defenseOverride ?? def?.defense ?? 0;
   return base + (m.blackShieldActive ? 5 : 0);
+}
+
+export function monsterBlocksMovement(m: MonsterInstance): boolean {
+  return m.hp > 0;
+}
+
+/** Leader only when this room has no other living Boneling (and thus no leader). */
+export function bonelingLeaderForRoom(
+  monsters: readonly MonsterInstance[],
+  roomIds: number[][],
+  x: number,
+  y: number,
+): boolean {
+  const rid = roomIds[y]?.[x] ?? -1;
+  if (rid < 0) {
+    return !monsters.some((m) => m.hp > 0 && m.defId === "boneling");
+  }
+  const roomBonelings = monsters.filter(
+    (m) => m.hp > 0 && m.defId === "boneling" && (roomIds[m.y]?.[m.x] ?? -1) === rid,
+  );
+  if (roomBonelings.some((m) => !!m.aiFlags?.leader)) return false;
+  return roomBonelings.length === 0;
+}
+
+export function withBonelingLeaderFlag(
+  inst: MonsterInstance,
+  leader: boolean,
+): MonsterInstance {
+  if (!leader) return inst;
+  return {
+    ...inst,
+    aiFlags: { ...(inst.aiFlags ?? {}), leader: true },
+  };
 }
