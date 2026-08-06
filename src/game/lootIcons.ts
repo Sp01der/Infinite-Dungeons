@@ -1,3 +1,4 @@
+import { assetUrl } from "../assetUrl";
 import type { GroundLootInstance, ShiftyGemId } from "./types";
 
 /** 8×8 cells in `loot_icons.png` (32×32 sheet, row-major). */
@@ -36,7 +37,7 @@ export function lootIconCss(id: LootIconId, displaySize = 24): {
   const [x, y] = LOOT_ICON_FRAMES[id];
   const scale = displaySize / CELL;
   return {
-    backgroundImage: 'url("/assets/loot_icons.png")',
+    backgroundImage: `url("${assetUrl("/assets/loot_icons.png")}")`,
     backgroundSize: `${SHEET * scale}px ${SHEET * scale}px`,
     backgroundPosition: `${-x * scale}px ${-y * scale}px`,
     width: `${displaySize}px`,

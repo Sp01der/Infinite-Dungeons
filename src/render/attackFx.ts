@@ -1,4 +1,5 @@
 import { Assets, Rectangle, Texture } from "pixi.js";
+import { assetUrl } from "../assetUrl";
 import type { AttackFxKind } from "../game/types";
 
 export type AttackFxFrames = {
@@ -27,7 +28,9 @@ function cellRect(col: number, row: number): Rectangle {
 }
 
 /** Load the attack and elemental-status sheets into named frame textures. */
-export async function loadAttackFxFrames(url = "/assets/attack_fx.png"): Promise<AttackFxFrames> {
+export async function loadAttackFxFrames(
+  url = assetUrl("/assets/attack_fx.png"),
+): Promise<AttackFxFrames> {
   const [sheet, explosionSheet, shiningBladeSheet, statusSheet, potionHarming, vineWhipSegment] =
     await Promise.all([
       Assets.load<Texture>({
@@ -35,23 +38,23 @@ export async function loadAttackFxFrames(url = "/assets/attack_fx.png"): Promise
         data: { scaleMode: "nearest" },
       }),
       Assets.load<Texture>({
-        src: "/assets/fireball_explosion.png",
+        src: assetUrl("/assets/fireball_explosion.png"),
         data: { scaleMode: "nearest" },
       }),
       Assets.load<Texture>({
-        src: "/assets/shining_blade.png",
+        src: assetUrl("/assets/shining_blade.png"),
         data: { scaleMode: "nearest" },
       }),
       Assets.load<Texture>({
-        src: "/assets/elemental_status.png",
+        src: assetUrl("/assets/elemental_status.png"),
         data: { scaleMode: "nearest" },
       }),
       Assets.load<Texture>({
-        src: "/assets/potion_of_harming.png",
+        src: assetUrl("/assets/potion_of_harming.png"),
         data: { scaleMode: "nearest" },
       }),
       Assets.load<Texture>({
-        src: "/assets/vine_whip_segment.png",
+        src: assetUrl("/assets/vine_whip_segment.png"),
         data: { scaleMode: "nearest" },
       }),
     ]);

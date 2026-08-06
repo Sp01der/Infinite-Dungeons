@@ -1,4 +1,5 @@
 import { Assets, Rectangle, Texture } from "pixi.js";
+import { assetUrl } from "../assetUrl";
 import bundledManifest from "../content/sprites-manifest.json";
 
 export type SpriteStyle =
@@ -59,7 +60,7 @@ export async function loadSpriteStyles(manifestUrl: string): Promise<Map<string,
     if (entry.texture) {
       try {
         const texture = await Assets.load<Texture>({
-          src: entry.texture,
+          src: assetUrl(entry.texture),
           data: { scaleMode: "nearest" },
         });
         if (texture.source) texture.source.scaleMode = "nearest";

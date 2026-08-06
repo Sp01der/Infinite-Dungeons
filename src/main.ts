@@ -1,4 +1,5 @@
 import { Application } from "pixi.js";
+import { assetUrl } from "./assetUrl";
 import floorSample from "./content/floor_sample.json";
 import type { FloorDef } from "./game/types";
 import { createInitialState, createInitialStateGenerated } from "./game/initialState";
@@ -3184,7 +3185,7 @@ async function bootstrap(): Promise<void> {
   loading.textContent = "Loading map…";
   viewport.appendChild(loading);
 
-  const styles = await loadSpriteStyles("/assets/manifest.json");
+  const styles = await loadSpriteStyles(assetUrl("/assets/manifest.json"));
   const attackFx = await loadAttackFxFrames();
   grid = new GridView(styles, cellClick, cellSecondary);
   grid.setAttackFxFrames(attackFx);
