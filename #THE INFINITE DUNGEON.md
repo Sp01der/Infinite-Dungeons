@@ -74,6 +74,8 @@ Status effects are persistent conditions that affect a creature over multiple tu
 
 **Fire** — After the inflicted creature takes its turn, the Fire level on that creature decreases by 1, and the creature takes damage equal to 20% of its maximum HP. This repeats each turn until the Fire level reaches 0. Multiple sources of Fire stack by adding to the current Fire level.
 
+**Freezing** — While a creature has any Freezing, it gains +2 defense and cannot act. At the end of each of its turns, Freezing decreases by 1. Levels stack. A frozen creature's sprite is tinted light blue.
+
 ##CARDS
 In this deck-building, dungeon crawling, treasure-hunting rouglike cards are the most important thing. They are how you do everything.
 To reiterate, you draw cards at the start of your turn, three is the basic amount, but as you gain skills you can draw more.
@@ -100,6 +102,18 @@ Deal 3-5 damage along a 2-tile line. Choose an adjacent direction. Walls stop th
 
 **Axe** — Common / Attack
 Deal 4-8 damage to an adjacent creature. Add a Weariness card on top of your deck.
+
+**Broadsword** — Uncommon / Attack
+Choose an adjacent direction. Deal 3-6 damage to the three tiles facing that way (the tile directly ahead and the two beside it). Walls are skipped.
+
+**Executioner's Axe** — Uncommon / Attack
+Deal 4-8 damage to an adjacent creature. If it dies, this card stays in your hand and you gain a movement token. Otherwise, it is discarded and two Weariness cards are added on top of your deck. Found only in the Catacombs (not offered until that floor exists).
+
+**Ancient Knife** — Rare / Attack
+The Knife thirsts for blood… Deal 1-2 damage to an adjacent creature and draw a card. Each kill with this copy adds +2 damage, and the card text updates to show it. Found in Catacombs treasure rooms (not offered until that floor exists).
+
+**Icicle Lance** — Rare / Attack
+Deal 3-5 damage along a 3-tile line. Choose an adjacent direction. Walls stop the line. Apply 1 Freezing to each creature hit.
 
 **Mace Smash** — Uncommon / Attack
 Deal 6-10 damage to an adjacent creature. Ignores 1 defense. Add two Weariness cards on top of your deck.

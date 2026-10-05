@@ -546,7 +546,8 @@ function renderTurnTokens(): void {
 }
 
 function cardChrome(cardId: string): { icon: string; accent: string } {
-  switch (cardId) {
+  const id = cardId.startsWith("ancient_knife#") ? "ancient_knife" : cardId;
+  switch (id) {
     case "move":
       return { icon: "↔", accent: "#3d8c5c" };
     case "copper_sword":
@@ -557,8 +558,16 @@ function cardChrome(cardId: string): { icon: string; accent: string } {
       return { icon: "╋", accent: "#8b9a6b" };
     case "knife":
       return { icon: "✂", accent: "#a8a8b8" };
+    case "ancient_knife":
+      return { icon: "🗡", accent: "#6b2d3c" };
     case "axe":
       return { icon: "🪓", accent: "#8b4513" };
+    case "executioner_axe":
+      return { icon: "🪓", accent: "#4a1c1c" };
+    case "broadsword":
+      return { icon: "⚔", accent: "#9a9a9a" };
+    case "icicle_lance":
+      return { icon: "❄", accent: "#7eb6d9" };
     case "quickstep":
       return { icon: "⚡", accent: "#6b9e9e" };
     case "tactical_approach":
@@ -1099,13 +1108,17 @@ function runCommandLine(raw: string): string {
   }
 
   if (verb === "test") {
-    if (args.length !== 1) return "Usage: Test [boneling]";
+    if (args.length !== 1) return "Usage: Test [boneling|catacombs]";
     const feature = normalizeLookupName(args[0]!);
     if (feature === "boneling") {
       apply({ type: "DEV_TEST", feature: "boneling" });
       return "Test: Boneling packs enabled — floor regenerated.";
     }
-    return `Unknown Test feature "${args[0]}". Use boneling.`;
+    if (feature === "catacombs") {
+      apply({ type: "DEV_TEST", feature: "catacombs" });
+      return "Test: Catacombs layout generated.";
+    }
+    return `Unknown Test feature "${args[0]}". Use boneling or catacombs.`;
   }
 
   if (verb === "editor") {
@@ -2709,11 +2722,23 @@ function renderAll(): void {
   } else if (state.pending?.kind === "play_spear") {
     hintEl.textContent =
       "Click an adjacent highlighted tile. The spear hits a 2-tile line that way — the red outline shows it. Walls stop the line.";
+  } else if (state.pending?.kind === "play_broadsword") {
+    hintEl.textContent =
+      "Click an adjacent highlighted tile. Broadsword hits the three tiles facing that way — the red outline shows them. Walls are skipped.";
+  } else if (state.pending?.kind === "play_icicle_lance") {
+    hintEl.textContent =
+      "Click an adjacent highlighted tile. The lance hits a 3-tile line that way and applies 1 Freezing. The red outline shows it. Walls stop the line.";
   } else if (state.pending?.kind === "play_knife") {
     hintEl.textContent = "Click an adjacent highlighted tile to strike everything there, then draw a card.";
+  } else if (state.pending?.kind === "play_ancient_knife") {
+    hintEl.textContent =
+      "Click an adjacent highlighted tile. Ancient Knife strikes, draws a card, and grows stronger if the target dies.";
   } else if (state.pending?.kind === "play_axe") {
     hintEl.textContent =
       "Click an adjacent highlighted tile to cleave everything there — a Weariness card goes on top of your deck.";
+  } else if (state.pending?.kind === "play_executioner_axe") {
+    hintEl.textContent =
+      "Click an adjacent highlighted tile. If the target dies, the axe stays in hand and you gain a movement token. Otherwise, two Weariness cards go on top of your deck.";
   } else if (state.pending?.kind === "play_mace_smash") {
     hintEl.textContent =
       "Click an adjacent highlighted tile to smash everything there — two Weariness cards go on top of your deck.";

@@ -399,5 +399,43 @@
     "types": ["Attack"],
     "tags": ["physical attack", "melee"],
     "effect": { "type": "thieving_strike", "minDamage": 1, "maxDamage": 4 }
+  },
+  {
+    "id": "broadsword",
+    "name": "Broadsword",
+    "rarity": "Uncommon",
+    "description": "Choose an adjacent direction. Deal 3–6 damage to the three tiles facing that way. Walls are skipped.",
+    "types": ["Attack"],
+    "tags": ["physical attack", "melee"],
+    "effect": { "type": "broadsword", "minDamage": 3, "maxDamage": 6 }
+  },
+  {
+    "id": "executioner_axe",
+    "name": "Executioner's Axe",
+    "rarity": "Uncommon",
+    "catacombsOnly": true,
+    "description": "Deal 4–8 damage to an adjacent target. If it dies, this card stays in your hand and you gain a movement token. Otherwise, it is discarded and two Weariness cards are added on top of your deck.",
+    "types": ["Attack"],
+    "tags": ["physical attack", "melee"],
+    "effect": { "type": "executioner_axe", "minDamage": 4, "maxDamage": 8 }
+  },
+  {
+    "id": "ancient_knife",
+    "name": "Ancient Knife",
+    "rarity": "Rare",
+    "catacombsOnly": true,
+    "description": "The Knife thirsts for blood… Deal 1–2 damage to an adjacent target and draw a card. If you kill the target, the Knife's power will grow.",
+    "types": ["Attack"],
+    "tags": ["physical attack", "melee"],
+    "effect": { "type": "ancient_knife", "minDamage": 1, "maxDamage": 2 }
+  },
+  {
+    "id": "icicle_lance",
+    "name": "Icicle Lance",
+    "rarity": "Rare",
+    "description": "Deal 3–5 damage along a 3-tile line. Choose an adjacent direction. Walls stop the line. Apply 1 Freezing to each creature hit.",
+    "types": ["Attack"],
+    "tags": ["physical attack", "melee"],
+    "effect": { "type": "icicle_lance", "minDamage": 3, "maxDamage": 5 }
   }
 ]

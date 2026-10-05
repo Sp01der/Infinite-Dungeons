@@ -1,4 +1,9 @@
-import { fireballBlastCells, spearStrikeCells } from "./areaPreview";
+import {
+  broadswordCleaveCells,
+  fireballBlastCells,
+  icicleLanceCells,
+  spearStrikeCells,
+} from "./areaPreview";
 import { baseMagicCardId, upgradedMagicCardId } from "./cardUpgrades";
 import { applyDefense, rollInt, pushRollChanceContext, popRollChanceContext } from "../engine/combat";
 import { addRoomsToDiscovered, collectRoomIdsAdjacentToPlayer } from "../engine/discovery";
@@ -20,10 +25,12 @@ import { buildFreshDungeonDeck, DUNGEON_DEADLIER_ID } from "./dungeonDeck";
 import {
   appendGoldSeekerBonusCoin,
   buildStartingDeck,
+  createCatacombsTestState,
   createNextFloorState,
   pickMonsterId,
   pickWeightedDefId,
 } from "./initialState";
+import { addFootingBlocks, blocksFooting } from "./tombs";
 import { runMonsterPhaseWithHooks } from "./monsterAi";
 import { cullMonstersWithDouvlonPairs, setMonsterHpWithDouvlonSync } from "./douvlon";
 import { animsFromHits, finalizeAnims, mergeAnimResults, pushMoveAnim } from "./turnAnims";
@@ -393,7 +400,8 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
         (np) =>
           tileAt(state.tiles, np) === "floor" &&
           !occ.has(keyOf(np)) &&
-          !state.rocks.some((r) => r.x === np.x && r.y === np.y),
+          !state.rocks.some((r) => r.x === np.x && r.y === np.y) &&
+          !blocksFooting(state, np.x, np.y),
       );
     if (adj.length === 0) {
       return noHits(log(state, "Command: no adjacent space to summon."));
@@ -445,6 +453,17 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
           "Test: Boneling packs (3–5) now spawn in rooms. Floor regenerated.",
         ),
       );
+    }
+    if (cmd.feature === "catacombs") {
+      let next = createCatacombsTestState(state);
+      next = reshufflePlayerDeck(next);
+      const drawN = playerDrawCountPerTurn(next);
+      next = ensureEquippedOnTopOfDraw(next);
+      next = drawFromPlayerDeck(next, drawN, true);
+      next = applyPerTurnSkillResourcesAfterDraw(next);
+      next = revealAtPlayer(next);
+      next = collectAdjacentLoot(next);
+      return noHits(log({ ...next, phase: "player", pending: null }, "Test: Catacombs layout generated."));
     }
     return noHits(log(state, `Command: unknown Test feature "${cmd.feature}".`));
   }
@@ -527,6 +546,7 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
     for (const weed of state.tangleweeds) {
       if (weed.hp > 0) occupied.add(keyOf(weed));
     }
+    addFootingBlocks(state, occupied);
     if (state.stairFeatures) {
       occupied.add(keyOf(state.stairFeatures.pedestal));
       occupied.add(keyOf(state.stairFeatures.merchant));
@@ -718,7 +738,8 @@ function tryKnockMonsterFromPlayer(
   if (s.player.x === nx && s.player.y === ny) return s;
   if (s.pots.some((p) => p.x === nx && p.y === ny)) return log(s, "Something blocks the knockback.");
   if (s.chests.some((c) => c.x === nx && c.y === ny)) return log(s, "A chest blocks the knockback.");
-  if (s.rocks.some((r) => r.x === nx && r.y === ny)) return log(s, "Rubble blocks the knockback.");
+  if (s.rocks.some((r) => r.x === nx && r.y === ny) || blocksFooting(s, nx, ny))
+    return log(s, "Rubble blocks the knockback.");
   if (moveAnims) pushMoveAnim(moveAnims, mon.id, mon, np);
   const monsters = s.monsters.map((m) => (m.id === mon.id ? { ...m, x: nx, y: ny } : m));
   return log({ ...s, monsters }, "Knockback sends them reeling!");
@@ -762,7 +783,8 @@ function tryKnockMonsterInDirection(
       (s.player.x === nx && s.player.y === ny) ||
       s.pots.some((p) => p.x === nx && p.y === ny) ||
       s.chests.some((c) => c.x === nx && c.y === ny) ||
-      s.rocks.some((r) => r.x === nx && r.y === ny);
+      s.rocks.some((r) => r.x === nx && r.y === ny) ||
+      blocksFooting(s, nx, ny);
     if (blocked) break;
     if (moveAnims) pushMoveAnim(moveAnims, monId, mon, { x: nx, y: ny });
     s = {
@@ -795,6 +817,97 @@ function applyPoisonToMonsters(
   return monsters.map((m) =>
     ids.has(m.id) ? { ...m, poisonLevels: (m.poisonLevels ?? 0) + levels } : m,
   );
+}
+
+function applyFreezeToMonsters(
+  monsters: MonsterInstance[],
+  monsterIds: readonly string[],
+  levels: number,
+): MonsterInstance[] {
+  const ids = new Set(monsterIds);
+  return monsters.map((m) =>
+    ids.has(m.id) ? { ...m, freezeLevels: (m.freezeLevels ?? 0) + levels } : m,
+  );
+}
+
+function ancientKnifeKills(cardId: string): number {
+  if (cardId === "ancient_knife") return 0;
+  const match = /^ancient_knife#(\d+)$/.exec(cardId);
+  return match ? parseInt(match[1]!, 10) : 0;
+}
+
+function ancientKnifeDescription(kills: number): string {
+  const bonus = kills * 2;
+  const min = 1 + bonus;
+  const max = 2 + bonus;
+  const growth =
+    kills <= 0
+      ? "If you kill the target, the Knife's power will grow."
+      : `It has grown stronger (${kills} kill${kills === 1 ? "" : "s"}, +${bonus} damage).`;
+  return `The Knife thirsts for blood… Deal ${min}–${max} damage to an adjacent target and draw a card. ${growth}`;
+}
+
+/** Register a grown Ancient Knife definition. The base card stays at 0 kills. */
+function withAncientKnifeGrowth(s: GameState, kills: number): { state: GameState; cardId: string } {
+  const cardId = kills <= 0 ? "ancient_knife" : `ancient_knife#${kills}`;
+  if (kills <= 0 || s.cardDefs.has(cardId)) return { state: s, cardId };
+  const base = s.cardDefs.get("ancient_knife");
+  if (!base || base.effect.type !== "ancient_knife") return { state: s, cardId };
+  const bonus = kills * 2;
+  const grown: CardDef = {
+    ...base,
+    id: cardId,
+    description: ancientKnifeDescription(kills),
+    effect: {
+      type: "ancient_knife",
+      minDamage: base.effect.minDamage + bonus,
+      maxDamage: base.effect.maxDamage + bonus,
+    },
+  };
+  const cardDefs = new Map(s.cardDefs);
+  cardDefs.set(cardId, grown);
+  return { state: { ...s, cardDefs }, cardId };
+}
+
+function replaceJustPlayedCard(s: GameState, fromId: string, toId: string): GameState {
+  if (s.player.equipped === fromId && s.player.drawPile[0] === fromId) {
+    const drawPile = [...s.player.drawPile];
+    drawPile[0] = toId;
+    return { ...s, player: { ...s.player, drawPile, equipped: toId } };
+  }
+  const discard = s.player.discardPile;
+  if (discard.length > 0 && discard[discard.length - 1] === fromId) {
+    const discardPile = [...discard];
+    discardPile[discardPile.length - 1] = toId;
+    return { ...s, player: { ...s.player, discardPile } };
+  }
+  return s;
+}
+
+/** Pull the copy just played back into hand so a kill does not discard it. */
+function reclaimJustPlayedCard(s: GameState, cardId: string): GameState {
+  if (s.player.equipped === cardId && s.player.drawPile[0] === cardId) {
+    return {
+      ...s,
+      player: {
+        ...s.player,
+        drawPile: s.player.drawPile.slice(1),
+        hand: [...s.player.hand, cardId],
+      },
+    };
+  }
+  const discard = s.player.discardPile;
+  if (discard.length > 0 && discard[discard.length - 1] === cardId) {
+    return {
+      ...s,
+      player: {
+        ...s.player,
+        discardPile: discard.slice(0, -1),
+        hand: [...s.player.hand, cardId],
+      },
+    };
+  }
+  return s;
 }
 
 function weaponAttackRollRaw(s: GameState, cardId: string | undefined, minD: number, maxD: number): number {
@@ -927,6 +1040,7 @@ function occupiedForPlayerMove(state: GameState): Set<string> {
   for (const tw of state.tangleweeds) {
     if (tw.hp > 0) occ.add(keyOf(tw));
   }
+  addFootingBlocks(state, occ);
   return occ;
 }
 
@@ -1038,6 +1152,7 @@ function findNearestFloorEscape(state: GameState, from: Point): Point | null {
     for (let x = 0; x < state.width; x++) {
       if (tileAt(state.tiles, { x, y }) !== "floor") continue;
       if (state.rocks.some((r) => r.x === x && r.y === y)) continue;
+      if (blocksFooting(state, x, y)) continue;
       if (occ.has(keyOf({ x, y }))) continue;
       if (state.pots.some((p) => p.x === x && p.y === y)) continue;
       if (state.chests.some((c) => c.x === x && c.y === y)) continue;
@@ -1216,6 +1331,7 @@ function nextRockSerial(rocks: RockInstance[]): number {
 function tileBlockedForDeepSpawn(s: GameState, x: number, y: number): boolean {
   if (s.player.x === x && s.player.y === y) return true;
   if (s.rocks.some((r) => r.x === x && r.y === y)) return true;
+  if (blocksFooting(s, x, y)) return true;
   if (s.monsters.some((m) => m.hp > 0 && m.x === x && m.y === y)) return true;
   if (s.pots.some((p) => p.x === x && p.y === y)) return true;
   if (s.chests.some((c) => c.x === x && c.y === y)) return true;
@@ -1691,6 +1807,9 @@ function resolvePlayerEnterTile(s: GameState, x: number, y: number): GameState {
     next = { ...next, player: { ...next.player, nextMoveDoubled: false } };
   }
   next = collectAdjacentLoot(openChestAsPlayer(breakPotAsPlayer(next, x, y), x, y));
+  if (next.catacombStair && next.catacombStair.x === x && next.catacombStair.y === y) {
+    next = log(next, "Stone steps descend into the Gauntlet Chamber. The way down is not open yet.");
+  }
   next = maybeCommenceGauntlet(next, x, y);
   return next;
 }
@@ -3077,10 +3196,89 @@ function resolveSpearLine(state: GameState, target: Point): DispatchResult {
   return withHitsThenKnockback(afterHit, hits, survivors, knockback);
 }
 
+function strikeLine(
+  state: GameState,
+  cells: Point[],
+  raw: number,
+): { state: GameState; hits: HitVisual[]; survivors: string[] } {
+  let s = state;
+  const hits: HitVisual[] = [];
+  const survivors: string[] = [];
+  for (const cell of cells) {
+    if (!hasAttackTargetAt(s, cell.x, cell.y)) continue;
+    const result = damageAttackTargetsAt(s, cell, raw, "melee_slash");
+    s = result.state;
+    hits.push(...result.hits);
+    survivors.push(...result.survivorMonsterIds);
+  }
+  return { state: s, hits, survivors };
+}
+
+function resolveBroadsword(state: GameState, target: Point): DispatchResult {
+  const pending = state.pending;
+  if (!pending || pending.kind !== "play_broadsword") return noHits(state);
+  const player = { x: state.player.x, y: state.player.y };
+  const cells = broadswordCleaveCells(state, player, target);
+  if (cells.length === 0) return noHits(state);
+  if (state.fogOfWar && !state.discovered.has(keyOf(target))) return noHits(state);
+  const consumed = consumePlayedCard(state, pending.cardHandIndex);
+  if (!consumed) return noHits(state);
+  const raw = weaponAttackRollRaw(
+    consumed.state,
+    consumed.cardId,
+    pending.minDamage,
+    pending.maxDamage,
+  );
+  const struck = strikeLine(consumed.state, cells, raw);
+  const knockback = state.player.knockbackPrimed;
+  let afterHit: GameState = {
+    ...struck.state,
+    player: { ...struck.state.player, knockbackPrimed: 0 },
+  };
+  afterHit = consumeStrengthGemIfPhysical(afterHit, consumed.cardId);
+  afterHit = log(afterHit, "Broadsword cleaves a wide arc!");
+  return withHitsThenKnockback(afterHit, struck.hits, struck.survivors, knockback);
+}
+
+function resolveIcicleLance(state: GameState, target: Point): DispatchResult {
+  const pending = state.pending;
+  if (!pending || pending.kind !== "play_icicle_lance") return noHits(state);
+  const player = { x: state.player.x, y: state.player.y };
+  const cells = icicleLanceCells(state, player, target);
+  if (cells.length === 0) return noHits(state);
+  if (state.fogOfWar && !state.discovered.has(keyOf(target))) return noHits(state);
+  const consumed = consumePlayedCard(state, pending.cardHandIndex);
+  if (!consumed) return noHits(state);
+  const raw = weaponAttackRollRaw(
+    consumed.state,
+    consumed.cardId,
+    pending.minDamage,
+    pending.maxDamage,
+  );
+  const struck = strikeLine(consumed.state, cells, raw);
+  let afterHit: GameState = {
+    ...struck.state,
+    player: { ...struck.state.player, knockbackPrimed: 0 },
+  };
+  if (struck.survivors.length > 0) {
+    afterHit = {
+      ...afterHit,
+      monsters: applyFreezeToMonsters(afterHit.monsters, struck.survivors, 1),
+    };
+    afterHit = log(afterHit, "Icicle Lance inflicts 1 Freezing.");
+  }
+  afterHit = consumeStrengthGemIfPhysical(afterHit, consumed.cardId);
+  afterHit = log(afterHit, "The icicle lance pierces the line!");
+  const knockback = state.player.knockbackPrimed;
+  return withHitsThenKnockback(afterHit, struck.hits, struck.survivors, knockback);
+}
+
 function resolvePlayerAttackAtTile(state: GameState, target: Point): DispatchResult {
   const pending = state.pending;
   if (!pending) return noHits(state);
   if (pending.kind === "play_spear") return resolveSpearLine(state, target);
+  if (pending.kind === "play_broadsword") return resolveBroadsword(state, target);
+  if (pending.kind === "play_icicle_lance") return resolveIcicleLance(state, target);
   if (!hasAttackTargetAt(state, target.x, target.y)) return noHits(state);
   if (state.fogOfWar && !state.discovered.has(keyOf(target))) return noHits(state);
   const player = { x: state.player.x, y: state.player.y };
@@ -3163,6 +3361,8 @@ function resolvePlayerAttackAtTile(state: GameState, target: Point): DispatchRes
     pending.kind === "play_melee" ||
     pending.kind === "play_knife" ||
     pending.kind === "play_axe" ||
+    pending.kind === "play_executioner_axe" ||
+    pending.kind === "play_ancient_knife" ||
     pending.kind === "play_knockback_punch" ||
     pending.kind === "play_mace_smash" ||
     pending.kind === "play_poisoned_blade" ||
@@ -3260,9 +3460,50 @@ function resolvePlayerAttackAtTile(state: GameState, target: Point): DispatchRes
     const builtIn = pending.kind === "play_knockback_punch" ? pending.knockback : 0;
     const knockback = builtIn + state.player.knockbackPrimed;
     let afterHit: GameState = { ...s, player: { ...s.player, knockbackPrimed: 0 } };
-    if (pending.kind === "play_knife") {
+    if (pending.kind === "play_knife" || pending.kind === "play_ancient_knife") {
+      const killed =
+        pending.kind === "play_ancient_knife" &&
+        !!targetMonBefore &&
+        !afterHit.monsters.some((m) => m.id === targetMonBefore.id && m.hp > 0);
+      if (killed) {
+        const nextKills = ancientKnifeKills(consumed.cardId) + 1;
+        const grown = withAncientKnifeGrowth(afterHit, nextKills);
+        afterHit = replaceJustPlayedCard(grown.state, consumed.cardId, grown.cardId);
+        afterHit = log(afterHit, "The Ancient Knife drinks deep. Its power grows.");
+      }
       afterHit = drawFromPlayerDeck(afterHit, 1);
-      afterHit = log(afterHit, "Knife — draw a card.");
+      afterHit = log(
+        afterHit,
+        pending.kind === "play_ancient_knife" ? "Ancient Knife — draw a card." : "Knife — draw a card.",
+      );
+    }
+    if (pending.kind === "play_executioner_axe") {
+      const killed =
+        !!targetMonBefore &&
+        !afterHit.monsters.some((m) => m.id === targetMonBefore.id && m.hp > 0);
+      if (killed) {
+        afterHit = reclaimJustPlayedCard(afterHit, consumed.cardId);
+        afterHit = {
+          ...afterHit,
+          player: { ...afterHit.player, moveTokens: afterHit.player.moveTokens + 1 },
+        };
+        afterHit = log(
+          afterHit,
+          "Executioner's Axe — the target falls. The axe stays in your hand, and you gain a movement token.",
+        );
+      } else {
+        afterHit = {
+          ...afterHit,
+          player: {
+            ...afterHit.player,
+            drawPile: ["weariness", "weariness", ...afterHit.player.drawPile],
+          },
+        };
+        afterHit = log(
+          afterHit,
+          "Executioner's Axe adds two Weariness cards to the top of your deck.",
+        );
+      }
     }
     if (pending.kind === "play_axe" || pending.kind === "play_mace_smash") {
       const wearinessCount = pending.kind === "play_mace_smash" ? 2 : 1;
@@ -4028,6 +4269,54 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         });
       }
 
+      if (def.effect.type === "broadsword") {
+        return noHits({
+          ...state,
+          pending: {
+            kind: "play_broadsword",
+            cardHandIndex: idx,
+            minDamage: def.effect.minDamage,
+            maxDamage: def.effect.maxDamage,
+          },
+        });
+      }
+
+      if (def.effect.type === "executioner_axe") {
+        return noHits({
+          ...state,
+          pending: {
+            kind: "play_executioner_axe",
+            cardHandIndex: idx,
+            minDamage: def.effect.minDamage,
+            maxDamage: def.effect.maxDamage,
+          },
+        });
+      }
+
+      if (def.effect.type === "ancient_knife") {
+        return noHits({
+          ...state,
+          pending: {
+            kind: "play_ancient_knife",
+            cardHandIndex: idx,
+            minDamage: def.effect.minDamage,
+            maxDamage: def.effect.maxDamage,
+          },
+        });
+      }
+
+      if (def.effect.type === "icicle_lance") {
+        return noHits({
+          ...state,
+          pending: {
+            kind: "play_icicle_lance",
+            cardHandIndex: idx,
+            minDamage: def.effect.minDamage,
+            maxDamage: def.effect.maxDamage,
+          },
+        });
+      }
+
       if (def.effect.type === "quickstep") {
         let s = state;
         const hand = [...s.player.hand];
@@ -4524,8 +4813,12 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       if (
         state.pending.kind === "play_melee" ||
         state.pending.kind === "play_spear" ||
+        state.pending.kind === "play_broadsword" ||
+        state.pending.kind === "play_icicle_lance" ||
         state.pending.kind === "play_knife" ||
         state.pending.kind === "play_axe" ||
+        state.pending.kind === "play_executioner_axe" ||
+        state.pending.kind === "play_ancient_knife" ||
         state.pending.kind === "discard_punch" ||
         state.pending.kind === "play_magic_missile" ||
         state.pending.kind === "play_knockback_punch" ||
@@ -4860,6 +5153,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           (cell) =>
             tileAt(state.tiles, cell) !== "floor" ||
             state.rocks.some((r) => r.x === cell.x && r.y === cell.y) ||
+            blocksFooting(state, cell.x, cell.y) ||
             state.chests.some((c) => c.x === cell.x && c.y === cell.y),
         );
         if (blocked) return noHits(log(state, "Flying Kick is blocked — nothing happens."));

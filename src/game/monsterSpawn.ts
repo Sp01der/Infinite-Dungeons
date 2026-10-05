@@ -96,7 +96,8 @@ export function createMonsterInstance(
 
 export function monsterDefenseForIncoming(m: MonsterInstance, def: MonsterDef | undefined): number {
   const base = m.defenseOverride ?? def?.defense ?? 0;
-  return base + (m.blackShieldActive ? 5 : 0);
+  const frozen = (m.freezeLevels ?? 0) > 0 ? 2 : 0;
+  return base + (m.blackShieldActive ? 5 : 0) + frozen;
 }
 
 export function monsterBlocksMovement(m: MonsterInstance): boolean {

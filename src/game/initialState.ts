@@ -15,6 +15,7 @@ import type {
 import { rollInt } from "../engine/combat";
 import { addRoomsToDiscovered, collectRoomIdsAdjacentToPlayer } from "../engine/discovery";
 import { generateFloor } from "../engine/floorGen";
+import { generateCatacombs } from "../engine/catacombsGen";
 import { keyOf, parseFloor } from "../engine/grid";
 import { buildFreshDungeonDeck } from "./dungeonDeck";
 import { loadCardDefs, loadDungeonCardDefs, loadMonsterDefs } from "./loadContent";
@@ -161,6 +162,8 @@ export function themeDisplayName(theme: FloorTheme): string {
       return "Damp";
     case "brownstone":
       return "Brownstone Tunnels";
+    case "catacombs":
+      return "Catacombs";
     default:
       return "Normal";
   }
@@ -177,6 +180,7 @@ export function pickFloorTheme(
     overgrown: 1.0,
     damp: 1.0,
     brownstone: 1.0,
+    catacombs: 0,
   };
   const weights = themes.map((t) => Math.max(0.1, baseWeights[t] - (history[t] ?? 0) * 0.2));
   const sum = weights.reduce((a, b) => a + b, 0);
@@ -680,6 +684,9 @@ export function createInitialState(floorDef: FloorDef): GameState {
     harmingClouds: [],
     tangleweeds: [],
     bonePiles: [],
+    tombs: [],
+    lockedDoors: [],
+    catacombStair: null,
     themePickHistory: {},
     roomIds,
     roomKinds,
@@ -832,6 +839,9 @@ export function createInitialStateGenerated(depth = 1): GameState {
     harmingClouds: [],
     tangleweeds: [],
     bonePiles: [],
+    tombs: [],
+    lockedDoors: [],
+    catacombStair: null,
     themePickHistory: bumpThemeHistory({}, gen.floorTheme),
     roomIds,
     roomKinds,
@@ -991,6 +1001,9 @@ export function createNextFloorState(
     harmingClouds: [],
     tangleweeds: [],
     bonePiles: [],
+    tombs: [],
+    lockedDoors: [],
+    catacombStair: null,
     themePickHistory: bumpThemeHistory(prev.themePickHistory, gen.floorTheme),
     roomIds,
     roomKinds,
@@ -1035,6 +1048,167 @@ export function createNextFloorState(
       ...prev.log.slice(-48),
       `You descend to Floor ${depth} · ${themeDisplayName(gen.floorTheme)}.`,
       `${monsters.length} monster(s), ${pots.length} pot(s), ${chests.length} chest(s), ${groundLoot.length} ground loot spot(s).`,
+    ],
+    turn: prev.turn + 1,
+  };
+}
+
+/** Prototype catacomb floor from the pixel room maps. Keeps the player and rebuilds the floor. */
+export function createCatacombsTestState(prev: GameState): GameState {
+  const layout = generateCatacombs();
+  const fogOfWar = !prev.editorMode;
+  const discovered = buildDiscovered(
+    true,
+    layout.tiles,
+    layout.roomIds,
+    layout.width,
+    layout.height,
+    layout.playerStart,
+  );
+  const monsters: MonsterInstance[] = [];
+  let mi = 0;
+  for (const p of layout.bonelings) {
+    const leader = bonelingLeaderForRoom(monsters, layout.roomIds, p.x, p.y);
+    monsters.push(
+      withBonelingLeaderFlag(
+        createMonsterInstance(
+          `monster_${mi++}`,
+          "boneling",
+          p.x,
+          p.y,
+          prev.monsterDefs,
+          prev.danger,
+        ),
+        leader,
+      ),
+    );
+  }
+  for (const p of layout.skeletons) {
+    monsters.push(
+      createMonsterInstance(`monster_${mi++}`, "skeleton", p.x, p.y, prev.monsterDefs, prev.danger),
+    );
+  }
+  const pots: PotInstance[] = layout.pots.map((p, i) => ({
+    id: `pot_${i}`,
+    x: p.x,
+    y: p.y,
+    magic: p.magic || undefined,
+  }));
+  const chests: ChestInstance[] = layout.chests.map((p, i) => ({
+    id: `chest_${i}`,
+    x: p.x,
+    y: p.y,
+    tier: layout.roomKinds[layout.roomIds[p.y]?.[p.x] ?? -1] === "treasure" ? 2 : 1,
+  }));
+  const groundLoot: GroundLootInstance[] = layout.coins.map((p, i) => ({
+    id: `loot_${i}`,
+    x: p.x,
+    y: p.y,
+    kind: "coin",
+    amount: 1,
+  }));
+  const drawPile = [...prev.player.drawPile, ...prev.player.discardPile, ...prev.player.hand];
+  return {
+    phase: "player",
+    floorId: layout.id,
+    floorName: `Floor ${prev.depth} · Catacombs`,
+    floorTheme: "catacombs",
+    width: layout.width,
+    height: layout.height,
+    tiles: layout.tiles,
+    fogOfWar,
+    discovered,
+    player: {
+      ...prev.player,
+      x: layout.playerStart.x,
+      y: layout.playerStart.y,
+      drawPile,
+      discardPile: [],
+      hand: [],
+      defenseBonusThisTurn: 0,
+      defenseUntilHit: 0,
+      doublePunchThisTurn: false,
+      moveTokens: 0,
+      knockbackTokens: 0,
+      knockbackPrimed: 0,
+      movementCardsPlayedThisTurn: 0,
+      scoutUsesThisTurn: 0,
+      hasteThisTurn: false,
+      arcaneChargeActive: false,
+      resistance: 0,
+      fortifyThisTurn: false,
+      cardsPlayedThisTurn: 0,
+      noMoreCardsThisTurn: false,
+      guardDestroyerTargetId: null,
+      guardDestroyerStacks: 0,
+      damageTakenThisTurn: 0,
+      knockbackedMonsterIdsThisTurn: [],
+      fireLevels: 0,
+      nextPhysicalAttackMultiplier: 1,
+      nextMoveDoubled: false,
+      gemLuckRestore: null,
+    },
+    depth: prev.depth,
+    danger: prev.danger,
+    noise: 0,
+    monsters,
+    pots,
+    chests,
+    rocks: [],
+    groundLoot,
+    bridgeTiles: [],
+    floodingRoomId: null,
+    pendingStalactites: [],
+    harmingClouds: [],
+    tangleweeds: [],
+    bonePiles: [],
+    tombs: layout.tombs,
+    lockedDoors: layout.lockedDoors,
+    catacombStair: layout.catacombStair,
+    themePickHistory: prev.themePickHistory,
+    roomIds: layout.roomIds,
+    roomKinds: layout.roomKinds,
+    dungeonDraw: buildFreshDungeonDeck(prev.depth, "catacombs"),
+    dungeonDiscard: [],
+    cardDefs: prev.cardDefs,
+    monsterDefs: prev.monsterDefs,
+    dungeonCardDefs: prev.dungeonCardDefs,
+    pending: null,
+    dualWieldStage: null,
+    senseiOffer: null,
+    chestOffer: null,
+    cardPickupOffer: null,
+    deckBuilderOffer: prev.deckBuilderOffer,
+    gauntletCommenced: false,
+    stairFeatures: null,
+    shiftyMet: prev.shiftyMet,
+    obamlyMet: prev.obamlyMet,
+    obamlyRestockKeys: prev.obamlyRestockKeys,
+    sennisMet: prev.sennisMet,
+    sennisTomeExplained: prev.sennisTomeExplained,
+    senseiMet: prev.senseiMet,
+    merchantState: null,
+    pedestalUsed: false,
+    pedestalOffer: null,
+    deckDestroyPending: false,
+    flameDestroyPending: false,
+    bindTomePending: false,
+    tomeCast: null,
+    stabilityBuffActive: false,
+    scoutBlockedThisTurn: false,
+    dungeonCardReveal: null,
+    pendingCollapse: null,
+    pendingTargetedCollapse: null,
+    lightsOutTurns: 0,
+    chanceMode: prev.chanceMode,
+    chancePlayerOnly: prev.chancePlayerOnly,
+    editorMode: prev.editorMode,
+    editorModeBackup: prev.editorModeBackup,
+    testBonelingSpawns: prev.testBonelingSpawns,
+    log: [
+      ...prev.log.slice(-40),
+      layout.summary,
+      `${monsters.length} monster(s), ${pots.length} pot(s), ${chests.length} chest(s), ${layout.tombs.length} tomb(s).`,
     ],
     turn: prev.turn + 1,
   };

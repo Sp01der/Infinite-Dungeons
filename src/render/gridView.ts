@@ -1,4 +1,5 @@
 import {
+  ColorMatrixFilter,
   Container,
   FederatedPointerEvent,
   Graphics,
@@ -9,7 +10,13 @@ import {
   Ticker,
 } from "pixi.js";
 import { chebyshev, keyOf, lineOfSightClear, magicMissilePathClearToPoint } from "../engine/grid";
-import { areaCellsForAim, areaCellsForSelectedCard, spearAimCells } from "../game/areaPreview";
+import {
+  areaCellsForAim,
+  areaCellsForSelectedCard,
+  broadswordAimCells,
+  icicleLanceAimCells,
+  spearAimCells,
+} from "../game/areaPreview";
 import {
   extendReachableWithBlockedDestinations,
   manhattan,
@@ -35,9 +42,23 @@ import {
   SHINING_BLADE_MS,
 } from "./attackFx";
 import { groundLootSpriteId } from "../game/lootIcons";
+import { addFootingBlocks } from "../game/tombs";
 
 /** Logical tile size in pixels (smaller than original 48 for a wider view). */
 export const TILE = 40;
+
+/** Washes a frozen sprite toward light blue, including sprites with little blue of their own. */
+const FREEZE_TINT = new ColorMatrixFilter();
+(
+  FREEZE_TINT as unknown as {
+    _loadMatrix(matrix: number[], multiply?: boolean): void;
+  }
+)._loadMatrix(
+  [
+    0.55, 0, 0, 0, 0.27, 0, 0.55, 0, 0, 0.37, 0, 0, 0.55, 0, 0.45, 0, 0, 0, 1, 0,
+  ],
+  false,
+);
 
 /** Default canvas size before the first layout pass (fills `#game-viewport` after load). */
 export const VIEW_COLS = 14;
@@ -874,6 +895,40 @@ export class GridView extends Container {
       this.rockLayer.addChild(g);
     }
 
+    for (const tomb of state.tombs) {
+      const anchor = { x: tomb.x, y: tomb.y };
+      if (state.fogOfWar && !state.discovered.has(keyOf(anchor))) continue;
+      const g = new Graphics();
+      const pad = Math.max(4, Math.round(TILE * 0.12));
+      g.roundRect(
+        tomb.x * TILE + pad,
+        tomb.y * TILE + pad,
+        tomb.w * TILE - pad * 2,
+        tomb.h * TILE - pad * 2,
+        4,
+      ).fill({ color: tomb.special ? 0xc6a03a : 0x2c2a72, alpha: 0.95 });
+      this.rockLayer.addChild(g);
+    }
+
+    for (const door of state.lockedDoors) {
+      if (state.fogOfWar && !state.discovered.has(keyOf(door))) continue;
+      const g = new Graphics();
+      const x0 = door.x * TILE + TILE * 0.18;
+      const y0 = door.y * TILE + TILE * 0.12;
+      const bw = TILE * 0.64;
+      const bh = TILE * 0.76;
+      g.rect(x0, y0, bw, bh).fill({ color: 0x3a2418, alpha: 0.95 });
+      g.rect(x0 + bw * 0.42, y0, Math.max(2, bw * 0.12), bh).fill({ color: 0xd4c4a8, alpha: 0.9 });
+      this.rockLayer.addChild(g);
+    }
+
+    if (state.catacombStair) {
+      const st = state.catacombStair;
+      if (!state.fogOfWar || state.discovered.has(keyOf(st))) {
+        this.rockLayer.addChild(this.makePlacedSprite("staircase", st.x, st.y));
+      }
+    }
+
     for (const tw of state.tangleweeds) {
       if (tw.hp <= 0) continue;
       if (state.fogOfWar && !state.discovered.has(keyOf(tw))) continue;
@@ -992,7 +1047,9 @@ export class GridView extends Container {
       const spr = useTall
         ? this.makeTallPlacedSprite(mimicChest ? "chest" : spriteId, 0, 0)
         : this.makePlacedSprite(mimicChest ? "chest" : spriteId, 0, 0);
-      if (m.defId === "douvlon") {
+      if ((m.freezeLevels ?? 0) > 0) {
+        spr.filters = [FREEZE_TINT];
+      } else if (m.defId === "douvlon") {
         const tint = m.douvlonColor === "blue" ? 0x5dade2 : 0xe74c3c;
         spr.tint = tint;
       }
@@ -1595,6 +1652,7 @@ export class GridView extends Container {
     if (rkind === "greenhouse") return this.pickGreenhouseSpriteId(x, y);
     const alt = (x + y) % 2 === 0;
     const th = state.floorTheme;
+    if (th === "catacombs") return this.pickBaseFloorSpriteId(x, y);
     if (th === "overgrown") {
       // ~10% of tiles get moss overlays (stable per tile so redraws don't flicker).
       const h = Math.imul(x + 1, 374761) ^ Math.imul(y + 1, 668265) ^ 0x9e3779b9;
@@ -1612,6 +1670,7 @@ export class GridView extends Container {
     for (const m of state.monsters) {
       if (m.hp > 0) occ.add(keyOf(m));
     }
+    addFootingBlocks(state, occ);
     const rockKeys = new Set(state.rocks.map((r) => keyOf(r)));
     const bridgeKeys = this.bridgeKeySet(state);
     const out = new Set<string>();
@@ -1723,6 +1782,7 @@ export class GridView extends Container {
     for (const m of state.monsters) {
       if (m.hp > 0) occ.add(keyOf(m));
     }
+    addFootingBlocks(state, occ);
     const rockKeys = new Set(state.rocks.map((r) => keyOf(r)));
     const bridgeKeys = this.bridgeKeySet(state);
     const attackTargets = new Map<string, { x: number; y: number }>();
@@ -1745,6 +1805,7 @@ export class GridView extends Container {
       for (const tw of state.tangleweeds) {
         if (tw.hp > 0) occW.add(keyOf(tw));
       }
+      addFootingBlocks(state, occW);
       const cells = new Set<string>();
       const wx = pending.waterX;
       const wy = pending.waterY;
@@ -1858,6 +1919,8 @@ export class GridView extends Container {
       pending.kind === "play_melee" ||
       pending.kind === "play_knife" ||
       pending.kind === "play_axe" ||
+      pending.kind === "play_executioner_axe" ||
+      pending.kind === "play_ancient_knife" ||
       pending.kind === "play_mace_smash" ||
       pending.kind === "play_poisoned_blade" ||
       pending.kind === "play_perfected_strike" ||
@@ -1936,6 +1999,14 @@ export class GridView extends Container {
 
     if (pending.kind === "play_spear") {
       return new Set(spearAimCells(state, from).map((cell) => keyOf(cell)));
+    }
+
+    if (pending.kind === "play_broadsword") {
+      return new Set(broadswordAimCells(state, from).map((cell) => keyOf(cell)));
+    }
+
+    if (pending.kind === "play_icicle_lance") {
+      return new Set(icicleLanceAimCells(state, from).map((cell) => keyOf(cell)));
     }
 
     if (pending.kind === "play_magic_missile") {

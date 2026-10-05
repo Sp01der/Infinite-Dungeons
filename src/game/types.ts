@@ -5,8 +5,8 @@ export type ChanceMode = "normal" | "highest" | "lowest";
 
 export type TileKind = "floor" | "wall" | "blocked" | "water";
 
-/** Procedural floor visual / spawn theme (floors 1–5). */
-export type FloorTheme = "normal" | "overgrown" | "damp" | "brownstone";
+/** Procedural floor visual / spawn theme (floors 1–5). Catacombs uses the normal tileset until its extras exist. */
+export type FloorTheme = "normal" | "overgrown" | "damp" | "brownstone" | "catacombs";
 
 export interface Point {
   x: number;
@@ -26,6 +26,8 @@ export interface CardDef {
    * but remain available to Deck Builder and merchants.
    */
   special?: boolean;
+  /** Held back from every normal source until a Catacombs floor exists. */
+  catacombsOnly?: boolean;
   effect:
     | { type: "move"; range: number }
     | { type: "melee_attack"; minDamage: number; maxDamage: number }
@@ -33,6 +35,10 @@ export interface CardDef {
     | { type: "spear_line"; minDamage: number; maxDamage: number }
     | { type: "knife"; minDamage: number; maxDamage: number }
     | { type: "axe"; minDamage: number; maxDamage: number }
+    | { type: "broadsword"; minDamage: number; maxDamage: number }
+    | { type: "executioner_axe"; minDamage: number; maxDamage: number }
+    | { type: "ancient_knife"; minDamage: number; maxDamage: number }
+    | { type: "icicle_lance"; minDamage: number; maxDamage: number }
     | { type: "quickstep"; draw: number; move: number }
     | { type: "tactical_approach"; draw: number; bonusCount: number }
     | { type: "bonus_chit" }
@@ -412,6 +418,8 @@ export interface MonsterInstance {
   fireLevels?: number;
   /** Poison ticks after this creature acts; moving increases its nonlethal damage. */
   poisonLevels?: number;
+  /** Freezing: +2 defense and cannot act. One level wears off each of this creature's turns. */
+  freezeLevels?: number;
   /** Elite Skeleton only: true once the low-HP teleport has already fired (prevents repeat). */
   eliteTeleported?: boolean;
   /** Elite Skeleton only: true when spawned inside the gauntlet wave (constrains teleport destination). */
@@ -498,6 +506,17 @@ export interface TangleweedPropInstance {
   withered?: boolean;
 }
 
+/** Tomb: blocks movement, not attacks. `w`×`h` is 1×1 or 1×2. */
+export interface TombInstance {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Gold sarcophagus in the ultra-fancy locked room. */
+  special?: boolean;
+}
+
 /** Bone pile remnant: walkable, no name/HP UI; merges after settling. */
 export interface BonePilePropInstance {
   id: string;
@@ -532,8 +551,12 @@ export type PendingIntent =
   | { kind: "play_move"; cardHandIndex: number; range: number }
   | { kind: "play_melee"; cardHandIndex: number; minDamage: number; maxDamage: number }
   | { kind: "play_spear"; cardHandIndex: number; minDamage: number; maxDamage: number }
+  | { kind: "play_broadsword"; cardHandIndex: number; minDamage: number; maxDamage: number }
+  | { kind: "play_icicle_lance"; cardHandIndex: number; minDamage: number; maxDamage: number }
   | { kind: "play_knife"; cardHandIndex: number; minDamage: number; maxDamage: number }
   | { kind: "play_axe"; cardHandIndex: number; minDamage: number; maxDamage: number }
+  | { kind: "play_executioner_axe"; cardHandIndex: number; minDamage: number; maxDamage: number }
+  | { kind: "play_ancient_knife"; cardHandIndex: number; minDamage: number; maxDamage: number }
   | { kind: "discard_move1"; maxRange: number; fromQuickstep: boolean }
   | { kind: "discard_punch" }
   | { kind: "play_magic_missile"; cardHandIndex: number; minDamage: number; maxDamage: number }
@@ -787,6 +810,12 @@ export interface GameState {
   tangleweeds: TangleweedPropInstance[];
   /** Bone piles left by slain Bonelings (walkable props). */
   bonePiles: BonePilePropInstance[];
+  /** Catacomb tombs. Block footing; attacks pass through. */
+  tombs: TombInstance[];
+  /** Tiles of a locked catacomb corridor gate. Block footing. */
+  lockedDoors: Point[];
+  /** Staircase down toward the Gauntlet Chamber (catacombs prototype). */
+  catacombStair: Point | null;
   /** Count of times each theme was picked this run (weighted re-roll). */
   themePickHistory: Partial<Record<FloorTheme, number>>;
   /** -1 wall; else index into roomKinds */
@@ -991,7 +1020,7 @@ export type GameCommand =
   | { type: "DEV_SET_THEME"; theme: FloorTheme }
   | { type: "DEV_SUMMON"; defId: string; level: number }
   | { type: "DEV_CHANCE"; mode: ChanceMode; playerOnly: boolean }
-  | { type: "DEV_TEST"; feature: "boneling" }
+  | { type: "DEV_TEST"; feature: "boneling" | "catacombs" }
   | { type: "DEV_EDITOR"; enabled: boolean }
   | { type: "DEV_EDITOR_CELL_ACTION"; x: number; y: number }
   | { type: "REQUEST_PLAY_CARD"; handIndex: number }

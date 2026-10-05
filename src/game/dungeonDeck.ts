@@ -21,6 +21,8 @@ function themeCardsFor(theme: FloorTheme | string): string[] {
       return ["flooding"];
     case "brownstone":
       return ["stalactites_fall"];
+    case "catacombs":
+      return themeCardsFor("normal");
     default:
       return themeCardsFor("normal");
   }

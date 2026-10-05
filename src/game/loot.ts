@@ -111,7 +111,9 @@ export function isPlayableDeckCard(d: CardDef): boolean {
     d.effect.type !== "bonus_chit" &&
     d.effect.type !== "penalty_destroy" &&
     d.rarity !== "Merchant" &&
-    !d.id.endsWith("_plus")
+    !d.id.endsWith("_plus") &&
+    !d.catacombsOnly &&
+    !d.id.startsWith("ancient_knife#")
   );
 }
 

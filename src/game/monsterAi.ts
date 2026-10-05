@@ -6,6 +6,7 @@ import { maybeDropMonsterCoin } from "./loot";
 import { addExp } from "./progression";
 import { SHADE_DECK_TEMPLATE } from "./monsterSpawn";
 import { convertBonelingToBonePile, tickBonePiles } from "./boneling";
+import { addFootingBlocks, blocksFooting } from "./tombs";
 import { applyDamageToPlayer } from "./skillsRuntime";
 import { pushAttackAnim, pushMoveAnim } from "./turnAnims";
 import { hasAtbmb, runAtbmbTurn, type AtbmbHost } from "./atbmb";
@@ -102,6 +103,7 @@ export function movementOcc(s: GameState, excludeMonsterId: string): Set<string>
   }
   occ.add(keyOf({ x: s.player.x, y: s.player.y }));
   for (const r of s.rocks) occ.add(keyOf(r));
+  addFootingBlocks(s, occ);
   for (const tw of s.tangleweeds) {
     if (tw.hp > 0) occ.add(keyOf(tw));
   }
@@ -549,6 +551,7 @@ function skeletonRollDamage(w: SkeletonWeapon, bonus: number): number {
 function knockCellFree(s: GameState, x: number, y: number, excludeIds: Set<string>): boolean {
   if (tileAt(s.tiles, { x, y }) !== "floor") return false;
   if (s.rocks.some((r) => r.x === x && r.y === y)) return false;
+  if (blocksFooting(s, x, y)) return false;
   if (s.player.x === x && s.player.y === y) return false;
   for (const m of s.monsters) {
     if (m.hp <= 0 || excludeIds.has(m.id)) continue;
@@ -1626,6 +1629,7 @@ function tileBlockedForTangleweedSpawn(s: GameState, x: number, y: number): bool
   if (tileAt(s.tiles, { x, y }) !== "floor") return true;
   // May spawn onto player or monster (they must kill it to escape).
   if (s.rocks.some((r) => r.x === x && r.y === y)) return true;
+  if (blocksFooting(s, x, y)) return true;
   if (s.tangleweeds.some((t) => t.hp > 0 && t.x === x && t.y === y)) return true;
   if (s.monsters.some((m) => m.defId === "tangleweed_bloom" && m.hp > 0 && m.x === x && m.y === y))
     return true;
@@ -1845,6 +1849,24 @@ export function runMonsterPhaseWithHooks(
     let curMon = s.monsters.find((x) => x.id === m.id && x.hp > 0);
     if (!curMon) continue;
     const monId = curMon.id;
+
+    const freeze = curMon.freezeLevels ?? 0;
+    if (freeze > 0) {
+      const nm = s.monsterDefs.get(curMon.defId)?.name ?? "Enemy";
+      const left = freeze - 1;
+      s = {
+        ...s,
+        monsters: s.monsters.map((x) => (x.id === monId ? { ...x, freezeLevels: left } : x)),
+      };
+      s = appendLog(
+        s,
+        left > 0
+          ? `${nm} is frozen and cannot act (${left} Freezing left).`
+          : `${nm} is frozen and cannot act. The ice thaws.`,
+      );
+      s = tickMonsterFireAfterTurn(s, monId, hits);
+      continue;
+    }
 
     const free = tryBreakFreeOfTangleweed(s, curMon);
     if (free.trapped) {
