@@ -74,7 +74,10 @@ export function playerBlockRollForHit(s: GameState): number {
 
 export function incomingDamageToPlayer(s: GameState, raw: number): number {
   const block = playerBlockRollForHit(s);
-  return applyDefense(raw, s.player.defenseBonusThisTurn + block);
+  return applyDefense(
+    raw,
+    s.player.defenseBonusThisTurn + s.player.defenseUntilHit + block,
+  );
 }
 
 /**
@@ -107,16 +110,20 @@ export function applyDamageToPlayer(
   } else if (opts?.ignoreDefense) {
     damage = remaining;
   } else {
-    const defenseBonus = next.player.defenseBonusThisTurn + playerBlockRollForHit(next);
+    const defenseBonus =
+      next.player.defenseBonusThisTurn + next.player.defenseUntilHit + playerBlockRollForHit(next);
     const effectiveDefense = fortify ? defenseBonus * 2 : defenseBonus;
     damage = applyDefense(remaining, effectiveDefense);
   }
+  // Parry-until-hit is consumed by the next attack that gets past resistance.
+  const defenseUntilHit = remaining > 0 ? 0 : next.player.defenseUntilHit;
   const hp = Math.max(0, next.player.hp - damage);
   next = {
     ...next,
     player: {
       ...next.player,
       hp,
+      defenseUntilHit,
       damageTakenThisTurn: next.player.damageTakenThisTurn + damage,
     },
   };

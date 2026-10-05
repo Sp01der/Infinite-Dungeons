@@ -9,6 +9,7 @@ import {
   Ticker,
 } from "pixi.js";
 import { chebyshev, keyOf, lineOfSightClear, magicMissilePathClearToPoint } from "../engine/grid";
+import { areaCellsForAim, areaCellsForSelectedCard, spearAimCells } from "../game/areaPreview";
 import {
   extendReachableWithBlockedDestinations,
   manhattan,
@@ -18,6 +19,7 @@ import type {
   GameState,
   HitVisual,
   PendingIntent,
+  Point,
   RoomKind,
 } from "../game/types";
 import { tileMatchesAnyPref, resolveTilePrefs, planAtbmbPath, stablePathRng, whenMatches, evaluateEliteSkeletonOptions, eliteSkeletonAttackPrefs } from "../game/atbmb";
@@ -75,6 +77,8 @@ export class GridView extends Container {
   private fogLayer = new Container();
   private entityLayer = new Container();
   private highlightLayer = new Container();
+  /** Red outline of every tile an area attack will hit. */
+  private areaOutline = new Graphics();
   private brainHighlightLayer = new Graphics();
   private collapseMarkerLayer = new Container();
   private douvlonLineLayer = new Graphics();
@@ -128,6 +132,9 @@ export class GridView extends Container {
   private lastPanClientX = 0;
   private lastPanClientY = 0;
   private panAccumDist = 0;
+  private hoverCell: Point | null = null;
+  /** Hand card selected but not yet played. Used for fixed areas such as Shining Blade. */
+  private previewCardId: string | null = null;
 
   constructor(
     styles: Map<string, SpriteStyle>,
@@ -153,6 +160,8 @@ export class GridView extends Container {
     this.darknessLayer.zIndex = 8;
     this.brainHighlightLayer.zIndex = 8.5;
     this.highlightLayer.zIndex = 9;
+    this.areaOutline.zIndex = 9.5;
+    this.areaOutline.eventMode = "none";
     this.fxLayer.zIndex = 10;
     this.addChild(this.floorLayer);
     this.addChild(this.wallRimLayer);
@@ -168,6 +177,7 @@ export class GridView extends Container {
     this.addChild(this.darknessLayer);
     this.addChild(this.brainHighlightLayer);
     this.addChild(this.highlightLayer);
+    this.addChild(this.areaOutline);
     this.addChild(this.fxLayer);
     this.eventMode = "static";
     this.cursor = "grab";
@@ -175,6 +185,7 @@ export class GridView extends Container {
     this.on("pointermove", this.onPointerMove);
     this.on("pointerup", this.onPointerUp);
     this.on("pointerupoutside", this.onPointerUp);
+    this.on("pointerleave", this.onPointerLeave);
   }
 
   /** Viewport size in CSS pixels (fixed camera window). */
@@ -190,6 +201,11 @@ export class GridView extends Container {
 
   getPixelArtEnabled(): boolean {
     return this.usePixelArt;
+  }
+
+  /** Card currently selected in hand. Fixed areas (Shining Blade) outline before the card is played. */
+  setPreviewCardId(cardId: string | null): void {
+    this.previewCardId = cardId;
   }
 
   setBrainInspectMonsterId(id: string | null): void {
@@ -267,17 +283,39 @@ export class GridView extends Container {
   };
 
   private onPointerMove = (ev: FederatedPointerEvent) => {
-    if (!this.panPointerDown) return;
-    const ne = ev.nativeEvent as PointerEvent;
-    const dx = ne.clientX - this.lastPanClientX;
-    const dy = ne.clientY - this.lastPanClientY;
-    this.lastPanClientX = ne.clientX;
-    this.lastPanClientY = ne.clientY;
-    this.panAccumDist += Math.hypot(dx, dy);
-    this.position.x += dx;
-    this.position.y += dy;
-    this.clampCamera(this.latestState);
+    if (this.panPointerDown) {
+      const ne = ev.nativeEvent as PointerEvent;
+      const dx = ne.clientX - this.lastPanClientX;
+      const dy = ne.clientY - this.lastPanClientY;
+      this.lastPanClientX = ne.clientX;
+      this.lastPanClientY = ne.clientY;
+      this.panAccumDist += Math.hypot(dx, dy);
+      this.position.x += dx;
+      this.position.y += dy;
+      this.clampCamera(this.latestState);
+      return;
+    }
+    this.updateHoverCell(ev);
   };
+
+  private onPointerLeave = (): void => {
+    if (!this.hoverCell) return;
+    this.hoverCell = null;
+    this.drawAreaOutline();
+  };
+
+  private updateHoverCell(ev: FederatedPointerEvent): void {
+    const s = this.latestState;
+    if (!s) return;
+    const lp = ev.getLocalPosition(this);
+    const x = Math.floor(lp.x / TILE);
+    const y = Math.floor(lp.y / TILE);
+    const next =
+      x < 0 || y < 0 || x >= s.width || y >= s.height ? null : { x, y };
+    if (this.hoverCell?.x === next?.x && this.hoverCell?.y === next?.y) return;
+    this.hoverCell = next;
+    this.drawAreaOutline();
+  }
 
   private onPointerUp = (ev: FederatedPointerEvent) => {
     const ne = ev.nativeEvent as PointerEvent;
@@ -1179,6 +1217,7 @@ export class GridView extends Container {
 
     this.drawBrainHighlights(state);
     this.drawHighlights(state);
+    this.drawAreaOutline();
   }
 
   private drawBrainHighlights(state: GameState): void {
@@ -1594,6 +1633,68 @@ export class GridView extends Container {
     return out;
   }
 
+  /** Tiles a coiled slime will cross on its next leap. Walls and blockers stop the line. */
+  private slimeLeapCells(state: GameState): Point[] {
+    const cells: Point[] = [];
+    for (const mon of state.monsters) {
+      if (mon.hp <= 0 || mon.defId !== "slime") continue;
+      if (state.fogOfWar && !state.discovered.has(keyOf(mon))) continue;
+      const dir =
+        mon.leapDir ??
+        (mon.leapTarget
+          ? {
+              x: Math.sign(mon.leapTarget.x - mon.x) || 0,
+              y: Math.sign(mon.leapTarget.y - mon.y) || 0,
+            }
+          : null);
+      if (!dir || (dir.x === 0 && dir.y === 0)) continue;
+      const steps =
+        state.monsterDefs.get(mon.defId)?.ai?.abilities.find((a) => a.kind === "leap")?.params
+          ?.steps ?? 2;
+      const occ = movementOcc(state, mon.id);
+      for (let i = 1; i <= steps; i++) {
+        const cell = { x: mon.x + dir.x * i, y: mon.y + dir.y * i };
+        if (!monsterTilePassable(state, mon, cell)) break;
+        cells.push(cell);
+        if (occ.has(keyOf(cell))) break;
+      }
+    }
+    return cells;
+  }
+
+  private drawAreaOutline(): void {
+    const g = this.areaOutline;
+    g.clear();
+    const state = this.latestState;
+    if (!state || this.presentationLocked) return;
+
+    const cells: Point[] = this.slimeLeapCells(state);
+    if (state.phase === "player") {
+      const pending = state.pending;
+      let aim: Point[] | null = null;
+      if (pending && this.hoverCell) {
+        const legal = this.highlightTiles(state, pending);
+        if (legal.has(keyOf(this.hoverCell))) {
+          aim = areaCellsForAim(state, pending, this.hoverCell);
+        }
+      } else if (!pending && this.previewCardId) {
+        aim = areaCellsForSelectedCard(state, this.previewCardId);
+      }
+      if (aim) cells.push(...aim);
+    }
+    if (cells.length === 0) return;
+
+    const inset = 3;
+    for (const cell of cells) {
+      g.rect(
+        cell.x * TILE + inset,
+        cell.y * TILE + inset,
+        TILE - inset * 2,
+        TILE - inset * 2,
+      ).stroke({ width: 3, color: 0xff2a2a, alignment: 0, alpha: 0.95 });
+    }
+  }
+
   private drawHighlights(state: GameState): void {
     let reach: Set<string>;
     if (
@@ -1834,16 +1935,7 @@ export class GridView extends Container {
     }
 
     if (pending.kind === "play_spear") {
-      const cells = new Set<string>();
-      for (const target of attackTargets.values()) {
-        const dx = target.x - from.x;
-        const dy = target.y - from.y;
-        if (dx !== 0 && dy !== 0) continue;
-        const dist = Math.abs(dx) + Math.abs(dy);
-        if (dist !== 1 && dist !== 2) continue;
-        cells.add(keyOf(target));
-      }
-      return cells;
+      return new Set(spearAimCells(state, from).map((cell) => keyOf(cell)));
     }
 
     if (pending.kind === "play_magic_missile") {

@@ -95,6 +95,18 @@ Move 4 spaces.
 **Copper Sword** — Basic / Attack
 Deal 3-5 damage to an adjacent creature.
 
+**Spear** — Common / Attack
+Deal 3-5 damage along a 2-tile line. Choose an adjacent direction. Walls stop the line.
+
+**Axe** — Common / Attack
+Deal 4-8 damage to an adjacent creature. Add a Weariness card on top of your deck.
+
+**Mace Smash** — Uncommon / Attack
+Deal 6-10 damage to an adjacent creature. Ignores 1 defense. Add two Weariness cards on top of your deck.
+
+**Weariness** — Penalty
+Playing this card destroys it. It cannot be discarded for a bonus action.
+
 **Bow** — Common / Attack
 Deal 3-4 damage to a target within 8 spaces. Requires line of sight. Cannot hit targets directly adjacent to you.
 

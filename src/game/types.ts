@@ -36,7 +36,7 @@ export interface CardDef {
     | { type: "quickstep"; draw: number; move: number }
     | { type: "tactical_approach"; draw: number; bonusCount: number }
     | { type: "bonus_chit" }
-    | { type: "parry"; defenseBonus: number }
+    | { type: "parry"; defenseBonus: number; untilDamage?: boolean }
     | { type: "flurry" }
     | { type: "magic_missile"; minDamage: number; maxDamage: number }
     | { type: "card_seeker"; move: number }
@@ -717,10 +717,10 @@ export interface GameState {
     discardPile: string[];
     hand: string[];
     equipped: string | null;
-    /** After playing Axe: next move (Move card or bonus 1-step) is cancelled. */
-    suppressNextMove: boolean;
-    /** Parry and similar: subtracts from incoming monster damage this turn (until your next draw). */
+    /** Parry and similar: subtracts from incoming monster damage this turn (cleared on your next draw). */
     defenseBonusThisTurn: number;
+    /** Parry (until damage): persists across turns; cleared after the next hit past resistance. */
+    defenseUntilHit: number;
     /** Flurry of Blows: discard punches and played cards tagged `punch` hit twice this turn. */
     doublePunchThisTurn: boolean;
     /** 1-based; XP bar uses expToNextLevel(level). */

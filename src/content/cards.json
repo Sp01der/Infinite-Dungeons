@@ -28,7 +28,7 @@
     "id": "spear",
     "name": "Spear",
     "rarity": "Common",
-    "description": "Deal 3–5 damage to a target on a cardinal tile 1–2 spaces away, then pierce through the tile behind it.",
+    "description": "Deal 3–5 damage along a 2-tile line. Choose an adjacent direction. Walls stop the line.",
     "types": ["Attack"],
     "tags": ["physical attack", "melee", "ranged"],
     "effect": { "type": "spear_line", "minDamage": 3, "maxDamage": 5 }
@@ -46,7 +46,7 @@
     "id": "axe",
     "name": "Axe",
     "rarity": "Common",
-    "description": "Deal 4–8 damage to a target on an adjacent tile. Your next movement does nothing.",
+    "description": "Deal 4–8 damage to a target on an adjacent tile. Add a Weariness card on top of your deck.",
     "types": ["Attack"],
     "tags": ["physical attack", "melee"],
     "effect": { "type": "axe", "minDamage": 4, "maxDamage": 8 }
@@ -79,9 +79,9 @@
     "id": "parry",
     "name": "Parry",
     "rarity": "Common",
-    "description": "Defense is raised by 2 this turn.",
+    "description": "Gain +3 defense until you take damage (the next attack against you is reduced by 3).",
     "types": ["Protection"],
-    "effect": { "type": "parry", "defenseBonus": 2 }
+    "effect": { "type": "parry", "defenseBonus": 3, "untilDamage": true }
   },
   {
     "id": "flurry_of_blows",
@@ -188,7 +188,7 @@
     "id": "mace_smash",
     "name": "Mace Smash",
     "rarity": "Uncommon",
-    "description": "Deal 6–10 damage to an adjacent target. Ignores 1 defense. Add a Weariness card on top of your deck.",
+    "description": "Deal 6–10 damage to an adjacent target. Ignores 1 defense. Add two Weariness cards on top of your deck.",
     "types": ["Attack"],
     "tags": ["physical attack", "melee"],
     "effect": { "type": "mace_smash", "minDamage": 6, "maxDamage": 10, "defensePierce": 1 }

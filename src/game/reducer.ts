@@ -1,3 +1,4 @@
+import { fireballBlastCells, spearStrikeCells } from "./areaPreview";
 import { baseMagicCardId, upgradedMagicCardId } from "./cardUpgrades";
 import { applyDefense, rollInt, pushRollChanceContext, popRollChanceContext } from "../engine/combat";
 import { addRoomsToDiscovered, collectRoomIdsAdjacentToPlayer } from "../engine/discovery";
@@ -2132,8 +2133,8 @@ function reshufflePlayerDeck(s: GameState): GameState {
     ...reshuffled,
     player: {
       ...reshuffled.player,
-      suppressNextMove: false,
       defenseBonusThisTurn: 0,
+      defenseUntilHit: 0,
       doublePunchThisTurn: false,
       moveTokens: 0,
       knockbackTokens: 0,
@@ -3044,9 +3045,43 @@ function isPhysicalMeleeAttack(def: CardDef | undefined): boolean {
     !!def.tags?.includes("melee");
 }
 
+function resolveSpearLine(state: GameState, target: Point): DispatchResult {
+  const pending = state.pending;
+  if (!pending || pending.kind !== "play_spear") return noHits(state);
+  const player = { x: state.player.x, y: state.player.y };
+  const line = spearStrikeCells(state, player, target);
+  if (line.length === 0) return noHits(state);
+  if (state.fogOfWar && !state.discovered.has(keyOf(target))) return noHits(state);
+  const consumed = consumePlayedCard(state, pending.cardHandIndex);
+  if (!consumed) return noHits(state);
+  const raw = weaponAttackRollRaw(
+    consumed.state,
+    consumed.cardId,
+    pending.minDamage,
+    pending.maxDamage,
+  );
+  let s = consumed.state;
+  const hits: HitVisual[] = [];
+  const survivors: string[] = [];
+  for (const cell of line) {
+    if (!hasAttackTargetAt(s, cell.x, cell.y)) continue;
+    const result = damageAttackTargetsAt(s, cell, raw, "melee_slash");
+    s = result.state;
+    hits.push(...result.hits);
+    survivors.push(...result.survivorMonsterIds);
+  }
+  const knockback = state.player.knockbackPrimed;
+  let afterHit: GameState = { ...s, player: { ...s.player, knockbackPrimed: 0 } };
+  afterHit = consumeStrengthGemIfPhysical(afterHit, consumed.cardId);
+  afterHit = log(afterHit, "The spear pierces the line!");
+  return withHitsThenKnockback(afterHit, hits, survivors, knockback);
+}
+
 function resolvePlayerAttackAtTile(state: GameState, target: Point): DispatchResult {
   const pending = state.pending;
-  if (!pending || !hasAttackTargetAt(state, target.x, target.y)) return noHits(state);
+  if (!pending) return noHits(state);
+  if (pending.kind === "play_spear") return resolveSpearLine(state, target);
+  if (!hasAttackTargetAt(state, target.x, target.y)) return noHits(state);
   if (state.fogOfWar && !state.discovered.has(keyOf(target))) return noHits(state);
   const player = { x: state.player.x, y: state.player.y };
 
@@ -3229,49 +3264,22 @@ function resolvePlayerAttackAtTile(state: GameState, target: Point): DispatchRes
       afterHit = drawFromPlayerDeck(afterHit, 1);
       afterHit = log(afterHit, "Knife — draw a card.");
     }
-    if (pending.kind === "play_axe") {
-      afterHit = { ...afterHit, player: { ...afterHit.player, suppressNextMove: true } };
-      afterHit = log(afterHit, "Axe — your next movement will fail.");
-    }
-    if (pending.kind === "play_mace_smash") {
+    if (pending.kind === "play_axe" || pending.kind === "play_mace_smash") {
+      const wearinessCount = pending.kind === "play_mace_smash" ? 2 : 1;
+      const weariness = Array.from({ length: wearinessCount }, () => "weariness");
       afterHit = {
         ...afterHit,
-        player: { ...afterHit.player, drawPile: ["weariness", ...afterHit.player.drawPile] },
+        player: { ...afterHit.player, drawPile: [...weariness, ...afterHit.player.drawPile] },
       };
-      afterHit = log(afterHit, "Mace Smash adds Weariness to the top of your deck.");
+      const cardName = pending.kind === "play_axe" ? "Axe" : "Mace Smash";
+      afterHit = log(
+        afterHit,
+        wearinessCount === 1
+          ? `${cardName} adds Weariness to the top of your deck.`
+          : `${cardName} adds two Weariness cards to the top of your deck.`,
+      );
     }
     afterHit = consumeStrengthGemIfPhysical(afterHit, consumed.cardId);
-    return withHitsThenKnockback(afterHit, hits, survivors, knockback);
-  }
-
-  if (pending.kind === "play_spear") {
-    const distance = manhattan(player, target);
-    const dx = Math.sign(target.x - player.x);
-    const dy = Math.sign(target.y - player.y);
-    if ((distance !== 1 && distance !== 2) || (dx !== 0 && dy !== 0)) return noHits(state);
-    const consumed = consumePlayedCard(state, pending.cardHandIndex);
-    if (!consumed) return noHits(state);
-    const raw = weaponAttackRollRaw(
-      consumed.state,
-      consumed.cardId,
-      pending.minDamage,
-      pending.maxDamage,
-    );
-    let result = damageAttackTargetsAt(consumed.state, target, raw, "melee_slash");
-    let s = result.state;
-    const hits = [...result.hits];
-    let survivors = [...result.survivorMonsterIds];
-    const behind = { x: target.x + dx, y: target.y + dy };
-    if (hasAttackTargetAt(s, behind.x, behind.y)) {
-      result = damageAttackTargetsAt(s, behind, raw, "melee_slash");
-      s = result.state;
-      hits.push(...result.hits);
-      survivors.push(...result.survivorMonsterIds);
-    }
-    const knockback = state.player.knockbackPrimed;
-    let afterHit: GameState = { ...s, player: { ...s.player, knockbackPrimed: 0 } };
-    afterHit = consumeStrengthGemIfPhysical(afterHit, consumed.cardId);
-    afterHit = log(afterHit, "The spear pierces the line!");
     return withHitsThenKnockback(afterHit, hits, survivors, knockback);
   }
 
@@ -4047,15 +4055,21 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         let s = state;
         const hand = [...s.player.hand];
         hand.splice(idx, 1);
-        const defenseBonusThisTurn = s.player.defenseBonusThisTurn + def.effect.defenseBonus;
+        const untilDamage = !!def.effect.untilDamage;
+        const bonus = def.effect.defenseBonus;
         s = {
           ...s,
           player: {
             ...playerAfterPlayingCard(s, hand, cardId),
-            defenseBonusThisTurn,
+            ...(untilDamage
+              ? { defenseUntilHit: s.player.defenseUntilHit + bonus }
+              : { defenseBonusThisTurn: s.player.defenseBonusThisTurn + bonus }),
           },
         };
-        return noHits(log(s, `Played ${def.name} — +${def.effect.defenseBonus} defense this turn.`));
+        const msg = untilDamage
+          ? `Played ${def.name} — +${bonus} defense until you take damage.`
+          : `Played ${def.name} — +${bonus} defense this turn.`;
+        return noHits(log(s, msg));
       }
 
       if (def.effect.type === "flurry") {
@@ -4540,21 +4554,6 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
 
       if (state.pending.kind === "play_move") {
         const p = state.pending;
-        if (state.player.suppressNextMove) {
-          const hand = [...state.player.hand];
-          const cardId = hand[p.cardHandIndex];
-          if (!cardId) return noHits(state);
-          hand.splice(p.cardHandIndex, 1);
-          let s: GameState = {
-            ...state,
-            player: {
-              ...playerAfterPlayingCard(state, hand, cardId),
-              suppressNextMove: false,
-            },
-            pending: null,
-          };
-          return noHits(log(s, "The axe's weight cancels your move — card spent, you stay put."));
-        }
         const occ = occupiedForPlayerMove(state);
         let reach = reachableOrthogonal(
           state.tiles,
@@ -4677,25 +4676,6 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
 
       if (state.pending.kind === "play_card_seeker") {
         const p = state.pending;
-        if (state.player.suppressNextMove) {
-          const hand = [...state.player.hand];
-          const cardId = hand[p.cardHandIndex];
-          if (!cardId) return noHits(state);
-          hand.splice(p.cardHandIndex, 1);
-          return noHits(
-            log(
-              {
-                ...state,
-                player: {
-                  ...playerAfterPlayingCard(state, hand, cardId),
-                  suppressNextMove: false,
-                },
-                pending: null,
-              },
-              "The axe's weight cancels your move — Card Seeker spent, you stay put.",
-            ),
-          );
-        }
         const occ = occupiedForPlayerMove(state);
         let reach = reachableOrthogonal(
           state.tiles,
@@ -4820,22 +4800,6 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
 
       if (state.pending.kind === "play_loot_and_scoot") {
         const p = state.pending;
-        if (state.player.suppressNextMove) {
-          const hand = [...state.player.hand];
-          const cardId = hand[p.cardHandIndex];
-          if (!cardId) return noHits(state);
-          hand.splice(p.cardHandIndex, 1);
-          let s: GameState = {
-            ...state,
-            player: {
-              ...playerAfterPlayingCard(state, hand, cardId),
-              suppressNextMove: false,
-            },
-            pending: null,
-          };
-          s = spawnGroundCoinsInDungeon(s, rollInt(0, p.maxCoins));
-          return noHits(log(s, "The axe's weight cancels Loot and Scoot's movement."));
-        }
         const occ = occupiedForPlayerMove(state);
         const reach = reachableOrthogonal(
           state.tiles,
@@ -4882,19 +4846,6 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
 
       if (state.pending.kind === "play_flying_kick") {
         const p = state.pending;
-        if (state.player.suppressNextMove) {
-          const consumed = consumePlayedCard(state, p.cardHandIndex);
-          if (!consumed) return noHits(state);
-          return noHits(
-            log(
-              {
-                ...consumed.state,
-                player: { ...consumed.state.player, suppressNextMove: false },
-              },
-              "The axe's weight cancels Flying Kick — nothing else happens.",
-            ),
-          );
-        }
         const dxTotal = dest.x - from.x;
         const dyTotal = dest.y - from.y;
         const cardinal = (dxTotal === 0) !== (dyTotal === 0);
@@ -4962,18 +4913,6 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
 
       if (state.pending.kind === "discard_move1") {
         const dm = state.pending;
-        if (state.player.suppressNextMove) {
-          return noHits(
-            log(
-              {
-                ...state,
-                player: { ...state.player, suppressNextMove: false },
-                pending: null,
-              },
-              "The axe's curse cancels your step.",
-            ),
-          );
-        }
         const occ = occupiedForPlayerMove(state);
         let reach = reachableOrthogonal(
           state.tiles,
@@ -4995,7 +4934,6 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         if (mimicHere) {
           let s: GameState = {
             ...state,
-            player: { ...state.player, suppressNextMove: false },
             pending: null,
           };
           const raw = rollInt(3, 4);
@@ -5022,7 +4960,6 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           const dmgD = takenD.damage;
           let sd: GameState = {
             ...takenD.state,
-            player: { ...takenD.state.player, suppressNextMove: false },
             pending: { kind: "water_escape", waterX: dest.x, waterY: dest.y },
           };
           sd = log(
@@ -5080,18 +5017,6 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       }
 
       if (state.pending.kind === "move_token_step") {
-        if (state.player.suppressNextMove) {
-          return noHits(
-            log(
-              {
-                ...state,
-                player: { ...state.player, suppressNextMove: false },
-                pending: null,
-              },
-              "The axe's curse cancels your token step.",
-            ),
-          );
-        }
         if (state.player.moveTokens <= 0) return noHits(state);
         const occ = occupiedForPlayerMove(state);
         let reach = reachableOrthogonal(
@@ -5228,13 +5153,9 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         const dmg = magicAttackRollRaw(s, cardId, p.minDamage, p.maxDamage);
         const fireLvls = rollInt(p.minFire, p.maxFire);
 
-        for (let dy = -1; dy <= 1; dy++) {
-          for (let dx = -1; dx <= 1; dx++) {
-            const tx = dest.x + dx;
-            const ty = dest.y + dy;
-            const cell = { x: tx, y: ty };
-            const t = tileAt(s.tiles, cell);
-            if (t !== "floor" && t !== "water") continue;
+        for (const cell of fireballBlastCells(s, dest)) {
+            const tx = cell.x;
+            const ty = cell.y;
             if (s.pots.some((pot) => pot.x === tx && pot.y === ty)) {
               s = breakPotFromAttack(s, tx, ty);
             }
@@ -5293,7 +5214,6 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
               }
             }
           }
-        }
         s = log(s, `Fireball! ${dmg} damage in a 3×3 blast, ${fireLvls} Fire level(s) inflicted.`);
         return withHits(s, hits);
       }

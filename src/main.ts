@@ -2566,6 +2566,9 @@ function renderAll(): void {
   }
   renderMonsterBrain();
   grid.setBrainInspectMonsterId(brainInspectMonsterId);
+  const previewCardId =
+    selectedHandIndex !== null ? (state.player.hand[selectedHandIndex] ?? null) : null;
+  grid.setPreviewCardId(previewCardId);
   grid.sync(state);
   if (!mapCameraInitialized) {
     grid.centerOnPlayer(state);
@@ -2705,11 +2708,15 @@ function renderAll(): void {
     hintEl.textContent = "Click an adjacent highlighted tile to punch everything on it.";
   } else if (state.pending?.kind === "play_spear") {
     hintEl.textContent =
-      "Click a highlighted cardinal tile 1–2 spaces away — everything there and one tile behind is struck.";
+      "Click an adjacent highlighted tile. The spear hits a 2-tile line that way — the red outline shows it. Walls stop the line.";
   } else if (state.pending?.kind === "play_knife") {
     hintEl.textContent = "Click an adjacent highlighted tile to strike everything there, then draw a card.";
   } else if (state.pending?.kind === "play_axe") {
-    hintEl.textContent = "Click an adjacent highlighted tile to cleave everything there — your next movement is cancelled.";
+    hintEl.textContent =
+      "Click an adjacent highlighted tile to cleave everything there — a Weariness card goes on top of your deck.";
+  } else if (state.pending?.kind === "play_mace_smash") {
+    hintEl.textContent =
+      "Click an adjacent highlighted tile to smash everything there — two Weariness cards go on top of your deck.";
   } else if (state.pending?.kind === "play_magic_missile") {
     hintEl.textContent =
       "Click a highlighted target tile in a straight or diagonal line. Magic Missile ignores defense.";
@@ -2724,7 +2731,7 @@ function renderAll(): void {
     const dmgShown = p.nextDamage + lightningBoltSkillDamageBonus(state, cardId);
     hintEl.textContent = `Lightning chain (hit ${hop}) — click a highlighted target tile within ${p.nextDamage} spaces for ${dmgShown} damage.`;
   } else if (state.pending?.kind === "play_fireball") {
-    hintEl.textContent = `Click a highlighted tile within ${state.pending.range} spaces (line of sight) as the blast center.`;
+    hintEl.textContent = `Click a highlighted tile within ${state.pending.range} spaces (line of sight) as the blast center. The red outline shows every tile the blast will hit.`;
   } else if (state.pending?.kind === "play_potion_of_harming") {
     hintEl.textContent = `Click a highlighted tile within ${state.pending.range} spaces — creatures there take ${state.pending.damage} damage and a harming cloud remains.`;
   } else if (state.pending?.kind === "play_card_seeker") {
@@ -2732,7 +2739,8 @@ function renderAll(): void {
   } else if (state.pending?.kind === "play_loot_and_scoot") {
     hintEl.textContent = `Click a highlighted tile to move up to ${state.pending.range} spaces and scatter coins.`;
   } else if (state.pending?.kind === "play_flying_kick") {
-    hintEl.textContent = "Choose a highlighted direction for the 2-space Flying Kick.";
+    hintEl.textContent =
+      "Choose a highlighted direction for the 2-space Flying Kick. The red outline shows the tiles it passes through.";
   } else if (state.pending?.kind === "play_great_sword") {
     hintEl.textContent =
       "Choose an adjacent target for 7–12 damage, or an unobstructed cardinal/diagonal target 2 spaces away for 2–5 damage.";
@@ -2744,6 +2752,19 @@ function renderAll(): void {
   } else if (state.pending?.kind === "enter_blocked_tile") {
     hintEl.textContent =
       "Choose a hand card to discard as extra cost to enter the rubble (cannot be the same card as your move, when applicable).";
+  } else if (selectedHandIndex !== null) {
+    const selectedId = state.player.hand[selectedHandIndex];
+    const selectedEffect = selectedId ? state.cardDefs.get(selectedId)?.effect : undefined;
+    if (selectedEffect?.type === "shining_blade") {
+      hintEl.textContent = selectedEffect.diagonals
+        ? "Shining Blade+ is selected — the red outline shows every adjacent tile, including diagonals. Play it to strike."
+        : "Shining Blade is selected — the red outline shows every orthogonally adjacent tile. Play it to strike.";
+    } else {
+      hintEl.textContent =
+        state.phase === "defeat"
+          ? "You were defeated. Refresh the page to try again."
+          : "Use the hand below; End turn is bottom-right. The dungeon draws after you.";
+    }
   } else {
     hintEl.textContent =
       state.phase === "defeat"
