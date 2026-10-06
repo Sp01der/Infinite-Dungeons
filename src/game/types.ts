@@ -446,6 +446,8 @@ export interface PotInstance {
   y: number;
   /** Glowing magic pot — equal chance of each gem, Flame of Destruction, or Magic Tome. */
   magic?: boolean;
+  /** Catacomb pot that always holds loot, including trinkets. */
+  golden?: boolean;
 }
 
 export interface RockInstance {
@@ -475,6 +477,8 @@ export interface ChestInstance {
 
 export type ShiftyGemId = "strength" | "speed" | "luck" | "cards" | "healing" | "defense";
 
+export type TrinketId = "throwing_knife" | "healing_pendant" | "shielding_ring";
+
 export type GroundLootKind =
   | "coin"
   | "bread"
@@ -483,7 +487,11 @@ export type GroundLootKind =
   | "cheese"
   | "gem"
   | "flame_of_destruction"
-  | "magic_tome";
+  | "magic_tome"
+  | "throwing_knife"
+  | "healing_pendant"
+  | "shielding_ring"
+  | "key";
 
 /** Bound Magic Tome instance (does not stack). */
 export type BoundMagicTome = {
@@ -515,6 +523,14 @@ export interface TombInstance {
   h: number;
   /** Gold sarcophagus in the ultra-fancy locked room. */
   special?: boolean;
+}
+
+/** Grave pile: stationary, blocks movement, spawns a Boneling each monster phase. */
+export interface GraveBonePileInstance {
+  id: string;
+  x: number;
+  y: number;
+  hp: number;
 }
 
 /** Bone pile remnant: walkable, no name/HP UI; merges after settling. */
@@ -567,6 +583,8 @@ export type PendingIntent =
   | { kind: "water_escape"; waterX: number; waterY: number }
   | { kind: "play_knockback_punch"; cardHandIndex: number; minDamage: number; maxDamage: number; knockback: number }
   | { kind: "play_bow_attack"; cardHandIndex: number; minDamage: number; maxDamage: number; range: number }
+  | { kind: "throw_knife" }
+  | { kind: "pendant_discard"; chosen: number[] }
   | {
       kind: "play_lightning_bolt";
       cardHandIndex: number;
@@ -713,6 +731,14 @@ export interface GameState {
     herb: number;
     /** Cheese: use to restore 3 HP. */
     cheese: number;
+    /** Catacomb trinket. Thrown, then retrieved from the struck tile. */
+    throwingKnives: number;
+    /** Catacomb trinket. Discard 4 cards to heal 10% of max HP. */
+    healingPendants: number;
+    /** Catacomb trinket. Spend 2 gold for 5 resistance this turn. */
+    shieldingRings: number;
+    /** Opens one locked catacomb door each. */
+    keys: number;
     /** Obamly's Special Stew: heal 6 HP and +1 max HP. */
     stew: number;
     /** Flame of Destruction: destroy one card from discard. */
@@ -810,12 +836,16 @@ export interface GameState {
   tangleweeds: TangleweedPropInstance[];
   /** Bone piles left by slain Bonelings (walkable props). */
   bonePiles: BonePilePropInstance[];
+  /** Grave bone piles. Block footing and spawn Bonelings. */
+  graveBonePiles: GraveBonePileInstance[];
   /** Catacomb tombs. Block footing; attacks pass through. */
   tombs: TombInstance[];
   /** Tiles of a locked catacomb corridor gate. Block footing. */
   lockedDoors: Point[];
   /** Staircase down toward the Gauntlet Chamber (catacombs prototype). */
   catacombStair: Point | null;
+  /** Fancy-room walls drawn with a slight yellow tint. */
+  goldWalls: Point[];
   /** Count of times each theme was picked this run (weighted re-roll). */
   themePickHistory: Partial<Record<FloorTheme, number>>;
   /** -1 wall; else index into roomKinds */
@@ -916,6 +946,7 @@ export interface GameState {
 export type AttackFxKind =
   | "magic_missile"
   | "arrow"
+  | "throwing_knife"
   | "fireball"
   | "douvlon_orb"
   | "melee_slash"
@@ -1010,7 +1041,11 @@ export type GameCommand =
         | "cheese"
         | "flameOfDestruction"
         | "unboundTomes"
-        | "gem";
+        | "gem"
+        | "throwingKnife"
+        | "healingPendant"
+        | "shieldingRing"
+        | "key";
       gemId?: ShiftyGemId;
       quantity: number;
     }
@@ -1039,6 +1074,10 @@ export type GameCommand =
   | { type: "CONFIRM_TARGET_POT"; potId: string }
   | { type: "CANCEL_PENDING" }
   | { type: "USE_BREAD" }
+  | { type: "USE_THROWING_KNIFE" }
+  | { type: "USE_HEALING_PENDANT" }
+  | { type: "USE_SHIELDING_RING" }
+  | { type: "TOGGLE_PENDANT_CARD"; handIndex: number }
   | { type: "USE_HERB" }
   | { type: "USE_CHEESE" }
   | { type: "USE_STEW" }

@@ -23,7 +23,7 @@ import {
   ALL_GEM_IDS,
   gemLootSpriteId,
   lootIconCss,
-  type LootIconId,
+  type InventoryIconId,
 } from "./game/lootIcons";
 import { loadSpriteStyles } from "./render/assets";
 import { loadAttackFxFrames } from "./render/attackFx";
@@ -867,6 +867,14 @@ const COMMAND_ITEMS: Record<string, { item: CommandItem["item"]; gemId?: ShiftyG
   "gem of defense": { item: "gem", gemId: "defense", label: "Gem of Defense" },
   "defense gem": { item: "gem", gemId: "defense", label: "Gem of Defense" },
   defense: { item: "gem", gemId: "defense", label: "Gem of Defense" },
+  "throwing knife": { item: "throwingKnife", label: "throwing knife" },
+  knife: { item: "throwingKnife", label: "throwing knife" },
+  "healing pendant": { item: "healingPendant", label: "healing pendant" },
+  pendant: { item: "healingPendant", label: "healing pendant" },
+  "shielding ring": { item: "shieldingRing", label: "shielding ring" },
+  ring: { item: "shieldingRing", label: "shielding ring" },
+  key: { item: "key", label: "key" },
+  keys: { item: "key", label: "key" },
 };
 
 function normalizeLookupName(value: string): string {
@@ -2162,7 +2170,7 @@ function renderDungeonPiles(): void {
   }
 }
 
-function applyLootIconStyle(el: HTMLElement, id: LootIconId, size = 24): void {
+function applyLootIconStyle(el: HTMLElement, id: InventoryIconId, size = 24): void {
   const css = lootIconCss(id, size);
   el.style.backgroundImage = css.backgroundImage;
   el.style.backgroundSize = css.backgroundSize;
@@ -2173,7 +2181,7 @@ function applyLootIconStyle(el: HTMLElement, id: LootIconId, size = 24): void {
 
 type InventorySlot = {
   key: string;
-  icon: LootIconId;
+  icon: InventoryIconId;
   count: number;
   title: string;
   use: () => void;
@@ -2182,10 +2190,54 @@ type InventorySlot = {
 };
 
 function inventorySlots(): InventorySlot[] {
-  const blocked =
-    state.phase !== "player" || !!state.pending || !!state.tomeCast || choiceModalBlocksPlay(state);
+  const pendantPicking = state.pending?.kind === "pendant_discard";
+  const hardBlocked =
+    state.phase !== "player" || !!state.tomeCast || choiceModalBlocksPlay(state);
+  const blocked = hardBlocked || !!state.pending;
   const full = state.player.hp >= state.player.maxHp;
   const slots: InventorySlot[] = [];
+  if (state.player.throwingKnives > 0) {
+    slots.push({
+      key: "throwing-knife",
+      icon: "trinket_throwing_knife",
+      count: state.player.throwingKnives,
+      title: "Throwing Knife — 1–4 damage, 2 to 5 spaces away. Lands on the struck tile.",
+      use: () => apply({ type: "USE_THROWING_KNIFE" }),
+      canUse: !blocked,
+    });
+  }
+  if (state.player.healingPendants > 0) {
+    slots.push({
+      key: "healing-pendant",
+      icon: "trinket_healing_pendant",
+      count: state.player.healingPendants,
+      title: pendantPicking
+        ? "Healing Pendant — click again to cancel"
+        : "Healing Pendant — discard 4 cards to heal 10% of max HP",
+      use: () => apply({ type: "USE_HEALING_PENDANT" }),
+      canUse: !hardBlocked && (pendantPicking || (!state.pending && state.player.hand.length >= 4 && !full)),
+    });
+  }
+  if (state.player.shieldingRings > 0) {
+    slots.push({
+      key: "shielding-ring",
+      icon: "trinket_shielding_ring",
+      count: state.player.shieldingRings,
+      title: "Shielding Ring — spend 2 gold for 5 resistance this turn",
+      use: () => apply({ type: "USE_SHIELDING_RING" }),
+      canUse: !blocked && state.player.gold >= 2,
+    });
+  }
+  if (state.player.keys > 0) {
+    slots.push({
+      key: "key",
+      icon: "loot_key",
+      count: state.player.keys,
+      title: "Key — step onto a locked gate to open it",
+      use: () => {},
+      canUse: false,
+    });
+  }
   if (state.player.bread > 0) {
     slots.push({
       key: "bread",
@@ -2747,6 +2799,10 @@ function renderAll(): void {
       "Click a highlighted target tile in a straight or diagonal line. Magic Missile ignores defense.";
   } else if (state.pending?.kind === "play_knockback_punch") {
     hintEl.textContent = "Click an adjacent highlighted tile — punch everything and apply stacked knockback.";
+  } else if (state.pending?.kind === "throw_knife") {
+    hintEl.textContent = "Throwing Knife — click a highlighted target 2 to 5 spaces away.";
+  } else if (state.pending?.kind === "pendant_discard") {
+    hintEl.textContent = `Healing Pendant — choose 4 cards to discard (${state.pending.chosen.length}/4).`;
   } else if (state.pending?.kind === "play_bow_attack") {
     hintEl.textContent = `Click a highlighted target tile within ${state.pending.range} spaces (line of sight; not adjacent).`;
   } else if (state.pending?.kind === "play_lightning_bolt") {
@@ -2836,9 +2892,13 @@ function renderAll(): void {
     body.textContent = def?.description ?? "";
     const typeRow = createCardTypesElement(def);
 
+    const pendantChosen =
+      state.pending?.kind === "pendant_discard" && state.pending.chosen.includes(idx);
     const isSelected = selectedHandIndex === idx;
-    if (isSelected) card.classList.add("playing-card--selected");
-    else if (selectedHandIndex !== null) card.classList.add("playing-card--dimmed");
+    if (isSelected || pendantChosen) card.classList.add("playing-card--selected");
+    else if (selectedHandIndex !== null && state.pending?.kind !== "pendant_discard") {
+      card.classList.add("playing-card--dimmed");
+    }
 
     card.appendChild(rail);
     if (controlsScheme === "classic") {
@@ -2852,6 +2912,10 @@ function renderAll(): void {
     if (typeRow) card.appendChild(typeRow);
 
     card.addEventListener("click", () => {
+      if (state.pending?.kind === "pendant_discard") {
+        apply({ type: "TOGGLE_PENDANT_CARD", handIndex: idx });
+        return;
+      }
       selectHandCard(selectedHandIndex === idx ? null : idx);
     });
 
@@ -3082,6 +3146,13 @@ document.addEventListener("keydown", (e) => {
   if (e.key === "Escape" && pileInspector.classList.contains("is-open")) closePileInspector();
   if (e.key === "Escape" && skillTreeModal.classList.contains("is-open")) closeSkillTreeModal();
 
+  if (
+    e.key === "Escape" &&
+    (state.pending?.kind === "throw_knife" || state.pending?.kind === "pendant_discard")
+  ) {
+    apply({ type: "CANCEL_PENDING" });
+    return;
+  }
   if (e.key === "Escape" && selectedHandIndex !== null) {
     selectHandCard(null);
     return;
@@ -3159,7 +3230,11 @@ window.addEventListener(
     if (digitIndex !== null) {
       if (digitIndex < handLen) {
         e.preventDefault();
-        selectHandCard(selectedHandIndex === digitIndex ? null : digitIndex);
+        if (state.pending?.kind === "pendant_discard") {
+          apply({ type: "TOGGLE_PENDANT_CARD", handIndex: digitIndex });
+        } else {
+          selectHandCard(selectedHandIndex === digitIndex ? null : digitIndex);
+        }
       }
       return;
     }

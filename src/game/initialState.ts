@@ -24,7 +24,9 @@ import {
   createMonsterInstance,
   withBonelingLeaderFlag,
 } from "./monsterSpawn";
-import { rollGroundLootPiece } from "./loot";
+import { GRAVE_BONE_PILE_HP } from "./gravePiles";
+import { randomLootGemId } from "./lootIcons";
+import { pickRandomLootCardId, rollGroundLootPiece } from "./loot";
 
 const ORTHO_NEIGHBORS: Point[] = [
   { x: 1, y: 0 },
@@ -634,6 +636,10 @@ export function createInitialState(floorDef: FloorDef): GameState {
       bread: 0,
       herb: 0,
       cheese: 0,
+      throwingKnives: 0,
+      healingPendants: 0,
+      shieldingRings: 0,
+      keys: 0,
       stew: 0,
       flameOfDestruction: 0,
       unboundTomes: 0,
@@ -684,9 +690,11 @@ export function createInitialState(floorDef: FloorDef): GameState {
     harmingClouds: [],
     tangleweeds: [],
     bonePiles: [],
+    graveBonePiles: [],
     tombs: [],
     lockedDoors: [],
     catacombStair: null,
+    goldWalls: [],
     themePickHistory: {},
     roomIds,
     roomKinds,
@@ -789,6 +797,10 @@ export function createInitialStateGenerated(depth = 1): GameState {
       bread: 0,
       herb: 0,
       cheese: 0,
+      throwingKnives: 0,
+      healingPendants: 0,
+      shieldingRings: 0,
+      keys: 0,
       stew: 0,
       flameOfDestruction: 0,
       unboundTomes: 0,
@@ -839,9 +851,11 @@ export function createInitialStateGenerated(depth = 1): GameState {
     harmingClouds: [],
     tangleweeds: [],
     bonePiles: [],
+    graveBonePiles: [],
     tombs: [],
     lockedDoors: [],
     catacombStair: null,
+    goldWalls: [],
     themePickHistory: bumpThemeHistory({}, gen.floorTheme),
     roomIds,
     roomKinds,
@@ -1001,9 +1015,11 @@ export function createNextFloorState(
     harmingClouds: [],
     tangleweeds: [],
     bonePiles: [],
+    graveBonePiles: [],
     tombs: [],
     lockedDoors: [],
     catacombStair: null,
+    goldWalls: [],
     themePickHistory: bumpThemeHistory(prev.themePickHistory, gen.floorTheme),
     roomIds,
     roomKinds,
@@ -1088,11 +1104,24 @@ export function createCatacombsTestState(prev: GameState): GameState {
       createMonsterInstance(`monster_${mi++}`, "skeleton", p.x, p.y, prev.monsterDefs, prev.danger),
     );
   }
+  for (const p of layout.elites) {
+    monsters.push(
+      createMonsterInstance(
+        `monster_${mi++}`,
+        "elite_skeleton",
+        p.x,
+        p.y,
+        prev.monsterDefs,
+        prev.danger,
+      ),
+    );
+  }
   const pots: PotInstance[] = layout.pots.map((p, i) => ({
     id: `pot_${i}`,
     x: p.x,
     y: p.y,
     magic: p.magic || undefined,
+    golden: p.golden || undefined,
   }));
   const chests: ChestInstance[] = layout.chests.map((p, i) => ({
     id: `chest_${i}`,
@@ -1100,12 +1129,30 @@ export function createCatacombsTestState(prev: GameState): GameState {
     y: p.y,
     tier: layout.roomKinds[layout.roomIds[p.y]?.[p.x] ?? -1] === "treasure" ? 2 : 1,
   }));
-  const groundLoot: GroundLootInstance[] = layout.coins.map((p, i) => ({
-    id: `loot_${i}`,
+  const groundLoot: GroundLootInstance[] = [];
+  let lootSerial = 0;
+  const pushLoot = (loot: Omit<GroundLootInstance, "id">) => {
+    groundLoot.push({ ...loot, id: `loot_${lootSerial++}` });
+  };
+  for (const p of layout.coins) pushLoot({ x: p.x, y: p.y, kind: "coin", amount: 1 });
+  for (const p of layout.keys) pushLoot({ x: p.x, y: p.y, kind: "key" });
+  for (const p of layout.cards) {
+    pushLoot({
+      x: p.x,
+      y: p.y,
+      kind: "card",
+      cardId: pickRandomLootCardId(prev.cardDefs, prev.depth),
+    });
+  }
+  for (const p of layout.trinkets) pushLoot({ x: p.x, y: p.y, kind: p.trinket });
+  for (const p of layout.gems) {
+    pushLoot({ x: p.x, y: p.y, kind: "gem", gemId: randomLootGemId() });
+  }
+  const graveBonePiles = layout.gravePiles.map((p, i) => ({
+    id: `gravepile_${i}`,
     x: p.x,
     y: p.y,
-    kind: "coin",
-    amount: 1,
+    hp: GRAVE_BONE_PILE_HP,
   }));
   const drawPile = [...prev.player.drawPile, ...prev.player.discardPile, ...prev.player.hand];
   return {
@@ -1162,9 +1209,11 @@ export function createCatacombsTestState(prev: GameState): GameState {
     harmingClouds: [],
     tangleweeds: [],
     bonePiles: [],
+    graveBonePiles,
     tombs: layout.tombs,
     lockedDoors: layout.lockedDoors,
     catacombStair: layout.catacombStair,
+    goldWalls: layout.goldWalls,
     themePickHistory: prev.themePickHistory,
     roomIds: layout.roomIds,
     roomKinds: layout.roomKinds,

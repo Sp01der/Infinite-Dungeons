@@ -1,9 +1,26 @@
-import type { CardDef, CardType, GroundLootInstance, ShiftyGemId } from "./types";
+import type { CardDef, CardType, GroundLootInstance, ShiftyGemId, TrinketId } from "./types";
 import { ALL_GEM_IDS, randomLootGemId } from "./lootIcons";
 
 /** Uniform int in [min, max]; ignores `chanceMode` (loot tables must stay fair). */
 function lootRollInt(min: number, max: number): number {
   return min + Math.floor(Math.random() * (max - min + 1));
+}
+
+export const TRINKET_IDS: TrinketId[] = ["throwing_knife", "healing_pendant", "shielding_ring"];
+
+export function randomTrinket(): TrinketId {
+  return TRINKET_IDS[lootRollInt(0, TRINKET_IDS.length - 1)]!;
+}
+
+export function trinketLabel(id: TrinketId): string {
+  switch (id) {
+    case "throwing_knife":
+      return "Throwing Knife";
+    case "healing_pendant":
+      return "Healing Pendant";
+    case "shielding_ring":
+      return "Shielding Ring";
+  }
 }
 
 export type PotLoot =
@@ -12,6 +29,8 @@ export type PotLoot =
   | { kind: "bread" }
   | { kind: "herb" }
   | { kind: "cheese" }
+  | { kind: "gem"; gemId: ShiftyGemId }
+  | { kind: "trinket"; trinket: TrinketId }
   | { kind: "card"; cardId: string };
 
 /**
@@ -44,21 +63,68 @@ export function rollMagicPotLoot(): MagicPotLoot {
   return { kind: "magic_tome" };
 }
 
+/** Catacomb pots: little food, mostly coins, gems, and cards. Always a chance of dust. */
+export function rollCatacombsPotLoot(cardDefs: Map<string, CardDef>, depth: number): PotLoot {
+  const r = Math.random();
+  if (r < 0.06) return { kind: "nothing" };
+  if (r < 0.34) return { kind: "coin", amount: 1 };
+  if (r < 0.54) return { kind: "coin", amount: 3 };
+  if (r < 0.74) return { kind: "gem", gemId: randomLootGemId() };
+  if (r < 0.9) return { kind: "card", cardId: pickRandomLootCardId(cardDefs, depth) };
+  if (r < 0.94) return { kind: "bread" };
+  if (r < 0.97) return { kind: "herb" };
+  return { kind: "cheese" };
+}
+
+export type GoldenPotLoot =
+  | { kind: "coin"; amount: number }
+  | { kind: "gem"; gemId: ShiftyGemId }
+  | { kind: "trinket"; trinket: TrinketId }
+  | { kind: "card"; cardId: string };
+
+/** Golden pots always hold loot, and may hold a trinket. */
+export function rollGoldenPotLoot(cardDefs: Map<string, CardDef>, depth: number): GoldenPotLoot {
+  const r = Math.random();
+  if (r < 0.28) return { kind: "coin", amount: lootRollInt(2, 5) };
+  if (r < 0.5) return { kind: "gem", gemId: randomLootGemId() };
+  if (r < 0.76) return { kind: "trinket", trinket: randomTrinket() };
+  return { kind: "card", cardId: pickRandomLootCardId(cardDefs, depth) };
+}
+
 export type ChestLootRoll =
   | { kind: "coins"; amount: 3 | 4 }
   | { kind: "bread" }
   | { kind: "herb" }
   | { kind: "cheese" }
   | { kind: "gem"; gemId: ShiftyGemId }
+  | { kind: "trinket"; trinket: TrinketId }
   | { kind: "cardChoice"; tier: "basicToUncommon" | "rarePlus" };
 
 /**
  * Chest contents:
  * 20% 3 coins / 18% 4 coins / 16% bread / 10% herb / 8% cheese / 8% gem /
  * 14% basic–uncommon card choice / 6% rare+ card choice.
+ * Catacombs chests lean on gold, gems, cards, and trinkets.
  */
-export function rollChestLoot(): ChestLootRoll {
+export function rollChestLoot(opts?: { catacombs?: boolean; rich?: boolean }): ChestLootRoll {
   const r = Math.random();
+  if (opts?.catacombs) {
+    if (opts.rich) {
+      if (r < 0.16) return { kind: "coins", amount: 4 };
+      if (r < 0.34) return { kind: "gem", gemId: randomLootGemId() };
+      if (r < 0.52) return { kind: "trinket", trinket: randomTrinket() };
+      if (r < 0.82) return { kind: "cardChoice", tier: "basicToUncommon" };
+      return { kind: "cardChoice", tier: "rarePlus" };
+    }
+    if (r < 0.2) return { kind: "coins", amount: 3 };
+    if (r < 0.36) return { kind: "coins", amount: 4 };
+    if (r < 0.54) return { kind: "gem", gemId: randomLootGemId() };
+    if (r < 0.68) return { kind: "trinket", trinket: randomTrinket() };
+    if (r < 0.88) return { kind: "cardChoice", tier: "basicToUncommon" };
+    if (r < 0.96) return { kind: "cardChoice", tier: "rarePlus" };
+    if (r < 0.98) return { kind: "bread" };
+    return { kind: "herb" };
+  }
   if (r < 0.2) return { kind: "coins", amount: 3 };
   if (r < 0.38) return { kind: "coins", amount: 4 };
   if (r < 0.54) return { kind: "bread" };

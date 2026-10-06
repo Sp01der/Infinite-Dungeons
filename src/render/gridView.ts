@@ -42,7 +42,7 @@ import {
   SHINING_BLADE_MS,
 } from "./attackFx";
 import { groundLootSpriteId } from "../game/lootIcons";
-import { addFootingBlocks } from "../game/tombs";
+import { addFootingBlocks, keyDoorHaltTiles, unlockLockedDoorsInOccupancy } from "../game/tombs";
 
 /** Logical tile size in pixels (smaller than original 48 for a wider view). */
 export const TILE = 40;
@@ -650,7 +650,9 @@ export class GridView extends Container {
             const px = fromCx + (toCx - fromCx) * t;
             const py = fromCy + (toCy - fromCy) * t;
             const { texture, rotation } = pickProjectileTexture(frames, fx.kind, dx, dy);
-            this.fxLayer.addChild(this.makeFxSprite(texture, px, py, rotation));
+            const projectile = this.makeFxSprite(texture, px, py, rotation);
+            if (fx.kind === "throwing_knife") projectile.scale.set(4);
+            this.fxLayer.addChild(projectile);
           } else if (fx.kind === "fireball" && elapsed < PROJECTILE_TRAVEL_MS + FIREBALL_EXPLOSION_MS) {
             const explosionElapsed = elapsed - PROJECTILE_TRAVEL_MS;
             const frameIndex = Math.min(
@@ -735,6 +737,7 @@ export class GridView extends Container {
     };
 
     const bridgeKeys = this.bridgeKeySet(state);
+    const goldWalls = new Set(state.goldWalls.map((p) => keyOf(p)));
 
     for (let y = 0; y < h; y++) {
       for (let x = 0; x < w; x++) {
@@ -773,6 +776,7 @@ export class GridView extends Container {
           spr.x = x * TILE;
           spr.y = y * TILE;
         }
+        if (kind === "wall" && goldWalls.has(keyOf({ x, y }))) spr.tint = 0xffd080;
         this.floorLayer.addChild(spr);
         this.gridLines
           .rect(x * TILE, y * TILE, TILE, TILE)
@@ -880,7 +884,11 @@ export class GridView extends Container {
     for (const pot of state.pots) {
       if (state.fogOfWar && !state.discovered.has(keyOf(pot))) continue;
       this.potLayer.addChild(
-        this.makePlacedSprite(pot.magic ? "magic_pot" : "pot", pot.x, pot.y),
+        this.makePlacedSprite(
+          pot.golden ? "golden_pot" : pot.magic ? "magic_pot" : "pot",
+          pot.x,
+          pot.y,
+        ),
       );
     }
 
@@ -963,6 +971,10 @@ export class GridView extends Container {
         if (loot.kind === "gem") color = 0xe74c3c;
         if (loot.kind === "flame_of_destruction") color = 0xe67e22;
         if (loot.kind === "magic_tome") color = 0x5dade2;
+        if (loot.kind === "throwing_knife") color = 0xc0c4cc;
+        if (loot.kind === "healing_pendant") color = 0x3ecf8e;
+        if (loot.kind === "shielding_ring") color = 0x5b8cff;
+        if (loot.kind === "key") color = 0xe8c547;
         g.circle(cx, cy, r).fill({ color, alpha: 0.92 });
         this.lootLayer.addChild(g);
       }
@@ -1013,6 +1025,13 @@ export class GridView extends Container {
       if (state.fogOfWar && !state.discovered.has(keyOf(bp))) continue;
       const root = this.ensureEntityRoot(bp.id, bp.x, bp.y);
       root.addChild(this.makePlacedSprite("enemy_bone_pile", 0, 0));
+    }
+
+    for (const pile of state.graveBonePiles) {
+      if (pile.hp <= 0) continue;
+      if (state.fogOfWar && !state.discovered.has(keyOf(pile))) continue;
+      const root = this.ensureEntityRoot(pile.id, pile.x, pile.y);
+      root.addChild(this.makeLargePlacedSprite("grave_bone_pile", 3));
     }
 
     const douvlonPairs = new Map<string, { red?: { x: number; y: number }; blue?: { x: number; y: number }; visibleCount: number }>();
@@ -1671,6 +1690,7 @@ export class GridView extends Container {
       if (m.hp > 0) occ.add(keyOf(m));
     }
     addFootingBlocks(state, occ);
+    unlockLockedDoorsInOccupancy(state, occ);
     const rockKeys = new Set(state.rocks.map((r) => keyOf(r)));
     const bridgeKeys = this.bridgeKeySet(state);
     const out = new Set<string>();
@@ -1783,6 +1803,8 @@ export class GridView extends Container {
       if (m.hp > 0) occ.add(keyOf(m));
     }
     addFootingBlocks(state, occ);
+    const doorHalt = keyDoorHaltTiles(state);
+    unlockLockedDoorsInOccupancy(state, occ);
     const rockKeys = new Set(state.rocks.map((r) => keyOf(r)));
     const bridgeKeys = this.bridgeKeySet(state);
     const attackTargets = new Map<string, { x: number; y: number }>();
@@ -1794,6 +1816,7 @@ export class GridView extends Container {
     for (const pot of state.pots) addAttackTarget(pot);
     for (const tw of state.tangleweeds) if (tw.hp > 0) addAttackTarget(tw);
     for (const bp of state.bonePiles) if (bp.hp > 0) addAttackTarget(bp);
+    for (const pile of state.graveBonePiles) if (pile.hp > 0) addAttackTarget(pile);
     if (pending.kind === "water_escape") {
       const occW = new Set<string>();
       for (const m of state.monsters) {
@@ -1837,6 +1860,7 @@ export class GridView extends Container {
         occ,
         rockKeys,
         bridgeKeys,
+        doorHalt,
       );
       const needExtra = state.player.hand.length >= 2;
       return extendReachableWithBlockedDestinations(
@@ -1859,6 +1883,7 @@ export class GridView extends Container {
         occ,
         rockKeys,
         bridgeKeys,
+        doorHalt,
       );
       const needExtra = state.player.hand.length >= 1;
       return extendReachableWithBlockedDestinations(
@@ -1891,6 +1916,7 @@ export class GridView extends Container {
         occ,
         rockKeys,
         bridgeKeys,
+        doorHalt,
       );
       const needExtra =
         pending.kind === "play_card_seeker" || pending.kind === "play_loot_and_scoot"
@@ -2038,6 +2064,16 @@ export class GridView extends Container {
       return adj;
     }
 
+    if (pending.kind === "throw_knife") {
+      const cells = new Set<string>();
+      for (const target of attackTargets.values()) {
+        const dist = chebyshev(from, target);
+        if (dist < 2 || dist > 5) continue;
+        if (lineOfSightClear(state.tiles, from, target)) cells.add(keyOf(target));
+      }
+      return cells;
+    }
+
     if (pending.kind === "play_bow_attack") {
       const cells = new Set<string>();
       for (const target of attackTargets.values()) {
@@ -2145,6 +2181,28 @@ export class GridView extends Container {
         style.kind === "texture" ? style.fallbackTint : style.tint;
       spr.tint = tint;
       if (style.alpha !== undefined) spr.alpha = style.alpha;
+    }
+    return spr;
+  }
+
+  /** Scale pixel art past the usual 2× cap and center it on the tile. */
+  private makeLargePlacedSprite(id: string, nativeScale: number): Sprite {
+    const style = this.styles.get(id);
+    const spr = this.makeSprite(id);
+    const pixel = this.usePixelArt && style?.kind === "texture";
+    if (pixel) {
+      const w = style.texture.width * nativeScale;
+      const h = style.texture.height * nativeScale;
+      spr.x = (TILE - w) / 2;
+      spr.y = (TILE - h) / 2;
+      spr.width = w;
+      spr.height = h;
+    } else {
+      const size = Math.round(TILE * 1.2);
+      spr.x = (TILE - size) / 2;
+      spr.y = (TILE - size) / 2;
+      spr.width = size;
+      spr.height = size;
     }
     return spr;
   }

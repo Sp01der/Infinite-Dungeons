@@ -1,4 +1,4 @@
-import type { Point, RoomKind, TileKind, TombInstance } from "../game/types";
+import type { Point, RoomKind, TileKind, TombInstance, TrinketId } from "../game/types";
 
 /**
  * Pixel-map room templates. One character = one tile.
@@ -42,7 +42,7 @@ const TEMPLATES: { id: string; rows: string[]; scatterPots?: boolean; fancy?: bo
   },
   {
     id: "brown_cross",
-    rows: [".......", "..p#p..", ".pp#pp.", ".#####.", ".pp#pp.", "..p#p..", "......."],
+    rows: ["p..e..p", "...#...", "..p#p..", "e#####e", "..p#p..", "...#...", "p..e..p"],
   },
   {
     id: "side_tomb",
@@ -55,8 +55,10 @@ const TEMPLATES: { id: string; rows: string[]; scatterPots?: boolean; fancy?: bo
   },
 ];
 
-const COLS = 4;
-const ROWS = 5;
+const COLS = 5;
+const ROWS = 4;
+/** Chance a spawned pot is magic. */
+const MAGIC_POT_CHANCE = 0.1;
 /** Floor tiles carved between two facing light-blue doors. */
 const GAP = 2;
 
@@ -71,11 +73,19 @@ export interface CatacombLayout {
   tombs: TombInstance[];
   lockedDoors: Point[];
   catacombStair: Point;
-  pots: { x: number; y: number; magic: boolean }[];
+  pots: { x: number; y: number; magic: boolean; golden: boolean }[];
   chests: Point[];
   bonelings: Point[];
   skeletons: Point[];
+  elites: Point[];
+  gravePiles: Point[];
   coins: Point[];
+  cards: Point[];
+  trinkets: { x: number; y: number; trinket: TrinketId }[];
+  gems: Point[];
+  keys: Point[];
+  /** Wall tiles of the ultra-fancy locked room, drawn with a warm tint. */
+  goldWalls: Point[];
   summary: string;
 }
 
@@ -813,7 +823,7 @@ function tryBuild(rng: () => number): CatacombLayout | null {
   if (stairPool.length === 0) return null;
   const catacombStair = stairPool[Math.floor(rng() * stairPool.length)]!;
 
-  const pots: { x: number; y: number; magic: boolean }[] = [];
+  const pots: { x: number; y: number; magic: boolean; golden: boolean }[] = [];
   const chests: Point[] = [];
   const occupied = new Set<string>([key(playerStart.x, playerStart.y), key(catacombStair.x, catacombStair.y)]);
   for (const k of tombKeys) occupied.add(k);
@@ -827,38 +837,64 @@ function tryBuild(rng: () => number): CatacombLayout | null {
 
   for (const room of placed) {
     const noPots = rng() < 0.1;
-    const rich = room.role === "treasure" || room.role === "locked";
+    const rich = room.role === "treasure" || (room.role === "locked" && !room.fancy);
+    const chestCap = room.role === "treasure" || room.role === "locked" ? 2 : Number.POSITIVE_INFINITY;
+    let roomChests = 0;
+    const addChest = (p: Point): boolean => {
+      if (roomChests >= chestCap || !take(p)) return false;
+      chests.push({ x: p.x, y: p.y });
+      roomChests++;
+      return true;
+    };
+    const addPot = (p: Point) => {
+      if (noPots || !take(p)) return;
+      let magic = false;
+      let golden = false;
+      if (room.role === "locked") {
+        const roll = rng();
+        if (roll < 0.8) golden = true;
+        else if (roll < 0.9) magic = true;
+      } else if (rng() < MAGIC_POT_CHANCE) {
+        if (rng() < 0.5) magic = true;
+        else golden = true;
+      }
+      pots.push({ x: p.x, y: p.y, magic, golden });
+    };
     for (const c of room.cells) {
-      if (c.code === "c" && take(c)) chests.push({ x: c.x, y: c.y });
+      if (c.code === "c") addChest(c);
     }
     if (room.scatter) {
       for (const c of room.cells) {
         if (c.code !== "." && c.code !== "p") continue;
-        if (rich && rng() < 0.18 && take(c)) {
-          chests.push({ x: c.x, y: c.y });
-        } else if (!noPots && rng() < 0.28 && take(c)) {
-          pots.push({ x: c.x, y: c.y, magic: rng() < 0.2 });
-        }
+        if (rich && rng() < 0.18 && addChest(c)) continue;
+        if (rng() < 0.28) addPot(c);
       }
     } else {
       for (const c of room.cells) {
         if (c.code !== "p") continue;
-        if (rich && rng() < 0.5 && take(c)) chests.push({ x: c.x, y: c.y });
-        else if (!noPots && rng() < 0.75 && take(c)) pots.push({ x: c.x, y: c.y, magic: rng() < 0.2 });
+        if (rich && rng() < 0.5 && addChest(c)) continue;
+        if (rng() < 0.75) addPot(c);
       }
     }
-    if (room.role === "locked") {
+    if (room.role === "locked" && !room.fancy && roomChests < chestCap) {
       const free = room.cells.filter((c) => (c.code === "." || c.code === "p") && !occupied.has(key(c.x, c.y)));
       if (free.length > 0 && rng() < 0.85) {
         const spot = free[Math.floor(rng() * free.length)]!;
-        if (take(spot)) chests.push({ x: spot.x, y: spot.y });
+        addChest(spot);
       }
     }
   }
 
   const bonelings: Point[] = [];
   const skeletons: Point[] = [];
+  const elites: Point[] = [];
+  const gravePiles: Point[] = [];
   const coins: Point[] = [];
+  const cards: Point[] = [];
+  const trinkets: { x: number; y: number; trinket: TrinketId }[] = [];
+  const gems: Point[] = [];
+  const keys: Point[] = [];
+  const trinketIds: TrinketId[] = ["throwing_knife", "healing_pendant", "shielding_ring"];
   const freeOf = (room: Placed) =>
     room.cells.filter((c) => c.code !== "#" && c.code !== "e" && !occupied.has(key(c.x, c.y)));
 
@@ -872,32 +908,47 @@ function tryBuild(rng: () => number): CatacombLayout | null {
       }
       return null;
     };
-    if (room.role === "grave") {
-      const nBone = Math.min(rollInt(rng, 5, 8), free.length);
-      for (let i = 0; i < nBone; i++) {
-        const p = claim();
-        if (p) bonelings.push(p);
-      }
-      for (let i = 0; i < 2; i++) {
-        const p = claim();
-        if (p) skeletons.push(p);
-      }
-    } else if (room.role === "normal" || room.role === "treasure") {
-      const n = room.role === "treasure" ? (rng() < 0.4 ? 1 : 0) : rollInt(rng, 0, 2);
+    const claimN = (n: number, into: Point[]) => {
       for (let i = 0; i < n; i++) {
         const p = claim();
-        if (p) skeletons.push(p);
+        if (p) into.push(p);
       }
-    } else if (room.role === "gauntlet") {
-      const p = claim();
-      if (p) skeletons.push(p);
+    };
+    if (room.role === "grave") {
+      const pile = claim();
+      if (pile) gravePiles.push(pile);
+      claimN(rollInt(rng, 7, 10), bonelings);
+      claimN(2, skeletons);
+    } else {
+      claimN(rollInt(rng, 3, 5), bonelings);
+      if (room.role === "gauntlet") claimN(1, skeletons);
     }
     if (room.role === "treasure" || room.role === "locked") {
-      for (let i = 0; i < (room.role === "locked" ? 2 : 1); i++) {
-        const p = claim();
-        if (p) coins.push(p);
+      claimN(1, elites);
+      claimN(3, coins);
+      claimN(room.role === "locked" ? 4 : 2, cards);
+      claimN(room.role === "locked" ? 2 : 1, gems);
+      const trinketSpot = claim();
+      if (trinketSpot) {
+        trinkets.push({
+          x: trinketSpot.x,
+          y: trinketSpot.y,
+          trinket: trinketIds[Math.floor(rng() * trinketIds.length)]!,
+        });
       }
     }
+  }
+
+  const keyRooms = placed.filter((room) => room.role !== "locked" && room.role !== "start");
+  const keyPool = shuffle(
+    keyRooms.flatMap((room) =>
+      room.cells.filter((c) => c.code !== "#" && c.code !== "e" && !occupied.has(key(c.x, c.y))),
+    ),
+    rng,
+  );
+  for (const p of keyPool) {
+    if (keys.length >= 2) break;
+    if (take(p)) keys.push({ x: p.x, y: p.y });
   }
 
   const roomKinds: RoomKind[] = [];
@@ -910,6 +961,26 @@ function tryBuild(rng: () => number): CatacombLayout | null {
     if (role === "start") roomKinds.push("entrance");
     else if (role === "treasure" || role === "locked") roomKinds.push("treasure");
     else roomKinds.push("normal");
+  }
+
+  const goldWalls: Point[] = [];
+  const fancyRoom = placed.find((r) => r.fancy);
+  if (fancyRoom) {
+    const seen = new Set<string>();
+    const addWall = (x: number, y: number) => {
+      if (x < 0 || y < 0 || x >= width || y >= height) return;
+      if (tiles[y]![x] !== "wall") return;
+      const k = key(x, y);
+      if (seen.has(k)) return;
+      seen.add(k);
+      goldWalls.push({ x, y });
+    };
+    for (const c of fancyRoom.cells) {
+      if (c.code === "#") addWall(c.x, c.y);
+      else {
+        for (const o of ORTHO) addWall(c.x + o.x, c.y + o.y);
+      }
+    }
   }
 
   const summary = [
@@ -934,7 +1005,14 @@ function tryBuild(rng: () => number): CatacombLayout | null {
     chests,
     bonelings,
     skeletons,
+    elites,
+    gravePiles,
     coins,
+    cards,
+    trinkets,
+    gems,
+    keys,
+    goldWalls,
     summary,
   };
 }

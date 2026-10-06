@@ -6,6 +6,7 @@ import { maybeDropMonsterCoin } from "./loot";
 import { addExp } from "./progression";
 import { SHADE_DECK_TEMPLATE } from "./monsterSpawn";
 import { convertBonelingToBonePile, tickBonePiles } from "./boneling";
+import { tickGraveBonePiles } from "./gravePiles";
 import { addFootingBlocks, blocksFooting } from "./tombs";
 import { applyDamageToPlayer } from "./skillsRuntime";
 import { pushAttackAnim, pushMoveAnim } from "./turnAnims";
@@ -1824,7 +1825,7 @@ export function runMonsterPhaseWithHooks(
   hooks: MonsterPhaseHooks,
 ): { state: GameState; hits: HitVisual[]; anims: TurnAnimEvent[] } {
   phaseAnims = [];
-  const pileTick = tickBonePiles(updateDisconnectedTangleweeds(state));
+  const pileTick = tickBonePiles(tickGraveBonePiles(updateDisconnectedTangleweeds(state)));
   let s = pileTick.state;
   if (phaseAnims) phaseAnims.push(...pileTick.mergeAnims);
   const hits: HitVisual[] = [];

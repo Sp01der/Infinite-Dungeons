@@ -30,7 +30,7 @@ import {
   pickMonsterId,
   pickWeightedDefId,
 } from "./initialState";
-import { addFootingBlocks, blocksFooting } from "./tombs";
+import { addFootingBlocks, blocksFooting, isLockedDoorAt, keyDoorHaltTiles, unlockLockedDoorsInOccupancy } from "./tombs";
 import { runMonsterPhaseWithHooks } from "./monsterAi";
 import { cullMonstersWithDouvlonPairs, setMonsterHpWithDouvlonSync } from "./douvlon";
 import { animsFromHits, finalizeAnims, mergeAnimResults, pushMoveAnim } from "./turnAnims";
@@ -54,9 +54,12 @@ import {
   pickDeckBuilderThreeForType,
   pickPedestalOfferCards,
   pickRandomLootCardId,
+  rollCatacombsPotLoot,
   rollChestLoot,
+  rollGoldenPotLoot,
   rollMagicPotLoot,
   rollPotLoot,
+  trinketLabel,
 } from "./loot";
 import { addExp } from "./progression";
 import {
@@ -96,6 +99,7 @@ import type {
   RockInstance,
   RoomKind,
   TileKind,
+  TrinketId,
   TurnAnimEvent,
 } from "./types";
 
@@ -310,6 +314,34 @@ function handleDevCommand(state: GameState, cmd: GameCommand): DispatchResult {
           log(
             { ...state, player: { ...p, unboundTomes: p.unboundTomes + qty } },
             `Command: added ${qty} Unbound Magic Tome${qty === 1 ? "" : "s"}.`,
+          ),
+        );
+      case "throwingKnife":
+        return noHits(
+          log(
+            { ...state, player: { ...p, throwingKnives: p.throwingKnives + qty } },
+            `Command: added ${qty} throwing knife${qty === 1 ? "" : "s"}.`,
+          ),
+        );
+      case "healingPendant":
+        return noHits(
+          log(
+            { ...state, player: { ...p, healingPendants: p.healingPendants + qty } },
+            `Command: added ${qty} healing pendant${qty === 1 ? "" : "s"}.`,
+          ),
+        );
+      case "shieldingRing":
+        return noHits(
+          log(
+            { ...state, player: { ...p, shieldingRings: p.shieldingRings + qty } },
+            `Command: added ${qty} shielding ring${qty === 1 ? "" : "s"}.`,
+          ),
+        );
+      case "key":
+        return noHits(
+          log(
+            { ...state, player: { ...p, keys: p.keys + qty } },
+            `Command: added ${qty} key${qty === 1 ? "" : "s"}.`,
           ),
         );
       case "gem": {
@@ -643,7 +675,7 @@ function applyMonsterKillRewards(
 /** Mimics spill chest-table loot when slain. */
 function applyMimicDeathLoot(state: GameState): GameState {
   let next = log(state, "The Mimic spills its hoard!");
-  const loot = rollChestLoot();
+  const loot = rollChestLoot(next.floorTheme === "catacombs" ? { catacombs: true } : undefined);
   switch (loot.kind) {
     case "coins":
       return log(
@@ -687,6 +719,11 @@ function applyMimicDeathLoot(state: GameState): GameState {
         `Mimic loot: a Gem of ${loot.gemId[0]!.toUpperCase()}${loot.gemId.slice(1)}.`,
       );
     }
+    case "trinket":
+      return log(
+        { ...next, player: withTrinket(next.player, loot.trinket) },
+        `Mimic loot: ${trinketLabel(loot.trinket)}.`,
+      );
     case "cardChoice": {
       const cards = pickChestOfferCards(next.cardDefs, loot.tier, next.depth);
       return log(
@@ -1041,6 +1078,7 @@ function occupiedForPlayerMove(state: GameState): Set<string> {
     if (tw.hp > 0) occ.add(keyOf(tw));
   }
   addFootingBlocks(state, occ);
+  unlockLockedDoorsInOccupancy(state, occ);
   return occ;
 }
 
@@ -1575,6 +1613,12 @@ function abortTomeCast(s: GameState): GameState {
   };
 }
 
+function withTrinket(player: GameState["player"], id: TrinketId): GameState["player"] {
+  if (id === "throwing_knife") return { ...player, throwingKnives: player.throwingKnives + 1 };
+  if (id === "healing_pendant") return { ...player, healingPendants: player.healingPendants + 1 };
+  return { ...player, shieldingRings: player.shieldingRings + 1 };
+}
+
 function grantMagicPotContents(s: GameState, loot: ReturnType<typeof rollMagicPotLoot>): GameState {
   if (loot.kind === "gem") {
     const gems = {
@@ -1806,7 +1850,16 @@ function resolvePlayerEnterTile(s: GameState, x: number, y: number): GameState {
   if (next.player.nextMoveDoubled) {
     next = { ...next, player: { ...next.player, nextMoveDoubled: false } };
   }
-  next = collectAdjacentLoot(openChestAsPlayer(breakPotAsPlayer(next, x, y), x, y));
+  next = openChestAsPlayer(breakPotAsPlayer(next, x, y), x, y);
+  if (isLockedDoorAt(next, x, y) && next.player.keys > 0) {
+    next = {
+      ...next,
+      lockedDoors: next.lockedDoors.filter((d) => d.x !== x || d.y !== y),
+      player: { ...next.player, keys: next.player.keys - 1 },
+    };
+    next = log(next, "The key turns. The locked gate swings open.");
+  }
+  next = collectAdjacentLoot(next);
   if (next.catacombStair && next.catacombStair.x === x && next.catacombStair.y === y) {
     next = log(next, "Stone steps descend into the Gauntlet Chamber. The way down is not open yet.");
   }
@@ -1880,6 +1933,10 @@ function collectAdjacentLoot(s: GameState): GameState {
   let bread = s.player.bread;
   let herb = s.player.herb;
   let cheese = s.player.cheese;
+  let throwingKnives = s.player.throwingKnives;
+  let healingPendants = s.player.healingPendants;
+  let shieldingRings = s.player.shieldingRings;
+  let keys = s.player.keys;
   let flameOfDestruction = s.player.flameOfDestruction;
   let unboundTomes = s.player.unboundTomes;
   const gems = { ...s.player.gems };
@@ -1924,6 +1981,22 @@ function collectAdjacentLoot(s: GameState): GameState {
         unboundTomes += 1;
         lines.push(`${d0}an Unbound Magic Tome.`);
         break;
+      case "throwing_knife":
+        throwingKnives += 1;
+        lines.push(`${d0}a throwing knife.`);
+        break;
+      case "healing_pendant":
+        healingPendants += 1;
+        lines.push(`${d0}a healing pendant.`);
+        break;
+      case "shielding_ring":
+        shieldingRings += 1;
+        lines.push(`${d0}a shielding ring.`);
+        break;
+      case "key":
+        keys += 1;
+        lines.push(`${d0}a key.`);
+        break;
       case "card": {
         const cid = loot.cardId ?? "move";
         next = enqueueCardPickup(next, cid);
@@ -1940,6 +2013,10 @@ function collectAdjacentLoot(s: GameState): GameState {
       bread,
       herb,
       cheese,
+      throwingKnives,
+      healingPendants,
+      shieldingRings,
+      keys,
       flameOfDestruction,
       unboundTomes,
       gems,
@@ -2003,7 +2080,31 @@ function breakPotFromAttack(s: GameState, px: number, py: number): GameState {
       log({ ...next, groundLoot: [...next.groundLoot, g] }, "An Unbound Magic Tome tumbles out!"),
     );
   }
-  const loot = rollPotLoot(next.cardDefs, next.depth, potLootHitChance(next));
+  if (pot.golden) {
+    next = log(next, "The golden pot shatters!");
+    const golden = rollGoldenPotLoot(next.cardDefs, next.depth);
+    const g: GroundLootInstance =
+      golden.kind === "coin"
+        ? { id: `gloot_${serial}`, x: px, y: py, kind: "coin", amount: golden.amount }
+        : golden.kind === "gem"
+          ? { id: `gloot_${serial}`, x: px, y: py, kind: "gem", gemId: golden.gemId }
+          : golden.kind === "trinket"
+            ? { id: `gloot_${serial}`, x: px, y: py, kind: golden.trinket }
+            : { id: `gloot_${serial}`, x: px, y: py, kind: "card", cardId: golden.cardId };
+    const line =
+      golden.kind === "coin"
+        ? `${golden.amount} gold spills from the golden pot.`
+        : golden.kind === "gem"
+          ? "A gem spills from the golden pot."
+          : golden.kind === "trinket"
+            ? `${trinketLabel(golden.trinket)} spills from the golden pot.`
+            : "A card flutters out of the golden pot.";
+    return collectAdjacentLoot(log({ ...next, groundLoot: [...next.groundLoot, g] }, line));
+  }
+  const loot =
+    next.floorTheme === "catacombs"
+      ? rollCatacombsPotLoot(next.cardDefs, next.depth)
+      : rollPotLoot(next.cardDefs, next.depth, potLootHitChance(next));
   next = log(next, "The pot shatters!");
   switch (loot.kind) {
     case "nothing":
@@ -2038,6 +2139,32 @@ function breakPotFromAttack(s: GameState, px: number, py: number): GameState {
         log({ ...next, groundLoot: [...next.groundLoot, g] }, "Cheese tumbles out."),
       );
     }
+    case "gem": {
+      const g: GroundLootInstance = {
+        id: `gloot_${serial}`,
+        x: px,
+        y: py,
+        kind: "gem",
+        gemId: loot.gemId,
+      };
+      return collectAdjacentLoot(
+        log({ ...next, groundLoot: [...next.groundLoot, g] }, "A gem tumbles out."),
+      );
+    }
+    case "trinket": {
+      const g: GroundLootInstance = {
+        id: `gloot_${serial}`,
+        x: px,
+        y: py,
+        kind: loot.trinket,
+      };
+      return collectAdjacentLoot(
+        log(
+          { ...next, groundLoot: [...next.groundLoot, g] },
+          `${trinketLabel(loot.trinket)} tumbles out.`,
+        ),
+      );
+    }
     case "card": {
       const g: GroundLootInstance = {
         id: `gloot_${serial}`,
@@ -2062,7 +2189,32 @@ function breakPotAsPlayer(s: GameState, x: number, y: number): GameState {
     next = log(next, "You smash a magic pot!");
     return grantMagicPotContents(next, rollMagicPotLoot());
   }
-  const loot = rollPotLoot(s.cardDefs, s.depth, potLootHitChance(next));
+  if (pot.golden) {
+    next = log(next, "You smash a golden pot!");
+    const golden = rollGoldenPotLoot(next.cardDefs, next.depth);
+    if (golden.kind === "coin") {
+      return log(
+        { ...next, player: { ...next.player, gold: next.player.gold + golden.amount } },
+        `Inside: +${golden.amount} gold.`,
+      );
+    }
+    if (golden.kind === "gem") {
+      const gems = { ...next.player.gems, [golden.gemId]: next.player.gems[golden.gemId] + 1 };
+      return log({ ...next, player: { ...next.player, gems } }, "Inside: a gem!");
+    }
+    if (golden.kind === "trinket") {
+      return log(
+        { ...next, player: withTrinket(next.player, golden.trinket) },
+        `Inside: ${trinketLabel(golden.trinket)}.`,
+      );
+    }
+    const nm = next.cardDefs.get(golden.cardId)?.name ?? golden.cardId;
+    return log(enqueueCardPickup(next, golden.cardId), `Inside: a card — ${nm}! Add it to your deck?`);
+  }
+  const loot =
+    s.floorTheme === "catacombs"
+      ? rollCatacombsPotLoot(s.cardDefs, s.depth)
+      : rollPotLoot(s.cardDefs, s.depth, potLootHitChance(next));
   next = log(next, "You smash a pot!");
   switch (loot.kind) {
     case "nothing":
@@ -2087,6 +2239,15 @@ function breakPotAsPlayer(s: GameState, x: number, y: number): GameState {
         { ...next, player: { ...next.player, cheese: next.player.cheese + 1 } },
         "Inside: cheese!",
       );
+    case "gem": {
+      const gems = { ...next.player.gems, [loot.gemId]: next.player.gems[loot.gemId] + 1 };
+      return log({ ...next, player: { ...next.player, gems } }, "Inside: a gem!");
+    }
+    case "trinket":
+      return log(
+        { ...next, player: withTrinket(next.player, loot.trinket) },
+        `Inside: ${trinketLabel(loot.trinket)}.`,
+      );
     case "card": {
       const nm = next.cardDefs.get(loot.cardId)?.name ?? loot.cardId;
       return log(enqueueCardPickup(next, loot.cardId), `Inside: a card — ${nm}! Add it to your deck?`);
@@ -2108,7 +2269,11 @@ function openChestAsPlayer(s: GameState, x: number, y: number): GameState {
   if (!chest) return s;
   const chests = s.chests.filter((c) => c.id !== chest.id);
   let next: GameState = { ...s, chests };
-  const loot = rollChestLoot();
+  const loot = rollChestLoot(
+    next.floorTheme === "catacombs"
+      ? { catacombs: true, rich: roomKindAt(next, x, y) === "treasure" }
+      : undefined,
+  );
   next = log(next, "You open a chest!");
   switch (loot.kind) {
     case "coins":
@@ -2153,6 +2318,11 @@ function openChestAsPlayer(s: GameState, x: number, y: number): GameState {
         `Inside: a Gem of ${loot.gemId[0]!.toUpperCase()}${loot.gemId.slice(1)}.`,
       );
     }
+    case "trinket":
+      return log(
+        { ...next, player: withTrinket(next.player, loot.trinket) },
+        `Inside: ${trinketLabel(loot.trinket)}.`,
+      );
     case "cardChoice": {
       const cards = pickChestOfferCards(next.cardDefs, loot.tier, next.depth);
       return log(
@@ -3006,7 +3176,8 @@ function hasAttackTargetAt(s: GameState, x: number, y: number): boolean {
     s.monsters.some((m) => m.hp > 0 && m.x === x && m.y === y) ||
     s.pots.some((p) => p.x === x && p.y === y) ||
     s.tangleweeds.some((tw) => tw.hp > 0 && tw.x === x && tw.y === y) ||
-    s.bonePiles.some((bp) => bp.hp > 0 && bp.x === x && bp.y === y)
+    s.bonePiles.some((bp) => bp.hp > 0 && bp.x === x && bp.y === y) ||
+    s.graveBonePiles.some((g) => g.hp > 0 && g.x === x && g.y === y)
   );
 }
 
@@ -3020,6 +3191,7 @@ function attackTargetTiles(s: GameState): Point[] {
   for (const p of s.pots) add(p);
   for (const tw of s.tangleweeds) if (tw.hp > 0) add(tw);
   for (const bp of s.bonePiles) if (bp.hp > 0) add(bp);
+  for (const g of s.graveBonePiles) if (g.hp > 0) add(g);
   return [...byKey.values()];
 }
 
@@ -3052,6 +3224,9 @@ function damageAttackTargetsAt(
   const bonePileIds = s.bonePiles
     .filter((bp) => bp.hp > 0 && bp.x === target.x && bp.y === target.y)
     .map((bp) => bp.id);
+  const gravePileIds = s.graveBonePiles
+    .filter((g) => g.hp > 0 && g.x === target.x && g.y === target.y)
+    .map((g) => g.id);
 
   for (const id of monsterIds) {
     const mon = s.monsters.find((m) => m.id === id && m.hp > 0);
@@ -3105,6 +3280,22 @@ function damageAttackTargetsAt(
         log: [...s.log.slice(-50), "The bone pile is scattered."],
       };
     }
+  }
+
+  for (const id of gravePileIds) {
+    const pile = s.graveBonePiles.find((g) => g.id === id && g.hp > 0);
+    if (!pile) continue;
+    targetCount++;
+    const hp = Math.max(0, pile.hp - rawDamage);
+    s = {
+      ...s,
+      graveBonePiles:
+        hp <= 0
+          ? s.graveBonePiles.filter((g) => g.id !== id)
+          : s.graveBonePiles.map((g) => (g.id === id ? { ...g, hp } : g)),
+    };
+    hits.push(hitAt(s, target.x, target.y, rawDamage, fxKind));
+    if (hp <= 0) s = log(s, "The pile of bones collapses.");
   }
 
   while (s.pots.some((p) => p.x === target.x && p.y === target.y)) {
@@ -3553,6 +3744,33 @@ function resolvePlayerAttackAtTile(state: GameState, target: Point): DispatchRes
       true,
     );
     return withHits(log(result.state, `Magic Missile — ${raw} damage, ignoring defense.`), result.hits);
+  }
+
+  if (pending.kind === "throw_knife") {
+    if (state.player.throwingKnives <= 0) return noHits(log(state, "You have no throwing knife."));
+    const dist = chebyshev(player, target);
+    if (dist < 2 || dist > 5) return noHits(log(state, "The knife only reaches 2 to 5 spaces away."));
+    if (!lineOfSightClear(state.tiles, player, target)) return noHits(log(state, "No line of sight."));
+    if (!hasAttackTargetAt(state, target.x, target.y)) return noHits(log(state, "Nothing there to hit."));
+    const raw = rollInt(1, 4);
+    const thrown: GameState = {
+      ...state,
+      pending: null,
+      player: { ...state.player, throwingKnives: state.player.throwingKnives - 1 },
+    };
+    const result = damageAttackTargetsAt(thrown, target, raw, "throwing_knife");
+    const knife: GroundLootInstance = {
+      id: `gloot_${nextGroundLootSerial(result.state)}`,
+      x: target.x,
+      y: target.y,
+      kind: "throwing_knife",
+    };
+    let s: GameState = {
+      ...result.state,
+      groundLoot: [...result.state.groundLoot, knife],
+    };
+    s = collectAdjacentLoot(s);
+    return withHits(log(s, `Throwing Knife — ${raw} damage. It sticks in the ground.`), result.hits);
   }
 
   if (pending.kind === "play_bow_attack") {
@@ -4823,6 +5041,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
         state.pending.kind === "play_magic_missile" ||
         state.pending.kind === "play_knockback_punch" ||
         state.pending.kind === "play_bow_attack" ||
+        state.pending.kind === "throw_knife" ||
         state.pending.kind === "play_lightning_bolt" ||
         state.pending.kind === "play_mace_smash" ||
         state.pending.kind === "play_poisoned_blade" ||
@@ -4857,6 +5076,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           occ,
           rockKeySet(state),
           bridgeTileKeySet(state),
+          keyDoorHaltTiles(state),
         );
         reach = extendMoveReachForPending(state, reach, from, p);
         reach = addAdjacentPureWaterTiles(state, reach, from);
@@ -4979,6 +5199,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           occ,
           rockKeySet(state),
           bridgeTileKeySet(state),
+          keyDoorHaltTiles(state),
         );
         reach = extendMoveReachForPending(state, reach, from, p);
         reach = addAdjacentPureWaterTiles(state, reach, from);
@@ -5103,6 +5324,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           occ,
           rockKeySet(state),
           bridgeTileKeySet(state),
+          keyDoorHaltTiles(state),
         );
         if (
           !reach.has(keyOf(dest)) ||
@@ -5153,7 +5375,13 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           (cell) =>
             tileAt(state.tiles, cell) !== "floor" ||
             state.rocks.some((r) => r.x === cell.x && r.y === cell.y) ||
-            blocksFooting(state, cell.x, cell.y) ||
+            (blocksFooting(state, cell.x, cell.y) &&
+              !(
+                isLockedDoorAt(state, cell.x, cell.y) &&
+                state.player.keys > 0 &&
+                cell.x === dest.x &&
+                cell.y === dest.y
+              )) ||
             state.chests.some((c) => c.x === cell.x && c.y === cell.y),
         );
         if (blocked) return noHits(log(state, "Flying Kick is blocked — nothing happens."));
@@ -5217,6 +5445,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           occ,
           rockKeySet(state),
           bridgeTileKeySet(state),
+          keyDoorHaltTiles(state),
         );
         reach = extendMoveReachForPending(state, reach, from, dm);
         reach = addAdjacentPureWaterTiles(state, reach, from);
@@ -5322,6 +5551,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           occ,
           rockKeySet(state),
           bridgeTileKeySet(state),
+          keyDoorHaltTiles(state),
         );
         reach = extendMoveReachForPending(state, reach, from, state.pending);
         reach = addAdjacentPureWaterTiles(state, reach, from);
@@ -5474,6 +5704,18 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
               hits.push({ gridX: tx, gridY: ty, damage: dmg });
               if (hp <= 0) s = log(s, "The bone pile is scattered.");
             }
+            for (const pile of s.graveBonePiles.filter((w) => w.hp > 0 && w.x === tx && w.y === ty)) {
+              const hp = Math.max(0, pile.hp - dmg);
+              s = {
+                ...s,
+                graveBonePiles:
+                  hp <= 0
+                    ? s.graveBonePiles.filter((w) => w.id !== pile.id)
+                    : s.graveBonePiles.map((w) => (w.id === pile.id ? { ...w, hp } : w)),
+              };
+              hits.push({ gridX: tx, gridY: ty, damage: dmg });
+              if (hp <= 0) s = log(s, "The pile of bones collapses.");
+            }
             if (s.player.x === tx && s.player.y === ty) {
               const taken = applyDamageToPlayer(s, dmg);
               s = taken.state;
@@ -5564,6 +5806,18 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
           };
           hits.push({ gridX: dest.x, gridY: dest.y, damage: p.damage });
           if (hp <= 0) s = log(s, "The bone pile is scattered.");
+        }
+        for (const pile of s.graveBonePiles.filter((t) => t.hp > 0 && t.x === dest.x && t.y === dest.y)) {
+          const hp = Math.max(0, pile.hp - p.damage);
+          s = {
+            ...s,
+            graveBonePiles:
+              hp <= 0
+                ? s.graveBonePiles.filter((t) => t.id !== pile.id)
+                : s.graveBonePiles.map((t) => (t.id === pile.id ? { ...t, hp } : t)),
+          };
+          hits.push({ gridX: dest.x, gridY: dest.y, damage: p.damage });
+          if (hp <= 0) s = log(s, "The pile of bones collapses.");
         }
         if (s.player.x === dest.x && s.player.y === dest.y) {
           const _taken_dmg = applyDamageToPlayer(s, p.damage);
@@ -5758,6 +6012,80 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       if (!state.pending) return noHits(state);
       const tw = state.tangleweeds.find((x) => x.id === cmd.tangleweedId && x.hp > 0);
       return tw ? resolvePlayerAttackAtTile(state, { x: tw.x, y: tw.y }) : noHits(state);
+    }
+
+    case "USE_THROWING_KNIFE": {
+      if (state.phase !== "player" || state.pending) return noHits(state);
+      if (state.player.throwingKnives <= 0) return noHits(log(state, "You have no throwing knife."));
+      return noHits(
+        log({ ...state, pending: { kind: "throw_knife" } }, "Choose a target 2 to 5 spaces away."),
+      );
+    }
+
+    case "USE_HEALING_PENDANT": {
+      if (state.phase !== "player") return noHits(state);
+      if (state.player.healingPendants <= 0) return noHits(log(state, "You have no healing pendant."));
+      if (state.pending?.kind === "pendant_discard") {
+        return noHits(log({ ...state, pending: null }, "You lower the healing pendant."));
+      }
+      if (state.pending) return noHits(state);
+      if (state.player.hp >= state.player.maxHp) return noHits(log(state, "You are already at full health."));
+      if (state.player.hand.length < 4) {
+        return noHits(log(state, "The pendant needs four cards to discard."));
+      }
+      return noHits(
+        log(
+          { ...state, pending: { kind: "pendant_discard", chosen: [] } },
+          "Choose 4 cards to discard.",
+        ),
+      );
+    }
+
+    case "TOGGLE_PENDANT_CARD": {
+      if (state.pending?.kind !== "pendant_discard") return noHits(state);
+      const ix = cmd.handIndex;
+      if (ix < 0 || ix >= state.player.hand.length) return noHits(state);
+      const chosen = state.pending.chosen.includes(ix)
+        ? state.pending.chosen.filter((i) => i !== ix)
+        : [...state.pending.chosen, ix];
+      if (chosen.length < 4) {
+        return noHits({ ...state, pending: { kind: "pendant_discard", chosen } });
+      }
+      const { nextHand, removed } = removeHandIndices(state.player.hand, chosen);
+      if (removed.length < 4) return noHits(state);
+      const heal = Math.max(1, Math.round(state.player.maxHp * 0.1));
+      const hp = Math.min(state.player.maxHp, state.player.hp + heal);
+      return noHits(
+        log(
+          {
+            ...state,
+            pending: null,
+            player: {
+              ...state.player,
+              hand: nextHand,
+              discardPile: [...state.player.discardPile, ...removed],
+              hp,
+            },
+          },
+          `The pendant drinks four cards. You heal ${hp - state.player.hp} HP.`,
+        ),
+      );
+    }
+
+    case "USE_SHIELDING_RING": {
+      if (state.phase !== "player" || state.pending) return noHits(state);
+      if (state.player.shieldingRings <= 0) return noHits(log(state, "You have no shielding ring."));
+      if (state.player.gold < 2) return noHits(log(state, "The ring demands 2 gold."));
+      const resistance = state.player.resistance + 5;
+      return noHits(
+        log(
+          {
+            ...state,
+            player: { ...state.player, gold: state.player.gold - 2, resistance },
+          },
+          `The shielding ring drinks 2 gold. Resistance is ${resistance} this turn.`,
+        ),
+      );
     }
 
     case "USE_BREAD": {

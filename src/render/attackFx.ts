@@ -15,6 +15,7 @@ export type AttackFxFrames = {
   meleeSlash: [Texture, Texture, Texture];
   potionHarming: Texture;
   vineWhipSegment: Texture;
+  throwingKnife: Texture;
 };
 
 const CELL = 16;
@@ -31,7 +32,7 @@ function cellRect(col: number, row: number): Rectangle {
 export async function loadAttackFxFrames(
   url = assetUrl("/assets/attack_fx.png"),
 ): Promise<AttackFxFrames> {
-  const [sheet, explosionSheet, shiningBladeSheet, statusSheet, potionHarming, vineWhipSegment] =
+  const [sheet, explosionSheet, shiningBladeSheet, statusSheet, potionHarming, vineWhipSegment, throwingKnife] =
     await Promise.all([
       Assets.load<Texture>({
         src: url,
@@ -57,6 +58,10 @@ export async function loadAttackFxFrames(
         src: assetUrl("/assets/vine_whip_segment.png"),
         data: { scaleMode: "nearest" },
       }),
+      Assets.load<Texture>({
+        src: assetUrl("/assets/trinket_throwing_knife.png"),
+        data: { scaleMode: "nearest" },
+      }),
     ]);
   if (sheet.source) sheet.source.scaleMode = "nearest";
   if (explosionSheet.source) explosionSheet.source.scaleMode = "nearest";
@@ -64,6 +69,7 @@ export async function loadAttackFxFrames(
   if (statusSheet.source) statusSheet.source.scaleMode = "nearest";
   if (potionHarming.source) potionHarming.source.scaleMode = "nearest";
   if (vineWhipSegment.source) vineWhipSegment.source.scaleMode = "nearest";
+  if (throwingKnife.source) throwingKnife.source.scaleMode = "nearest";
 
   const frame = (col: number, row: number): Texture =>
     new Texture({ source: sheet.source, frame: cellRect(col, row) });
@@ -119,6 +125,7 @@ export async function loadAttackFxFrames(
     meleeSlash: [frame(0, 2), frame(1, 2), frame(2, 2)],
     potionHarming,
     vineWhipSegment,
+    throwingKnife,
   };
 }
 
@@ -126,10 +133,15 @@ export async function loadAttackFxFrames(
  * Pixi rotation (radians) so a sprite whose art faces `baseFacing` aims toward (dx, dy).
  * Screen coords: +y is down. Ortho missiles/arrows face east (0). Diagonal art faces SE (π/4).
  */
-export function aimRotation(dx: number, dy: number, baseFacing: "east" | "southeast"): number {
+export function aimRotation(
+  dx: number,
+  dy: number,
+  baseFacing: "east" | "southeast" | "northeast",
+): number {
   if (dx === 0 && dy === 0) return 0;
   const desired = Math.atan2(dy, dx);
-  const base = baseFacing === "southeast" ? Math.PI / 4 : 0;
+  const base =
+    baseFacing === "southeast" ? Math.PI / 4 : baseFacing === "northeast" ? -Math.PI / 4 : 0;
   return desired - base;
 }
 
@@ -157,6 +169,12 @@ export function pickProjectileTexture(
         rotation: aimRotation(dx, dy, "east") + Math.PI,
       };
     }
+    case "throwing_knife":
+      // 8×8 art: the blade tip sits up-right of center.
+      return {
+        texture: frames.throwingKnife,
+        rotation: aimRotation(dx, dy, "northeast") + Math.PI,
+      };
     case "arrow": {
       if (isDiagonalStep(dx, dy)) {
         return {

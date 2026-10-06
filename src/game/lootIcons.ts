@@ -23,18 +23,37 @@ export const LOOT_ICON_FRAMES = {
 
 export type LootIconId = keyof typeof LOOT_ICON_FRAMES;
 
+const STANDALONE_ICONS = {
+  trinket_throwing_knife: "/assets/trinket_throwing_knife.png",
+  trinket_healing_pendant: "/assets/trinket_healing_pendant.png",
+  trinket_shielding_ring: "/assets/trinket_shielding_ring.png",
+  loot_key: "/assets/loot_key.png",
+} as const;
+
+export type StandaloneIconId = keyof typeof STANDALONE_ICONS;
+export type InventoryIconId = LootIconId | StandaloneIconId;
+
 const CELL = 8;
 const SHEET = 32;
 
 /** CSS background-position for an inventory icon at `displaySize` px (integer scale of 8). */
-export function lootIconCss(id: LootIconId, displaySize = 24): {
+export function lootIconCss(id: InventoryIconId, displaySize = 24): {
   backgroundImage: string;
   backgroundSize: string;
   backgroundPosition: string;
   width: string;
   height: string;
 } {
-  const [x, y] = LOOT_ICON_FRAMES[id];
+  if (id in STANDALONE_ICONS) {
+    return {
+      backgroundImage: `url("${assetUrl(STANDALONE_ICONS[id as StandaloneIconId])}")`,
+      backgroundSize: `${displaySize}px ${displaySize}px`,
+      backgroundPosition: "0 0",
+      width: `${displaySize}px`,
+      height: `${displaySize}px`,
+    };
+  }
+  const [x, y] = LOOT_ICON_FRAMES[id as LootIconId];
   const scale = displaySize / CELL;
   return {
     backgroundImage: `url("${assetUrl("/assets/loot_icons.png")}")`,
@@ -45,7 +64,7 @@ export function lootIconCss(id: LootIconId, displaySize = 24): {
   };
 }
 
-export function groundLootSpriteId(loot: GroundLootInstance): LootIconId {
+export function groundLootSpriteId(loot: GroundLootInstance): string {
   switch (loot.kind) {
     case "coin":
       return (loot.amount ?? 1) >= 3 ? "loot_coins_3" : "loot_coin";
@@ -63,6 +82,14 @@ export function groundLootSpriteId(loot: GroundLootInstance): LootIconId {
       return "loot_fire";
     case "magic_tome":
       return "loot_tome";
+    case "throwing_knife":
+      return "trinket_throwing_knife";
+    case "healing_pendant":
+      return "trinket_healing_pendant";
+    case "shielding_ring":
+      return "trinket_shielding_ring";
+    case "key":
+      return "loot_key";
   }
 }
 

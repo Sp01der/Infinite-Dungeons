@@ -44,8 +44,10 @@ export function reachableOrthogonal(
   occupied: Set<string>,
   rockTileKeys?: Set<string>,
   bridgeTileKeys?: Set<string>,
+  haltTiles?: Set<string>,
 ): Set<string> {
   const rocks = rockTileKeys ?? new Set<string>();
+  const halt = haltTiles ?? new Set<string>();
   if (rocks.size === 0) {
     const reachable = new Set<string>();
     const queue: { p: Point; d: number }[] = [{ p: from, d: 0 }];
@@ -55,6 +57,7 @@ export function reachableOrthogonal(
       const cur = queue.shift()!;
       if (cur.d > 0) reachable.add(keyOf(cur.p));
       if (cur.d >= maxSteps) continue;
+      if (halt.has(keyOf(cur.p)) && cur.d > 0) continue;
       for (const o of ORTHO) {
         const np = { x: cur.p.x + o.x, y: cur.p.y + o.y };
         const nk = keyOf(np);
@@ -90,7 +93,7 @@ export function reachableOrthogonal(
     visited.add(bestK);
     const [sx, sy] = bestK.split(",").map(Number) as [number, number];
     const p: Point = { x: sx!, y: sy! };
-    if (rocks.has(bestK) && (p.x !== from.x || p.y !== from.y)) continue;
+    if ((rocks.has(bestK) || halt.has(bestK)) && (p.x !== from.x || p.y !== from.y)) continue;
 
     for (const o of ORTHO) {
       const np = { x: p.x + o.x, y: p.y + o.y };

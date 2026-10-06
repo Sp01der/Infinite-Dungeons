@@ -244,6 +244,12 @@
     "enemy_corrupted_shade": { "fallbackColor": "#5b2d8e" },
     "pot": { "texture": "/assets/pot.png", "fallbackColor": "#e09040" },
     "magic_pot": { "texture": "/assets/magic_pot.png", "fallbackColor": "#3eb0ff" },
+    "golden_pot": { "texture": "/assets/golden_pot.png", "fallbackColor": "#e6c35c" },
+    "grave_bone_pile": { "texture": "/assets/grave_bone_pile.png", "fallbackColor": "#d9d3c7" },
+    "trinket_throwing_knife": { "texture": "/assets/trinket_throwing_knife.png", "fallbackColor": "#c0c4cc" },
+    "trinket_healing_pendant": { "texture": "/assets/trinket_healing_pendant.png", "fallbackColor": "#3ecf8e" },
+    "trinket_shielding_ring": { "texture": "/assets/trinket_shielding_ring.png", "fallbackColor": "#5b8cff" },
+    "loot_key": { "texture": "/assets/loot_key.png", "fallbackColor": "#e8c547" },
     "chest": { "texture": "/assets/chest.png", "fallbackColor": "#e6b422" },
     "gauntlet_corridor": {
       "texture": "/assets/floor_tiles_theme.png",
