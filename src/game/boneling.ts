@@ -1,5 +1,5 @@
 import type { BonePilePropInstance, GameState, Point, TurnAnimEvent } from "./types";
-import { createMonsterInstance, bonelingLeaderForRoom } from "./monsterSpawn";
+import { createMonsterInstance, bonelingLeaderForRoom, spawnDangerFor } from "./monsterSpawn";
 
 export const BONE_PILE_HP = 2;
 /** Monster phases that must pass before a fresh pile may merge. */
@@ -97,7 +97,7 @@ export function tickBonePiles(state: GameState): BonePileTickResult {
       spawnX,
       spawnY,
       state.monsterDefs,
-      state.danger,
+      spawnDangerFor(state.floorTheme, "boneling", state.danger),
     );
     if (aloneInRoom) {
       risen = {

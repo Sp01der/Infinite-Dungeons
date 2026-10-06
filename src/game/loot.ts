@@ -70,7 +70,7 @@ export function rollCatacombsPotLoot(cardDefs: Map<string, CardDef>, depth: numb
   if (r < 0.34) return { kind: "coin", amount: 1 };
   if (r < 0.54) return { kind: "coin", amount: 3 };
   if (r < 0.74) return { kind: "gem", gemId: randomLootGemId() };
-  if (r < 0.9) return { kind: "card", cardId: pickRandomLootCardId(cardDefs, depth) };
+  if (r < 0.9) return { kind: "card", cardId: pickCatacombsLootCardId(cardDefs, depth) };
   if (r < 0.94) return { kind: "bread" };
   if (r < 0.97) return { kind: "herb" };
   return { kind: "cheese" };
@@ -88,7 +88,7 @@ export function rollGoldenPotLoot(cardDefs: Map<string, CardDef>, depth: number)
   if (r < 0.28) return { kind: "coin", amount: lootRollInt(2, 5) };
   if (r < 0.5) return { kind: "gem", gemId: randomLootGemId() };
   if (r < 0.76) return { kind: "trinket", trinket: randomTrinket() };
-  return { kind: "card", cardId: pickRandomLootCardId(cardDefs, depth) };
+  return { kind: "card", cardId: pickCatacombsLootCardId(cardDefs, depth) };
 }
 
 export type ChestLootRoll =
@@ -193,6 +193,26 @@ const NON_CHEST_BASE_RARITIES = new Set(["Basic", "Common", "Uncommon"]);
 /** Random playable card from ground / pots / similar (not chest rare+ draft). */
 export function pickRandomLootCardId(cardDefs: Map<string, CardDef>, depth: number): string {
   const playable = [...cardDefs.entries()].filter(([, d]) => isLootPoolCard(d));
+  return pickLootCardFromPools(playable, depth);
+}
+
+/**
+ * Catacombs ground/pot cards: normal loot pool plus Executioner's Axe.
+ * Ancient Knife is placed only in locked areas, not the general table.
+ */
+export function pickCatacombsLootCardId(cardDefs: Map<string, CardDef>, depth: number): string {
+  const playable = [...cardDefs.entries()].filter(
+    ([id, d]) =>
+      (isLootPoolCard(d) || id === "executioner_axe") &&
+      id !== "ancient_knife" &&
+      !id.startsWith("ancient_knife#"),
+  );
+  // Bias the axe in a bit so it actually shows up among the larger pool.
+  if (cardDefs.has("executioner_axe") && Math.random() < 0.12) return "executioner_axe";
+  return pickLootCardFromPools(playable, depth);
+}
+
+function pickLootCardFromPools(playable: [string, CardDef][], depth: number): string {
   const basic = playable.filter(([, d]) => NON_CHEST_BASE_RARITIES.has(d.rarity)).map(([id]) => id);
   const rare = playable.filter(([, d]) => d.rarity === "Rare").map(([id]) => id);
   const leg = playable.filter(([, d]) => d.rarity === "Legendary").map(([id]) => id);
@@ -261,21 +281,32 @@ export function pickChestOfferCards(
   cardDefs: Map<string, CardDef>,
   tier: "basicToUncommon" | "rarePlus",
   floorDepth: number,
+  opts?: { catacombs?: boolean },
 ): [string, string, string] {
+  const allowCatacombs = (id: string, d: CardDef): boolean => {
+    if (isLootPoolCard(d)) return true;
+    if (!opts?.catacombs) return false;
+    // Executioner's Axe can appear in Catacombs chests; Ancient Knife is locked-area only.
+    return id === "executioner_axe";
+  };
+
   if (tier === "basicToUncommon") {
     const pool = [...cardDefs.entries()]
-      .filter(([, d]) => ["Basic", "Common", "Uncommon"].includes(d.rarity) && isLootPoolCard(d))
+      .filter(
+        ([id, d]) =>
+          ["Basic", "Common", "Uncommon"].includes(d.rarity) && allowCatacombs(id, d),
+      )
       .map(([id]) => id);
     return pickThreeFromPool(pool, "move");
   }
 
   const rare = [...cardDefs.entries()]
-    .filter(([, d]) => d.rarity === "Rare" && isLootPoolCard(d))
+    .filter(([id, d]) => d.rarity === "Rare" && allowCatacombs(id, d))
     .map(([id]) => id);
   const leg =
     floorDepth >= 4
       ? [...cardDefs.entries()]
-          .filter(([, d]) => d.rarity === "Legendary" && isLootPoolCard(d))
+          .filter(([id, d]) => d.rarity === "Legendary" && allowCatacombs(id, d))
           .map(([id]) => id)
       : [];
   const out: string[] = [];

@@ -18,6 +18,9 @@
             <button type="button" id="btn-controls-toggle" class="command-open-btn" title="Toggle keyboard control scheme">
               Controls: Combat
             </button>
+            <button type="button" id="btn-anims-toggle" class="command-open-btn" title="Toggle enemy animation timing">
+              Anims: Sequential
+            </button>
             <button type="button" id="btn-command-window" class="command-open-btn" title="Open command window">
               Commands
             </button>
@@ -125,7 +128,7 @@
                   <dd id="hud-skill-pts">0</dd>
                 </div>
                 <div class="stats-row stats-row--etc">
-                  <dt>Status</dt>
+                  <dt>Turn</dt>
                   <dd>
                     <span id="hud-phase">—</span>
                     <span class="stats-sep">·</span>
@@ -133,6 +136,10 @@
                     <span class="stats-sep">·</span>
                     <span class="stat-k">Noise</span> <span id="hud-noise">0</span>
                   </dd>
+                </div>
+                <div class="stats-row stats-row--effects">
+                  <dt>Effects</dt>
+                  <dd id="hud-status-effects" class="status-effects">None</dd>
                 </div>
               </dl>
               <button type="button" class="btn-skill-tree" id="btn-skill-tree" title="Open skill tree">

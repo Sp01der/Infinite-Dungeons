@@ -156,6 +156,7 @@ export function pickProjectileTexture(
   dy: number,
 ): { texture: Texture; rotation: number } {
   switch (kind) {
+    case "unhealing":
     case "magic_missile": {
       // Sheet art faces opposite the travel direction — flip 180°.
       if (isDiagonalStep(dx, dy)) {

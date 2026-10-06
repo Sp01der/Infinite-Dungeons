@@ -5,7 +5,7 @@ import {
   spearStrikeCells,
 } from "./areaPreview";
 import { baseMagicCardId, upgradedMagicCardId } from "./cardUpgrades";
-import { applyDefense, rollInt, pushRollChanceContext, popRollChanceContext } from "../engine/combat";
+import { rollInt, pushRollChanceContext, popRollChanceContext } from "../engine/combat";
 import { addRoomsToDiscovered, collectRoomIdsAdjacentToPlayer } from "../engine/discovery";
 import {
   chebyshev,
@@ -35,12 +35,14 @@ import { runMonsterPhaseWithHooks } from "./monsterAi";
 import { cullMonstersWithDouvlonPairs, setMonsterHpWithDouvlonSync } from "./douvlon";
 import { animsFromHits, finalizeAnims, mergeAnimResults, pushMoveAnim } from "./turnAnims";
 import {
+  applyIncomingToMonster,
   bonelingLeaderForRoom,
   createMonsterInstance,
-  monsterDefenseForIncoming,
+  spawnDangerFor,
   withBonelingLeaderFlag,
 } from "./monsterSpawn";
 import { convertBonelingToBonePile } from "./boneling";
+import { applySkeletonMageDeath } from "./atbmb/skeletonMage";
 import { attachStairRoom } from "./stairRoom";
 import {
   handleMerchantCommand,
@@ -669,6 +671,7 @@ function applyMonsterKillRewards(
     );
     next = convertBonelingToBonePile(next, x, y, dead?.id);
   }
+  if (defId === "skeleton_mage") next = applySkeletonMageDeath(next, x, y);
   return next;
 }
 
@@ -725,7 +728,9 @@ function applyMimicDeathLoot(state: GameState): GameState {
         `Mimic loot: ${trinketLabel(loot.trinket)}.`,
       );
     case "cardChoice": {
-      const cards = pickChestOfferCards(next.cardDefs, loot.tier, next.depth);
+      const cards = pickChestOfferCards(next.cardDefs, loot.tier, next.depth, {
+        catacombs: next.floorTheme === "catacombs",
+      });
       return log(
         { ...next, chestOffer: { cards } },
         "Mimic loot: inscribed cards — take one, or leave them all.",
@@ -1421,7 +1426,14 @@ function spawnMonstersFromDeep(s: GameState): { state: GameState; lines: string[
       ...next,
       monsters: [
         ...next.monsters,
-        createMonsterInstance(`monster_${serial++}`, defId, p.x, p.y, next.monsterDefs, next.danger),
+        createMonsterInstance(
+          `monster_${serial++}`,
+          defId,
+          p.x,
+          p.y,
+          next.monsterDefs,
+          spawnDangerFor(next.floorTheme, defId, next.danger),
+        ),
       ],
     };
     const nm = next.monsterDefs.get(defId)?.name ?? defId;
@@ -1826,9 +1838,15 @@ function spawnGauntletWave(s: GameState): GameState {
     const defId = roster[i]!;
     const p = candidates[i]!;
     newMons.push(
-      createMonsterInstance(`monster_${serial++}`, defId, p.x, p.y, s.monsterDefs, s.danger, {
-        spawnedInGauntlet: true,
-      }),
+      createMonsterInstance(
+        `monster_${serial++}`,
+        defId,
+        p.x,
+        p.y,
+        s.monsterDefs,
+        spawnDangerFor(s.floorTheme, defId, s.danger),
+        { spawnedInGauntlet: true },
+      ),
     );
   }
   return { ...s, monsters: newMons };
@@ -2324,7 +2342,9 @@ function openChestAsPlayer(s: GameState, x: number, y: number): GameState {
         `Inside: ${trinketLabel(loot.trinket)}.`,
       );
     case "cardChoice": {
-      const cards = pickChestOfferCards(next.cardDefs, loot.tier, next.depth);
+      const cards = pickChestOfferCards(next.cardDefs, loot.tier, next.depth, {
+        catacombs: next.floorTheme === "catacombs",
+      });
       return log(
         { ...next, chestOffer: { cards } },
         "Inside: inscribed cards — take one, or leave them all.",
@@ -3133,9 +3153,24 @@ function applyPerTurnSkillResourcesAfterDraw(next: GameState): GameState {
   };
 }
 
+function tickPlayerPoison(s: GameState): GameState {
+  const poison = s.player.poisonLevels ?? 0;
+  if (poison <= 0) return s;
+  const hp = s.player.hp - 1;
+  let next: GameState = {
+    ...s,
+    player: { ...s.player, hp: Math.max(0, hp), poisonLevels: poison - 1 },
+  };
+  next = log(next, `Poison harms you for 1 (${poison - 1} left).`);
+  if (hp <= 0) return { ...next, phase: "defeat" };
+  return next;
+}
+
 function beginNextPlayerTurn(s: GameState): GameState {
   if (s.phase === "defeat") return s;
   let next = { ...s, turn: s.turn + 1 };
+  next = tickPlayerPoison(next);
+  if (next.phase === "defeat") return next;
   next = applyPendingStalactiteDamage(next);
   if (next.phase === "defeat") return next;
   next = tickHarmingClouds(next);
@@ -3233,10 +3268,14 @@ function damageAttackTargetsAt(
     if (!mon) continue;
     targetCount++;
     const def = s.monsterDefs.get(mon.defId);
-    const defense = Math.max(0, monsterDefenseForIncoming(mon, def) - defensePierce);
-    const damage = ignoreDefense ? rawDamage : applyDefense(rawDamage, defense);
+    const hit = applyIncomingToMonster(mon, def, rawDamage, { ignoreDefense, defensePierce });
+    const damage = hit.damage;
+    s = {
+      ...s,
+      monsters: s.monsters.map((x) => (x.id === mon.id ? hit.monster : x)),
+    };
     monsterDamage.set(mon.id, damage);
-    const hp = Math.max(0, mon.hp - damage);
+    const hp = Math.max(0, hit.monster.hp - damage);
     s = { ...s, monsters: patchMonsterHp(s.monsters, mon.id, hp) };
     hits.push(hitAt(s, target.x, target.y, damage, fxKind));
     if (hp <= 0) {
@@ -5739,8 +5778,13 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
             const monstersHere = s.monsters.filter((m) => m.hp > 0 && m.x === tx && m.y === ty);
             for (const target of monstersHere) {
               const defM = s.monsterDefs.get(target.defId);
-              const finalDmg = applyDefense(dmg, monsterDefenseForIncoming(target, defM));
-              const hp = Math.max(0, target.hp - finalDmg);
+              const hit = applyIncomingToMonster(target, defM, dmg);
+              const finalDmg = hit.damage;
+              s = {
+                ...s,
+                monsters: s.monsters.map((x) => (x.id === target.id ? hit.monster : x)),
+              };
+              const hp = Math.max(0, hit.monster.hp - finalDmg);
               s = { ...s, monsters: patchMonsterHp(s.monsters, target.id, hp) };
               s = { ...s, monsters: applyFireToMonster(s.monsters, target.id, fireLvls) };
               hits.push({ gridX: tx, gridY: ty, damage: finalDmg });

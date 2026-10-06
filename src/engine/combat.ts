@@ -50,3 +50,8 @@ export function monsterMaxHp(baseHp: number, level: number): number {
 export function monsterDamageBonus(level: number): number {
   return Math.max(0, level - 1);
 }
+
+/** Level bonus plus Strength (each level adds 1 damage). */
+export function monsterOutgoingBonus(m: { level: number; strengthLevels?: number }): number {
+  return monsterDamageBonus(m.level) + Math.max(0, m.strengthLevels ?? 0);
+}

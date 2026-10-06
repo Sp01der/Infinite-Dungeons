@@ -1,5 +1,5 @@
-import { rollInt, monsterMaxHp } from "../engine/combat";
-import type { MonsterDef, MonsterInstance, SkeletonWeapon } from "./types";
+import { applyDefense, rollInt, monsterMaxHp } from "../engine/combat";
+import type { FloorTheme, MonsterDef, MonsterInstance, SkeletonWeapon } from "./types";
 
 export const SHADE_DECK_TEMPLATE: string[] = [
   "shade_move", "shade_move", "shade_move",
@@ -130,5 +130,47 @@ export function withBonelingLeaderFlag(
   return {
     ...inst,
     aiFlags: { ...(inst.aiFlags ?? {}), leader: true },
+  };
+}
+
+const SKELETAL_DEF_IDS = new Set([
+  "boneling",
+  "skeleton",
+  "skeleton_archer",
+  "elite_skeleton",
+  "skeleton_mage",
+]);
+
+export function isSkeletalDefId(defId: string): boolean {
+  return SKELETAL_DEF_IDS.has(defId);
+}
+
+/**
+ * Catacombs skeletal foes, including elites, spawn one level below the floor.
+ * Elite skeletons still gain their usual +1 inside createMonsterInstance, so a
+ * catacombs elite ends one level under a normal-floor elite.
+ * Dust Rats are not skeletal and keep the full danger.
+ */
+export function spawnDangerFor(theme: FloorTheme, defId: string, danger: number): number {
+  if (theme === "catacombs" && isSkeletalDefId(defId)) return Math.max(0, danger - 1);
+  return danger;
+}
+
+/** Defense, then Resistance. Resistance is spent by the damage it absorbs. */
+export function applyIncomingToMonster(
+  mon: MonsterInstance,
+  def: MonsterDef | undefined,
+  raw: number,
+  opts?: { ignoreDefense?: boolean; defensePierce?: number },
+): { damage: number; monster: MonsterInstance } {
+  const pierce = opts?.defensePierce ?? 0;
+  const defense = Math.max(0, monsterDefenseForIncoming(mon, def) - pierce);
+  const damage = opts?.ignoreDefense ? Math.max(0, raw) : applyDefense(raw, defense);
+  const res = mon.resistanceLevels ?? 0;
+  if (res <= 0 || damage <= 0) return { damage, monster: mon };
+  const absorbed = Math.min(res, damage);
+  return {
+    damage: damage - absorbed,
+    monster: { ...mon, resistanceLevels: res - absorbed },
   };
 }

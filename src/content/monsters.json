@@ -1002,5 +1002,54 @@
         }
       ]
     }
+  },
+  {
+    "id": "skeleton_mage",
+    "name": "Skeleton Mage",
+    "spriteId": "enemy_skeleton_mage",
+    "hp": 10,
+    "defense": 0,
+    "damage": 1,
+    "power": 7,
+    "description": "A rare catacomb sorcerer. Summons boneling minions, empowers nearby undead, or fires Unhealing.",
+    "ai": {
+      "initialState": "default",
+      "moveStyle": "ortho",
+      "maxActionsPerTurn": 2,
+      "abilities": [
+        {
+          "id": "drift",
+          "kind": "move",
+          "uses": 1,
+          "params": { "steps": 2 }
+        },
+        {
+          "id": "cast_spell",
+          "kind": "custom",
+          "uses": 1,
+          "params": { "customId": "skeleton_mage_spell" }
+        }
+      ],
+      "states": [
+        {
+          "id": "default",
+          "attackRange": { "metric": "chebyshev", "max": 6 },
+          "tilePrefs": {
+            "favored": [{ "kind": "adjacent_to_strongest_skeletal", "maxChebyshev": 9 }]
+          },
+          "decide": [
+            {
+              "id": "approach",
+              "when": { "onFavoredTile": false },
+              "actions": [{ "ability": "drift", "seek": "favored" }]
+            },
+            {
+              "id": "spell",
+              "actions": [{ "ability": "cast_spell" }]
+            }
+          ]
+        }
+      ]
+    }
   }
 ]

@@ -84,6 +84,7 @@ export function runDecisionTree(
         if (!stillInThisState()) {
           return { state: next, dead: false };
         }
+        if (rule.stopAfterFirstSuccess) break;
       } else if (!action.optional) {
         continue;
       }

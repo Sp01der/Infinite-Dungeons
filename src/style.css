@@ -755,6 +755,70 @@ button.pile-inspect:focus-visible {
   font-weight: 500;
 }
 
+.stats-row--effects {
+  align-items: flex-start;
+}
+
+.stats-row--effects dt {
+  padding-top: 0.1rem;
+}
+
+.status-effects {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.2rem 0.35rem;
+  max-width: 11rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.25;
+  text-align: right;
+}
+
+.status-effects__empty {
+  font-weight: 500;
+  opacity: 0.65;
+}
+
+.status-chip {
+  display: inline-block;
+  padding: 0.05rem 0.3rem;
+  border-radius: 0.2rem;
+  background: #2a3140;
+  color: #d7dce8;
+  white-space: nowrap;
+}
+
+.status-chip--fire {
+  background: #4a2414;
+  color: #ffb070;
+}
+
+.status-chip--poison {
+  background: #243414;
+  color: #a3e635;
+}
+
+.status-chip--resist {
+  background: #1c2d55;
+  color: #8eb6ff;
+}
+
+.status-chip--fortify {
+  background: #3a3018;
+  color: #f0d48a;
+}
+
+.status-chip--haste {
+  background: #2e2448;
+  color: #d4b8ff;
+}
+
+.status-chip--defense {
+  background: #24343c;
+  color: #9ad4e8;
+}
+
 .stat-k {
   opacity: 0.75;
   font-size: 0.65rem;

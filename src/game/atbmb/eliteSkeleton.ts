@@ -1,6 +1,6 @@
 import { keyOf } from "../../engine/grid";
 import { manhattan } from "../../engine/movement";
-import { monsterDamageBonus } from "../../engine/combat";
+import { monsterOutgoingBonus } from "../../engine/combat";
 import type {
   AtbmbAbilityDef,
   AtbmbDef,
@@ -210,7 +210,7 @@ function tryWeaponAttack(
   if (!skeletonWeaponCanHit(weapon, monPos, player, movedThisTurn)) {
     return { state: s, mon: m, dead: false, hit: false };
   }
-  const raw = skeletonWeaponRollDamage(weapon, monsterDamageBonus(m.level));
+  const raw = skeletonWeaponRollDamage(weapon, monsterOutgoingBonus(m));
   const result = host.damagePlayer(s, raw, name, monPos);
   const mon = result.state.monsters.find((x) => x.id === m.id) ?? m;
   return { state: result.state, mon, dead: result.dead, hit: true };

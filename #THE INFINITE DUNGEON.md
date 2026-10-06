@@ -82,81 +82,193 @@ To reiterate, you draw cards at the start of your turn, three is the basic amoun
 You may play any number of cards on your turn, and must carry out the full effect of the card before doing anything else. You may discard cards to perform a bonus action. Or equip them. You can only have one card equipped at a time. You can use as many cards as you have in your hand, and there is no limit to how many plays you have or how many bonus actions.
 
 Cards have types which determine when and how they interact with other effects and skills.
-Card Types: Movement, Attack, Magic Attack, Protection, Aid, Skill, Deck
+Card Types: Move, Attack, Magic, Protection, Aid, Skill, Deck, Alchemy, Penalty
 
 Cards also have rarity:
-Basic / Common / Uncommon / Rare / Legendary / Celestial
+Basic / Common / Uncommon / Rare / Legendary / Merchant / Bonus / Celestial
 
-###Card List
-**Move** — Basic / Movement
-Move two spaces.
+Source of truth: `src/content/cards.json` (player) and `src/content/dungeon_cards.json` (dungeon).
+Magic upgrades via Arcane Charge: Magic Missile / Fireball / Lightning Bolt / Arcane Charge / Shining Blade / Arcane Shield → their `+` versions for the turn.
 
-**Dash** — Rare / Movement
-Move 4 spaces.
+### Card List
 
-**Copper Sword** — Basic / Attack
-Deal 3-5 damage to an adjacent creature.
+#### Move
+**Move** — Basic / Move
+Move up to 2 spaces (orthogonal).
 
-**Spear** — Common / Attack
-Deal 3-5 damage along a 2-tile line. Choose an adjacent direction. Walls stop the line.
+**Quickstep** — Common / Move
+Draw a card, then move 1 space.
 
-**Axe** — Common / Attack
-Deal 4-8 damage to an adjacent creature. Add a Weariness card on top of your deck.
+**Dash** — Rare / Move
+Move up to 4 spaces (orthogonal).
 
-**Broadsword** — Uncommon / Attack
-Choose an adjacent direction. Deal 3-6 damage to the three tiles facing that way (the tile directly ahead and the two beside it). Walls are skipped.
+**Loot and Scoot** — Rare / Move, Skill
+Randomly spawn 0–2 coins in the dungeon. Move up to 2 spaces. If you land on a pot, gain 1 gold plus its loot.
 
-**Executioner's Axe** — Uncommon / Attack
-Deal 4-8 damage to an adjacent creature. If it dies, this card stays in your hand and you gain a movement token. Otherwise, it is discarded and two Weariness cards are added on top of your deck. Found only in the Catacombs (not offered until that floor exists).
+**Stealthy Advance** — Uncommon / Aid
+Move 1 space. −1 Noise. +1 defense this turn.
 
-**Ancient Knife** — Rare / Attack
-The Knife thirsts for blood… Deal 1-2 damage to an adjacent creature and draw a card. Each kill with this copy adds +2 damage, and the card text updates to show it. Found in Catacombs treasure rooms (not offered until that floor exists).
+**Stay on the Move** — Uncommon / Skill, Move · Special
+Choose a Move card from your discard pile which is immediately played.
 
-**Icicle Lance** — Rare / Attack
-Deal 3-5 damage along a 3-tile line. Choose an adjacent direction. Walls stop the line. Apply 1 Freezing to each creature hit.
+**Flying Kick** — Common / Attack, Move · physical melee
+Move 2 spaces in one direction. Targets in your path take 3–6 physical damage and 1 knockback. If the full move is blocked, nothing happens.
 
-**Mace Smash** — Uncommon / Attack
-Deal 6-10 damage to an adjacent creature. Ignores 1 defense. Add two Weariness cards on top of your deck.
+**Card Seeker** — Legendary / Skill, Move
+Move 1 space. Drop 2 random cards as ground loot in rooms you can see.
 
-**Weariness** — Penalty
-Playing this card destroys it. It cannot be discarded for a bonus action.
+#### Attack
+**Copper Sword** — Basic / Attack · physical melee
+Deal 3–5 damage to a target on an adjacent tile.
 
-**Bow** — Common / Attack
-Deal 3-4 damage to a target within 8 spaces. Requires line of sight. Cannot hit targets directly adjacent to you.
+**Knife** — Common / Attack · physical melee
+Deal 1–4 damage to a target on an adjacent tile, then draw a card.
 
-**Knockback Punch** — Uncommon / Attack
-Deal 3-4 damage to an adjacent creature. Counts as a punch for Flurry of Blows and other skills. Knocks the target back 2 spaces.
+**Spear** — Common / Attack · physical melee/ranged
+Deal 3–5 damage along a 2-tile line. Choose an adjacent direction. Walls stop the line.
 
-**Lightning Bolt** — Legendary / Magic Attack
-Hit a target within 5 spaces for 5 damage. Then select a new target within 4 spaces of the last target hit for 4 damage, then 3, then 2, then 1. You cannot hit the same target twice. If no valid targets exist within the current radius, the chain ends.
+**Axe** — Common / Attack · physical melee
+Deal 4–8 damage to a target on an adjacent tile. Add a Weariness card on top of your deck.
 
-**Fireball** — Uncommon / Magic Attack
-Choose a square within 8 spaces (requires line of sight). That square is the center of a 3×3 blast dealing 4-6 damage to everything within the area. Inflicts 1-2 levels of Fire on everything hit.
+**Bow** — Common / Attack · physical ranged
+Deal 3–4 damage to a target on a tile within 8 spaces. Requires line of sight. Cannot target adjacent tiles.
 
-**Haste** — Rare / Skill
-For the rest of this turn, any time you move you may move twice as far (2 becomes 4, 1 becomes 2). You cannot play any Attack, Protection, Aid, or Deck cards for the rest of this turn.
+**Knockback Punch** — Uncommon / Attack · punch, physical melee
+Deal 3–4 damage to a target on an adjacent tile (counts as a punch). Knock survivors back 2 spaces, plus any primed knockback.
+
+**Poisoned Blade** — Uncommon / Attack · physical melee
+Deal 2–5 damage to an adjacent target. If it takes more than 1 damage, it gains 3 levels of Poison.
+
+**Mace Smash** — Uncommon / Attack · physical melee
+Deal 6–10 damage to an adjacent target. Ignores 1 defense. Add two Weariness cards on top of your deck.
+
+**Broadsword** — Uncommon / Attack · physical melee
+Choose an adjacent direction. Deal 3–6 damage to the three tiles facing that way. Walls are skipped.
+
+**Reckless Assault** — Uncommon / Attack · physical melee
+Deal 3–6 damage to an adjacent target. Before dealing damage, choose to lose any amount of health. For every health you lose, the attack gains 2 damage.
+
+**Thieving Strike** — Uncommon / Attack · physical melee
+Deal 1–4 damage to an adjacent target. 25% chance of gaining one gold, or 100% if you kill the target with this attack. +1 gold if the target is hit with knockback this turn.
+
+**Executioner's Axe** — Uncommon / Attack · physical melee · Catacombs only
+Deal 4–8 damage to an adjacent target. If it dies, this card stays in your hand and you gain a movement token. Otherwise, it is discarded and two Weariness cards are added on top of your deck.
+
+**Ancient Knife** — Rare / Attack · physical melee · Catacombs only
+The Knife thirsts for blood… Deal 1–2 damage to an adjacent target and draw a card. If you kill the target, the Knife's power will grow.
+
+**Icicle Lance** — Rare / Attack · physical melee
+Deal 3–5 damage along a 3-tile line. Choose an adjacent direction. Walls stop the line. Apply 1 Freezing to each creature hit.
+
+**Perfected Strike** — Rare / Attack · physical melee · Special
+Discard any number of Attack cards from your hand. If you discard at least one, attack an adjacent target dealing 5 damage plus 5 more for each card discarded.
+
+**Great Sword** — Legendary / Attack · physical melee
+Choose an adjacent target for 7–12 damage, or a target 2 spaces away in a cardinal or diagonal line for 2–5 damage if nothing is between you.
+
+**Weariness** — Bonus / Penalty
+Playing this card destroys it. Cannot be used for bonus actions.
+
+#### Magic / Attack
+**Magic Missile** — Rare / Magic, Attack · ranged
+Deal 1–6 damage to a target on one tile in a straight or diagonal line from you. Ignores defense.
+
+**Magic Missile+** — Rare / Magic, Attack · ranged · Arcane Charge upgrade
+Deal 5–6 damage to a target on one tile in a straight or diagonal line from you. Ignores defense.
+
+**Fireball** — Uncommon / Magic, Attack · ranged
+Choose a square within 8 spaces (line of sight). Deal 4–6 damage in a 3×3 blast and inflict 1–2 Fire levels on everything hit.
+
+**Fireball+** — Uncommon / Magic, Attack · ranged · Arcane Charge upgrade
+Choose a square within 8 spaces (line of sight). Deal 5–7 damage in a 3×3 blast and inflict 5 Fire levels on everything hit.
+
+**Lightning Bolt** — Legendary / Magic, Attack · ranged
+Hit a target on a tile within 5 spaces for 5 damage, then chain to new targets for 4, 3, 2, 1 damage. Ignores defense. Cannot hit the same tile twice.
+
+**Lightning Bolt+** — Legendary / Magic, Attack · ranged · Arcane Charge upgrade
+Hit a target on a tile within 8 spaces for 8 damage, then chain to new targets for 7, 6, 5… damage. Ignores defense. Cannot hit the same tile twice.
+
+**Shining Blade** — Uncommon / Magic, Attack · melee
+Deal 4–5 damage to everything on the tiles orthogonally adjacent to you.
+
+**Shining Blade+** — Uncommon / Magic, Attack · melee · Arcane Charge upgrade
+Deal 6 damage to everything on the tiles orthogonally and diagonally adjacent to you.
+
+**Potion of Harming** — Merchant / Alchemy, Attack · ranged
+Select a tile within 5 spaces. Creatures on it take 5 damage. That tile gains a harming cloud for 3 turns. Entering a harming cloud deals 5 damage.
+
+#### Protection / Aid / Skill / Deck
+**Parry** — Common / Protection
+Gain +3 defense until you take damage (the next attack against you is reduced by 3).
 
 **Shield** — Common / Protection
 Gain +5 defense for this turn.
 
-**Stealthy Advance** — Uncommon / Aid
-Move 1 space. -1 Noise. Gain +1 defense for this turn.
+**Flurry of Blows** — Uncommon / Skill
+For the rest of this turn, each punch you throw hits twice.
 
-**Focus** — Common / Deck
+**Haste** — Rare / Skill
+For this turn, all player movement from every source is doubled. You cannot play Attack, Protection, Aid, or Deck cards for the rest of this turn.
+
+**Arcane Charge** — Merchant / Magic, Skill
+You may only play Magic cards for the rest of this turn. Magic cards in your hand are upgraded for this turn.
+
+**Arcane Charge+** — Merchant / Magic, Skill · Arcane Charge upgrade
+Same as Arcane Charge, then draw a card.
+
+**Arcane Shield** — Uncommon / Magic, Aid
+Gain 7 Resistance this turn. Resistance absorbs incoming damage (ignoring defense) until depleted.
+
+**Arcane Shield+** — Uncommon / Magic, Aid · Arcane Charge upgrade
+Gain 10 Resistance this turn. Resistance absorbs incoming damage (ignoring defense) until depleted.
+
+**Fortify** — Uncommon / Aid · Special
+For this turn your defense and resistance is doubled.
+
+**Heal** — Rare / Aid · Special
+Heal 10% of your max health. Cannot be played if you have played any cards this turn, and you may not play any cards after this.
+
+**Focus** — Rare / Deck
 Draw 2 cards.
 
-**Loot & Scoot** — Common / Movement
-Generate 0-2 gold. Move two spaces. Any pots or chests opened with this movement yield +1 gold.
+**Tactical Approach** — Uncommon / Deck
+Draw a card and gain two Bonus Cards.
 
-**Magic Missile** — Uncommon / Magic Attack
-Deal 1-6 damage to a target in a straight or diagonal line from you. Ignores defence.
+**Threefold Gift** — Legendary / Deck
+Draw 3 cards.
 
-**Careful Descent** — Common / Deck
-Skip drawing a dungeon card this turn. -1 Noise.
+**Dual Wield** — Rare / Deck
+Play an Attack, then choose another physical melee Attack from your discard pile and play it immediately.
 
-The Card pesastool gives you the choice between three cards, and allows you to destroy one card in your deck. There's always one in the stair room and sometimes one in the Treasure Room instead of a chest. Certain items, like the Silver Flame which allows you destroy a card in your deck also exist. Treasure chests can give youc choices between three cards like the Card pedastool.
+**Evaluate** — Rare / Deck · Special
+Draw a card. Discard any number of cards and draw one for each discarded.
+
+**Bonus Card** — Bonus / Aid
+Cannot be played. Discard for Move +1, Punch, or Scout — then this card is destroyed.
+
+The Card pedestal gives you the choice between three cards, and allows you to destroy one card in your deck. There's always one in the stair room and sometimes one in the Treasure Room instead of a chest. Certain items, like the Silver Flame which allows you destroy a card in your deck also exist. Treasure chests can give you choices between three cards like the Card pedestal.
 
 *Defence lowers incoming damage by its amount.
+
+### Dungeon Cards
+Source: `src/content/dungeon_cards.json`. Drawn at end of turn after the player discards.
+
+**The Dungeon is Still** — Nothing happens.
+**Noisy Adventurer** — Gain 1 noise.
+**The Dungeon Knows You're Here** — Gain 2 noise.
+**Trap!** — Random damage.
+**Falling Rocks** — Rocks may fall into rooms.
+**Monsters from the Deep** — Something stirs elsewhere.
+**THE DUNGEON IS DEADLIER** — Danger increases; the dungeon deck is reshuffled.
+**Stability** — The next dungeon card may not activate (except Deadlier).
+**The Dust Settles** — You cannot scout this turn.
+**Collapse** — A random room is marked — it collapses at the end of your next turn.
+**Lights Out** — Darkness falls for several turns.
+**Targeted Collapse** — The squares around you are marked — they collapse at the end of your next turn.
+**You Are Not Alone** — (no description in data).
+**Overgrowth** — Greenhouses surge with life.
+**Flooding** — Water rises in a marked chamber.
+**Stalactites Fall** — The ceiling groans — watch your footing.
 
 ##BOSSES
 Certain items can be found deeper down. Certain Boss Relics can be found, which when activated turn the Gauntlet room into a boss room. Each boss has a their own unique relic, but bosses will be worked on later.

@@ -69,6 +69,8 @@ export const VIEW_HEIGHT_PX = VIEW_ROWS * TILE;
 const HIT_ANIM_MS = 520;
 const HIT_FLASH_MS = 280;
 const PROJECTILE_TRAVEL_MS = 240;
+/** Unhealing drifts slower than a normal magic missile. */
+const UNHEALING_TRAVEL_MS = 680;
 const MELEE_SLASH_MS = 216;
 const FIREBALL_EXPLOSION_FRAME_MS = 100;
 const FIREBALL_EXPLOSION_MS = 700;
@@ -475,6 +477,7 @@ export class GridView extends Container {
     if (fx.kind === "melee_slash") return MELEE_SLASH_MS;
     if (fx.kind === "vine_whip") return VINE_EXTEND_MS;
     if (fx.kind === "shining_blade") return SHINING_BLADE_MS;
+    if (fx.kind === "unhealing") return UNHEALING_TRAVEL_MS;
     return PROJECTILE_TRAVEL_MS;
   }
 
@@ -645,13 +648,15 @@ export class GridView extends Container {
           }
           damageStart = VINE_EXTEND_MS;
         } else {
-          if (elapsed < PROJECTILE_TRAVEL_MS) {
-            const t = elapsed / PROJECTILE_TRAVEL_MS;
+          const travelMs = fx.kind === "unhealing" ? UNHEALING_TRAVEL_MS : PROJECTILE_TRAVEL_MS;
+          if (elapsed < travelMs) {
+            const t = elapsed / travelMs;
             const px = fromCx + (toCx - fromCx) * t;
             const py = fromCy + (toCy - fromCy) * t;
             const { texture, rotation } = pickProjectileTexture(frames, fx.kind, dx, dy);
             const projectile = this.makeFxSprite(texture, px, py, rotation);
             if (fx.kind === "throwing_knife") projectile.scale.set(4);
+            if (fx.kind === "unhealing") projectile.tint = 0x6ee87a;
             this.fxLayer.addChild(projectile);
           } else if (fx.kind === "fireball" && elapsed < PROJECTILE_TRAVEL_MS + FIREBALL_EXPLOSION_MS) {
             const explosionElapsed = elapsed - PROJECTILE_TRAVEL_MS;
@@ -670,7 +675,7 @@ export class GridView extends Container {
             spr.height = TILE * 3;
             this.fxLayer.addChild(spr);
           }
-          damageStart = PROJECTILE_TRAVEL_MS;
+          damageStart = travelMs;
         }
       }
 
@@ -906,16 +911,7 @@ export class GridView extends Container {
     for (const tomb of state.tombs) {
       const anchor = { x: tomb.x, y: tomb.y };
       if (state.fogOfWar && !state.discovered.has(keyOf(anchor))) continue;
-      const g = new Graphics();
-      const pad = Math.max(4, Math.round(TILE * 0.12));
-      g.roundRect(
-        tomb.x * TILE + pad,
-        tomb.y * TILE + pad,
-        tomb.w * TILE - pad * 2,
-        tomb.h * TILE - pad * 2,
-        4,
-      ).fill({ color: tomb.special ? 0xc6a03a : 0x2c2a72, alpha: 0.95 });
-      this.rockLayer.addChild(g);
+      this.rockLayer.addChild(this.makeTombSprite(tomb));
     }
 
     for (const door of state.lockedDoors) {
@@ -1007,6 +1003,20 @@ export class GridView extends Container {
     playerRoot.addChild(this.makePlacedSprite("player", 0, 0));
     const playerFire = this.makeFireOverlay(0, 0, state.player.fireLevels ?? 0);
     if (playerFire) playerRoot.addChild(playerFire);
+    if ((state.player.poisonLevels ?? 0) > 0) {
+      const levels = state.player.poisonLevels ?? 0;
+      const poisonId =
+        levels >= 5 ? "poison_major" : levels >= 3 ? "poison_medium" : "poison_minor";
+      const style = this.styles.get(poisonId);
+      if (this.usePixelArt && style?.kind === "texture") {
+        playerRoot.addChild(this.makePlacedSprite(poisonId, 0, 0));
+      } else {
+        const r = Math.max(3, Math.round(TILE * 0.11));
+        const dot = new Graphics();
+        dot.circle(r + 3, r + 3, r).fill({ color: 0x65a30d, alpha: 0.95 });
+        playerRoot.addChild(dot);
+      }
+    }
     if ((state.player.resistance ?? 0) > 0) {
       const resStyle = this.styles.get("status_resistance");
       if (this.usePixelArt && resStyle?.kind === "texture") {
@@ -1060,9 +1070,16 @@ export class GridView extends Container {
             ? "enemy_skeleton_archer_aiming"
             : m.defId === "boneling"
               ? `enemy_boneling_${Math.max(0, Math.min(5, Number(m.aiFlags?.spriteVariant ?? 0)))}`
-              : def?.spriteId ?? "enemy_slime";
+              : m.defId === "skeleton_mage"
+                ? Number(m.aiFlags?.raisedTurns ?? 0) > 0
+                  ? "enemy_skeleton_mage_casting"
+                  : "enemy_skeleton_mage"
+                : def?.spriteId ?? "enemy_slime";
       const root = this.ensureEntityRoot(m.id, m.x, m.y);
-      const useTall = m.defId === "elite_skeleton" || def?.spriteId === "enemy_elite_skeleton";
+      const useTall =
+        m.defId === "elite_skeleton" ||
+        m.defId === "skeleton_mage" ||
+        def?.spriteId === "enemy_elite_skeleton";
       const spr = useTall
         ? this.makeTallPlacedSprite(mimicChest ? "chest" : spriteId, 0, 0)
         : this.makePlacedSprite(mimicChest ? "chest" : spriteId, 0, 0);
@@ -1071,6 +1088,8 @@ export class GridView extends Container {
       } else if (m.defId === "douvlon") {
         const tint = m.douvlonColor === "blue" ? 0x5dade2 : 0xe74c3c;
         spr.tint = tint;
+      } else if (m.aiFlags?.mageMinion) {
+        spr.tint = 0xb7e4b7;
       }
       root.addChild(spr);
       const monsterFire = this.makeFireOverlay(0, 0, m.fireLevels ?? 0);
@@ -1086,6 +1105,23 @@ export class GridView extends Container {
           const r = Math.max(3, Math.round(TILE * 0.11));
           const dot = new Graphics();
           dot.circle(TILE - r - 3, r + 3, r).fill({ color: 0x65a30d, alpha: 0.95 });
+          root.addChild(dot);
+        }
+      }
+      if ((m.strengthLevels ?? 0) > 0) {
+        const r = Math.max(3, Math.round(TILE * 0.1));
+        const dot = new Graphics();
+        dot.circle(r + 3, TILE - r - 3, r).fill({ color: 0xf59e0b, alpha: 0.95 });
+        root.addChild(dot);
+      }
+      if ((m.resistanceLevels ?? 0) > 0) {
+        const resStyle = this.styles.get("status_resistance");
+        if (this.usePixelArt && resStyle?.kind === "texture") {
+          root.addChild(this.makePlacedSprite("status_resistance", 0, 0));
+        } else {
+          const r = Math.max(3, Math.round(TILE * 0.1));
+          const dot = new Graphics();
+          dot.circle(TILE - r - 3, TILE - r - 3, r).fill({ color: 0x3d6ed8, alpha: 0.95 });
           root.addChild(dot);
         }
       }
@@ -2227,6 +2263,50 @@ export class GridView extends Container {
       spr.y = tileY * TILE + inset / 2;
       spr.width = TILE - inset;
       spr.height = TILE - inset;
+    }
+    return spr;
+  }
+
+  /**
+   * Tombs: art is authored at 16px per tile. Horizontal 32×19 art sits on two tiles with
+   * the extra 3px (scaled) sticking above the row. Vertical 16×32 fills a 1×2 footprint.
+   * The Tomb of the Last Lord uses the special gold vertical sprite.
+   */
+  private makeTombSprite(tomb: {
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    special?: boolean;
+    variant?: number;
+  }): Sprite {
+    const horizontal = tomb.w >= 2 && tomb.h <= 1;
+    const variant = Math.max(0, Math.min(2, Math.trunc(tomb.variant ?? 0)));
+    const spriteId = tomb.special
+      ? "tomb_last_lord"
+      : horizontal
+        ? `tomb_horizontal_${variant}`
+        : `tomb_vertical_${variant}`;
+    const style = this.styles.get(spriteId);
+    const spr = this.makeSprite(spriteId);
+    const pixel = this.usePixelArt && style?.kind === "texture";
+    if (pixel) {
+      // 16 native px → one TILE, so horizontal 32×19 → 2 tiles wide and slightly taller.
+      const scale = TILE / 16;
+      const w = style.texture.width * scale;
+      const h = style.texture.height * scale;
+      const footprintW = Math.max(tomb.w, 1) * TILE;
+      const footprintH = Math.max(tomb.h, 1) * TILE;
+      spr.width = w;
+      spr.height = h;
+      spr.x = tomb.x * TILE + (footprintW - w) / 2;
+      spr.y = tomb.y * TILE + footprintH - h;
+    } else {
+      const pad = Math.max(4, Math.round(TILE * 0.12));
+      spr.x = tomb.x * TILE + pad;
+      spr.y = tomb.y * TILE + pad;
+      spr.width = Math.max(tomb.w, 1) * TILE - pad * 2;
+      spr.height = Math.max(tomb.h, 1) * TILE - pad * 2;
     }
     return spr;
   }

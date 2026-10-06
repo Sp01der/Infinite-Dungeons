@@ -2,6 +2,7 @@ import { inBounds, tileAt } from "../engine/grid";
 import {
   bonelingLeaderForRoom,
   createMonsterInstance,
+  spawnDangerFor,
   withBonelingLeaderFlag,
 } from "./monsterSpawn";
 import { blocksFooting } from "./tombs";
@@ -56,7 +57,7 @@ export function tickGraveBonePiles(state: GameState): GameState {
         spot.x,
         spot.y,
         s.monsterDefs,
-        s.danger,
+        spawnDangerFor(s.floorTheme, "boneling", s.danger),
       ),
       leader,
     );

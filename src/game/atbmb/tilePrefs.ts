@@ -1,5 +1,6 @@
 import { keyOf, magicMissilePathClearToPlayer, tileAt, chebyshev, lineOfSightClear } from "../../engine/grid";
 import { manhattan } from "../../engine/movement";
+import { isSkeletalDefId } from "../monsterSpawn";
 import type {
   AtbmbMetric,
   AtbmbStateDef,
@@ -29,6 +30,36 @@ export function resolveTilePrefs(
     tertiary: byW.tertiary ?? base.tertiary,
     bad: [...(base.bad ?? []), ...(byW.bad ?? [])],
   };
+}
+
+/** Highest-power skeletal ally within range of the mage, else the nearest skeletal ally. */
+function strongestSkeletalAnchor(
+  s: GameState,
+  m: MonsterInstance,
+  maxChebyshev: number,
+): MonsterInstance | null {
+  const here: Point = { x: m.x, y: m.y };
+  const others = s.monsters.filter(
+    (o) => o.hp > 0 && o.id !== m.id && isSkeletalDefId(o.defId),
+  );
+  if (others.length === 0) return null;
+  const near = others.filter((o) => chebyshev(here, o) <= maxChebyshev);
+  const pool = near.length > 0 ? near : others;
+  const rankPower = near.length > 0;
+  let best = pool[0]!;
+  for (const o of pool) {
+    if (rankPower) {
+      const po = s.monsterDefs.get(o.defId)?.power ?? 0;
+      const pb = s.monsterDefs.get(best.defId)?.power ?? 0;
+      if (po > pb) {
+        best = o;
+        continue;
+      }
+      if (po < pb) continue;
+    }
+    if (chebyshev(here, o) < chebyshev(here, best)) best = o;
+  }
+  return best;
 }
 
 export function tileMatchesPref(
@@ -114,6 +145,13 @@ export function tileMatchesPref(
         }
       }
       return false;
+    }
+    case "adjacent_to_strongest_skeletal": {
+      const anchor = strongestSkeletalAnchor(s, m, pref.maxChebyshev ?? 9);
+      if (!anchor) return false;
+      const dx = Math.abs(tile.x - anchor.x);
+      const dy = Math.abs(tile.y - anchor.y);
+      return Math.max(dx, dy) === 1;
     }
     case "adjacent_to_ally": {
       const allyId = pref.allyDefId ?? m.defId;

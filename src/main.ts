@@ -12,7 +12,7 @@ import {
   SKILL_DEFS,
   type SkillDef,
 } from "./game/skillDefs";
-import { CARD_TYPE_ORDER, type AtbmbTilePref, type AtbmbWhen, type CardDef, type FloorTheme, type GameCommand, type GameState, type ShiftyGemId, type TurnAnimEvent } from "./game/types";
+import { CARD_TYPE_ORDER, type AtbmbTilePref, type AtbmbWhen, type CardDef, type FloorTheme, type GameCommand, type GameState, type HitVisual, type ShiftyGemId, type TurnAnimEvent } from "./game/types";
 import { hasAtbmb, inAttackRange, isOnBadTile, isOnFavoredTile, planAtbmbPath, resolveTilePrefs, stablePathRng, whenMatches, evaluateEliteSkeletonOptions } from "./game/atbmb";
 import { monsterTilePassable, movementOcc } from "./game/monsterAi";
 import { manhattan } from "./engine/movement";
@@ -137,6 +137,8 @@ const senseiOfferConfirm = document.querySelector<HTMLButtonElement>("#sensei-of
 const senseiOfferCancel = document.querySelector<HTMLButtonElement>("#sensei-offer-cancel")!;
 const commandWindowBtn = document.querySelector<HTMLButtonElement>("#btn-command-window")!;
 const graphicsToggleBtn = document.querySelector<HTMLButtonElement>("#btn-graphics-toggle")!;
+const animsToggleBtn = document.querySelector<HTMLButtonElement>("#btn-anims-toggle")!;
+const hudStatusEffects = document.querySelector<HTMLElement>("#hud-status-effects")!;
 const commandWindow = document.querySelector<HTMLDivElement>("#command-window")!;
 const commandWindowBackdrop = document.querySelector<HTMLDivElement>("#command-window-backdrop")!;
 const commandWindowClose = document.querySelector<HTMLButtonElement>("#command-window-close")!;
@@ -167,6 +169,7 @@ let animating = false;
 
 const PIXEL_ART_STORAGE_KEY = "infinite-dungeon-pixel-art";
 const CONTROLS_SCHEME_STORAGE_KEY = "infinite-dungeon-controls-scheme";
+const PARALLEL_ANIMS_STORAGE_KEY = "infinite-dungeon-parallel-anims";
 const END_TURN_DOUBLE_TAP_MS = 450;
 
 type ControlsScheme = "combat" | "classic";
@@ -236,6 +239,37 @@ function setPixelArtEnabled(enabled: boolean): void {
   }
   grid?.setPixelArtEnabled(enabled);
   syncGraphicsToggleButton();
+}
+
+function readStoredParallelAnims(): boolean {
+  try {
+    const v = localStorage.getItem(PARALLEL_ANIMS_STORAGE_KEY);
+    if (v === "1" || v === "true" || v === "parallel") return true;
+    if (v === "0" || v === "false" || v === "sequential") return false;
+  } catch {
+    /* ignore */
+  }
+  return false;
+}
+
+let parallelEnemyAnims = readStoredParallelAnims();
+
+function syncAnimsToggleButton(): void {
+  animsToggleBtn.textContent = parallelEnemyAnims ? "Anims: Parallel" : "Anims: Sequential";
+  animsToggleBtn.title = parallelEnemyAnims
+    ? "Enemy moves and attacks play together — click for one-at-a-time"
+    : "Enemy moves and attacks play one at a time — click for simultaneous";
+  animsToggleBtn.setAttribute("aria-pressed", parallelEnemyAnims ? "true" : "false");
+}
+
+function setParallelEnemyAnims(enabled: boolean): void {
+  parallelEnemyAnims = enabled;
+  try {
+    localStorage.setItem(PARALLEL_ANIMS_STORAGE_KEY, enabled ? "parallel" : "sequential");
+  } catch {
+    /* ignore */
+  }
+  syncAnimsToggleButton();
 }
 
 function choiceModalBlocksPlay(s: GameState): boolean {
@@ -665,33 +699,96 @@ async function playTurnAnims(
   grid.sync(display);
   renderHudFrom(display);
 
+  const playOne = async (ev: TurnAnimEvent): Promise<void> => {
+    if (ev.kind === "move") {
+      await grid!.playMove(ev.entityId, ev.fromX, ev.fromY, ev.toX, ev.toY);
+      display = applyMoveToDisplay(display, ev);
+      return;
+    }
+    if (ev.kind === "simultaneous") {
+      const vineHit = ev.hits.find((h) => h.fx?.kind === "vine_whip");
+      const vineMove = vineHit && ev.moves.length === 1 ? ev.moves[0] : null;
+      if (vineHit && vineMove) {
+        await grid!.playVineWhipPull(vineHit, vineMove);
+      } else {
+        const movePromises = ev.moves.map((mv) =>
+          grid!.playMove(mv.entityId, mv.fromX, mv.fromY, mv.toX, mv.toY),
+        );
+        const hitPromise =
+          ev.hits.length > 0 ? grid!.playHitsAsync(ev.hits) : Promise.resolve();
+        await Promise.all([...movePromises, hitPromise]);
+      }
+      for (const mv of ev.moves) {
+        display = applyMoveToDisplay(display, { kind: "move", ...mv });
+      }
+      display = ev.stateAfter;
+      grid!.sync(display);
+      renderHudFrom(display);
+      return;
+    }
+    await grid!.playHitsAsync(ev.hits);
+    display = ev.stateAfter;
+    grid!.sync(display);
+    renderHudFrom(display);
+  };
+
   try {
-    for (const ev of anims) {
-      if (ev.kind === "move") {
-        await grid.playMove(ev.entityId, ev.fromX, ev.fromY, ev.toX, ev.toY);
-        display = applyMoveToDisplay(display, ev);
-      } else if (ev.kind === "simultaneous") {
-        const vineHit = ev.hits.find((h) => h.fx?.kind === "vine_whip");
-        const vineMove = vineHit && ev.moves.length === 1 ? ev.moves[0] : null;
-        if (vineHit && vineMove) {
-          await grid.playVineWhipPull(vineHit, vineMove);
-        } else {
-          const movePromises = ev.moves.map((mv) =>
-            grid!.playMove(mv.entityId, mv.fromX, mv.fromY, mv.toX, mv.toY),
-          );
-          const hitPromise =
-            ev.hits.length > 0 ? grid.playHitsAsync(ev.hits) : Promise.resolve();
-          await Promise.all([...movePromises, hitPromise]);
+    if (!parallelEnemyAnims) {
+      for (const ev of anims) await playOne(ev);
+    } else {
+      let i = 0;
+      while (i < anims.length) {
+        const ev = anims[i]!;
+        // Keep player walks and pre-built simultaneous beats (vine whip) discrete.
+        if (ev.kind === "move" && ev.entityId === "player") {
+          await playOne(ev);
+          i++;
+          continue;
         }
-        for (const mv of ev.moves) {
+        if (ev.kind === "simultaneous") {
+          await playOne(ev);
+          i++;
+          continue;
+        }
+        const moves: Array<{
+          entityId: string;
+          fromX: number;
+          fromY: number;
+          toX: number;
+          toY: number;
+        }> = [];
+        const hits: HitVisual[] = [];
+        let stateAfter: GameState | null = null;
+        while (i < anims.length) {
+          const cur = anims[i]!;
+          if (cur.kind === "move" && cur.entityId === "player") break;
+          if (cur.kind === "simultaneous") break;
+          if (cur.kind === "move") {
+            moves.push({
+              entityId: cur.entityId,
+              fromX: cur.fromX,
+              fromY: cur.fromY,
+              toX: cur.toX,
+              toY: cur.toY,
+            });
+            i++;
+          } else if (cur.kind === "attack") {
+            hits.push(...cur.hits);
+            stateAfter = cur.stateAfter;
+            i++;
+          } else {
+            break;
+          }
+        }
+        if (moves.length === 0 && hits.length === 0) continue;
+        await Promise.all([
+          ...moves.map((mv) => grid!.playMove(mv.entityId, mv.fromX, mv.fromY, mv.toX, mv.toY)),
+          hits.length > 0 ? grid.playHitsAsync(hits) : Promise.resolve(),
+        ]);
+        for (const mv of moves) {
           display = applyMoveToDisplay(display, { kind: "move", ...mv });
         }
-        display = ev.stateAfter;
-        grid.sync(display);
-        renderHudFrom(display);
-      } else {
-        await grid.playHitsAsync(ev.hits);
-        display = ev.stateAfter;
+        if (stateAfter) display = stateAfter;
         grid.sync(display);
         renderHudFrom(display);
       }
@@ -727,6 +824,51 @@ function applyMoveToDisplay(s: GameState, ev: Extract<TurnAnimEvent, { kind: "mo
   };
 }
 
+function renderStatusEffects(s: GameState): void {
+  const chips: Array<{ label: string; cls: string }> = [];
+  const p = s.player;
+  if ((p.resistance ?? 0) > 0) {
+    chips.push({ label: `Resistance ${p.resistance}`, cls: "status-chip--resist" });
+  }
+  if ((p.fireLevels ?? 0) > 0) {
+    chips.push({ label: `Fire ${p.fireLevels}`, cls: "status-chip--fire" });
+  }
+  if ((p.poisonLevels ?? 0) > 0) {
+    chips.push({ label: `Poison ${p.poisonLevels}`, cls: "status-chip--poison" });
+  }
+  if (p.fortifyThisTurn) {
+    chips.push({ label: "Fortify", cls: "status-chip--fortify" });
+  }
+  const defense =
+    (p.defenseBonusThisTurn ?? 0) + (p.defenseUntilHit ?? 0);
+  if (defense > 0) {
+    chips.push({ label: `Defense ${defense}`, cls: "status-chip--defense" });
+  }
+  if (p.hasteThisTurn) {
+    chips.push({ label: "Haste", cls: "status-chip--haste" });
+  }
+  if (p.arcaneChargeActive) {
+    chips.push({ label: "Arcane Charge", cls: "status-chip--haste" });
+  }
+  if (p.doublePunchThisTurn) {
+    chips.push({ label: "Flurry", cls: "status-chip--fortify" });
+  }
+  hudStatusEffects.replaceChildren();
+  if (chips.length === 0) {
+    const empty = document.createElement("span");
+    empty.className = "status-effects__empty";
+    empty.textContent = "None";
+    hudStatusEffects.appendChild(empty);
+    return;
+  }
+  for (const chip of chips) {
+    const el = document.createElement("span");
+    el.className = `status-chip ${chip.cls}`;
+    el.textContent = chip.label;
+    hudStatusEffects.appendChild(el);
+  }
+}
+
 /** Lightweight HUD refresh used mid-animation (HP / phase / log). */
 function renderHudFrom(s: GameState): void {
   hudPhase.textContent =
@@ -735,6 +877,7 @@ function renderHudFrom(s: GameState): void {
     s.player.resistance > 0
       ? `${s.player.hp} / ${s.player.maxHp} (Res ${s.player.resistance})`
       : `${s.player.hp} / ${s.player.maxHp}`;
+  renderStatusEffects(s);
   renderLogFrom(s);
 }
 
@@ -2662,6 +2805,7 @@ function renderAll(): void {
   renderInventoryGrid();
   hudDanger.textContent = String(state.danger);
   hudNoise.textContent = String(state.noise);
+  renderStatusEffects(state);
 
   if (state.dungeonCardReveal) {
     dungeonCardToast.hidden = false;
@@ -3068,6 +3212,9 @@ graphicsToggleBtn.addEventListener("click", () => {
 controlsToggleBtn.addEventListener("click", () => {
   setControlsScheme(controlsScheme === "combat" ? "classic" : "combat");
 });
+animsToggleBtn.addEventListener("click", () => {
+  setParallelEnemyAnims(!parallelEnemyAnims);
+});
 commandWindowBackdrop.addEventListener("click", () => closeCommandWindow());
 commandWindowClose.addEventListener("click", () => closeCommandWindow());
 commandForm.addEventListener("submit", (e) => {
@@ -3313,6 +3460,7 @@ async function bootstrap(): Promise<void> {
   grid.setPixelArtEnabled(readStoredPixelArtPreference());
   syncGraphicsToggleButton();
   syncControlsToggleButton();
+  syncAnimsToggleButton();
 
   await app.init({
     width: VIEW_WIDTH_PX,

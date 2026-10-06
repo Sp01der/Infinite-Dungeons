@@ -1,5 +1,5 @@
 import { magicMissilePathClearToPlayer, lineOfSightClear } from "../../engine/grid";
-import { monsterDamageBonus, rollInt } from "../../engine/combat";
+import { monsterOutgoingBonus, rollInt } from "../../engine/combat";
 import { manhattan } from "../../engine/movement";
 import type {
   AtbmbAbilityDef,
@@ -20,6 +20,7 @@ import { skeletonWeaponCanHit, skeletonWeaponRollDamage } from "./skeletonWeapon
 import { pickPathStep } from "./planPath";
 import { resolveTilePrefs } from "./tilePrefs";
 import { runEliteSkeletonAttacking } from "./eliteSkeleton";
+import { runSkeletonMageSpell } from "./skeletonMage";
 
 /** Host adapters supplied by monsterAi so ATBMB stays free of phase/anim coupling. */
 export type AtbmbHost = {
@@ -72,6 +73,13 @@ export type AtbmbHost = {
   ) => { state: GameState; dead: boolean; used: boolean };
   /** Mimic: appear as a chest again and enter the given state. */
   disguise: (s: GameState, m: MonsterInstance, nextState: string) => GameState;
+  /** Skeleton Mage: 1 damage projectile plus poison levels. */
+  unhealing: (
+    s: GameState,
+    m: MonsterInstance,
+    damage: number,
+    poisonLevels: number,
+  ) => { state: GameState; dead: boolean };
 };
 
 /** Mutable per-turn counters shared across decision phases. */
@@ -259,7 +267,7 @@ export function tryExecuteAction(
     }
     const minD = def.params?.minDamage ?? 1;
     const maxD = def.params?.maxDamage ?? minD;
-    const raw = rollInt(minD, maxD) + monsterDamageBonus(m.level);
+    const raw = rollInt(minD, maxD) + monsterOutgoingBonus(m);
     const hit = host.damagePlayer(s, raw, name, monPos);
     consumeAndNote(budget, turnCtx, def);
     if (hit.dead) {
@@ -281,7 +289,7 @@ export function tryExecuteAction(
     if (!skeletonWeaponCanHit(w, monPos, player, turnCtx.movesSpent > 0)) {
       return { state: s, mon: m, dead: false, used: false };
     }
-    const raw = skeletonWeaponRollDamage(w, monsterDamageBonus(m.level));
+    const raw = skeletonWeaponRollDamage(w, monsterOutgoingBonus(m));
     const hit = host.damagePlayer(s, raw, name, monPos);
     consumeAndNote(budget, turnCtx, def);
     if (hit.dead) {
@@ -407,6 +415,12 @@ export function tryExecuteAction(
   if (def.kind === "custom") {
     if (def.params?.customId === "elite_skeleton_attack") {
       return runEliteSkeletonAttacking(s, m, ai, def, host, budget, turnCtx);
+    }
+    if (def.params?.customId === "skeleton_mage_spell") {
+      const cast = runSkeletonMageSpell(s, m, def, host);
+      if (!cast.used) return cast;
+      consumeAndNote(budget, turnCtx, def);
+      return cast;
     }
     return { state: s, mon: m, dead: false, used: false };
   }

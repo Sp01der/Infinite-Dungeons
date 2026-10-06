@@ -22,11 +22,12 @@ import { loadCardDefs, loadDungeonCardDefs, loadMonsterDefs } from "./loadConten
 import {
   bonelingLeaderForRoom,
   createMonsterInstance,
+  spawnDangerFor,
   withBonelingLeaderFlag,
 } from "./monsterSpawn";
 import { GRAVE_BONE_PILE_HP } from "./gravePiles";
 import { randomLootGemId } from "./lootIcons";
-import { pickRandomLootCardId, rollGroundLootPiece } from "./loot";
+import { pickCatacombsLootCardId, rollGroundLootPiece } from "./loot";
 
 const ORTHO_NEIGHBORS: Point[] = [
   { x: 1, y: 0 },
@@ -1083,6 +1084,7 @@ export function createCatacombsTestState(prev: GameState): GameState {
   );
   const monsters: MonsterInstance[] = [];
   let mi = 0;
+  const catacombsDanger = (defId: string) => spawnDangerFor("catacombs", defId, prev.danger);
   for (const p of layout.bonelings) {
     const leader = bonelingLeaderForRoom(monsters, layout.roomIds, p.x, p.y);
     monsters.push(
@@ -1093,7 +1095,7 @@ export function createCatacombsTestState(prev: GameState): GameState {
           p.x,
           p.y,
           prev.monsterDefs,
-          prev.danger,
+          catacombsDanger("boneling"),
         ),
         leader,
       ),
@@ -1101,7 +1103,26 @@ export function createCatacombsTestState(prev: GameState): GameState {
   }
   for (const p of layout.skeletons) {
     monsters.push(
-      createMonsterInstance(`monster_${mi++}`, "skeleton", p.x, p.y, prev.monsterDefs, prev.danger),
+      createMonsterInstance(
+        `monster_${mi++}`,
+        "skeleton",
+        p.x,
+        p.y,
+        prev.monsterDefs,
+        catacombsDanger("skeleton"),
+      ),
+    );
+  }
+  for (const p of layout.archers) {
+    monsters.push(
+      createMonsterInstance(
+        `monster_${mi++}`,
+        "skeleton_archer",
+        p.x,
+        p.y,
+        prev.monsterDefs,
+        catacombsDanger("skeleton_archer"),
+      ),
     );
   }
   for (const p of layout.elites) {
@@ -1112,7 +1133,31 @@ export function createCatacombsTestState(prev: GameState): GameState {
         p.x,
         p.y,
         prev.monsterDefs,
-        prev.danger,
+        catacombsDanger("elite_skeleton"),
+      ),
+    );
+  }
+  for (const p of layout.rats) {
+    monsters.push(
+      createMonsterInstance(
+        `monster_${mi++}`,
+        "dune_rat",
+        p.x,
+        p.y,
+        prev.monsterDefs,
+        catacombsDanger("dune_rat"),
+      ),
+    );
+  }
+  for (const p of layout.mages) {
+    monsters.push(
+      createMonsterInstance(
+        `monster_${mi++}`,
+        "skeleton_mage",
+        p.x,
+        p.y,
+        prev.monsterDefs,
+        catacombsDanger("skeleton_mage"),
       ),
     );
   }
@@ -1141,8 +1186,11 @@ export function createCatacombsTestState(prev: GameState): GameState {
       x: p.x,
       y: p.y,
       kind: "card",
-      cardId: pickRandomLootCardId(prev.cardDefs, prev.depth),
+      cardId: pickCatacombsLootCardId(prev.cardDefs, prev.depth),
     });
+  }
+  for (const p of layout.namedCards) {
+    pushLoot({ x: p.x, y: p.y, kind: "card", cardId: p.cardId });
   }
   for (const p of layout.trinkets) pushLoot({ x: p.x, y: p.y, kind: p.trinket });
   for (const p of layout.gems) {

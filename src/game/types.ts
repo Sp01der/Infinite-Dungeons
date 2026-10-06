@@ -176,7 +176,13 @@ export type AtbmbTilePref =
    * Orthogonally adjacent to another living monster with the same defId
    * (or `allyDefId` if set). When `preferLeader` is true, only leaders count.
    */
-  | { kind: "adjacent_to_ally"; allyDefId?: string; preferLeader?: boolean };
+  | { kind: "adjacent_to_ally"; allyDefId?: string; preferLeader?: boolean }
+  /**
+   * Orthogonally or diagonally adjacent to the highest-power skeletal enemy
+   * within `maxChebyshev` (default 9). If none are in range, adjacent to the
+   * nearest skeletal enemy anywhere.
+   */
+  | { kind: "adjacent_to_strongest_skeletal"; maxChebyshev?: number };
 
 export interface AtbmbTilePrefs {
   favored?: AtbmbTilePref[];
@@ -277,6 +283,8 @@ export interface AtbmbRule {
   actions: AtbmbAction[];
   /** Shuffle action order before trying (e.g. Dust Rat adjacent move/attack). */
   shuffleActions?: boolean;
+  /** After one action in this rule succeeds, do not try the rest. */
+  stopAfterFirstSuccess?: boolean;
 }
 
 export interface AtbmbAttackRange {
@@ -418,6 +426,12 @@ export interface MonsterInstance {
   fireLevels?: number;
   /** Poison ticks after this creature acts; moving increases its nonlethal damage. */
   poisonLevels?: number;
+  /** Bonus damage on this creature's attacks. Cleared at the start of the next monster phase. */
+  strengthLevels?: number;
+  /** Absorbs incoming damage. Cleared at the start of the next monster phase. */
+  resistanceLevels?: number;
+  /** Dies when the monster with this id dies (Skeleton Mage minions). */
+  summonerId?: string;
   /** Freezing: +2 defense and cannot act. One level wears off each of this creature's turns. */
   freezeLevels?: number;
   /** Elite Skeleton only: true once the low-HP teleport has already fired (prevents repeat). */
@@ -514,15 +528,17 @@ export interface TangleweedPropInstance {
   withered?: boolean;
 }
 
-/** Tomb: blocks movement, not attacks. `w`×`h` is 1×1 or 1×2. */
+/** Tomb: blocks movement, not attacks. Footprint is 1×2 (vertical) or 2×1 (horizontal). */
 export interface TombInstance {
   id: string;
   x: number;
   y: number;
   w: number;
   h: number;
-  /** Gold sarcophagus in the ultra-fancy locked room. */
+  /** Tomb of the Last Lord in the ultra-fancy locked room. */
   special?: boolean;
+  /** Art variant 0–2 for ordinary tombs (ignored when `special`). */
+  variant?: number;
 }
 
 /** Grave pile: stationary, blocks movement, spawns a Boneling each monster phase. */
@@ -813,6 +829,8 @@ export interface GameState {
     knockbackedMonsterIdsThisTurn: string[];
     /** Fire levels on the player (for future use). */
     fireLevels: number;
+    /** Poison levels. One level deals 1 damage at the start of your next turn. */
+    poisonLevels?: number;
   };
   /** 1-based floor index; dungeon card formulas use this. */
   depth: number;
@@ -945,6 +963,7 @@ export interface GameState {
 /** One combat hit for UI (flash + floating damage number at grid cell). */
 export type AttackFxKind =
   | "magic_missile"
+  | "unhealing"
   | "arrow"
   | "throwing_knife"
   | "fireball"

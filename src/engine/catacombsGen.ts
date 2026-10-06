@@ -77,10 +77,15 @@ export interface CatacombLayout {
   chests: Point[];
   bonelings: Point[];
   skeletons: Point[];
+  archers: Point[];
   elites: Point[];
+  rats: Point[];
+  mages: Point[];
   gravePiles: Point[];
   coins: Point[];
   cards: Point[];
+  /** Fixed card drops (Ancient Knife in locked rooms, etc.). */
+  namedCards: { x: number; y: number; cardId: string }[];
   trinkets: { x: number; y: number; trinket: TrinketId }[];
   gems: Point[];
   keys: Point[];
@@ -317,27 +322,44 @@ function pairBlockers(
   code: "t" | "g",
   special: boolean,
   nextId: () => string,
+  rng: () => number,
 ): TombInstance[] {
   const pts = cells.filter((c) => c.code === code);
   const used = new Set<string>();
   const tombs: TombInstance[] = [];
+  const variant = () => (special ? 0 : Math.floor(rng() * 3));
   for (const p of pts) {
     const k = key(p.x, p.y);
     if (used.has(k)) continue;
     used.add(k);
     const east = pts.find((o) => o.x === p.x + 1 && o.y === p.y && !used.has(key(o.x, o.y)));
     const south = pts.find((o) => o.x === p.x && o.y === p.y + 1 && !used.has(key(o.x, o.y)));
-    if (east) {
+    // Last Lord art is vertical; prefer a 1×2 footprint for special tombs.
+    // Ordinary tombs: prefer horizontal when both pairings exist (matches side_tomb `tt`).
+    const preferSouth = special;
+    if (preferSouth && south) {
+      used.add(key(south.x, south.y));
+      tombs.push({ id: nextId(), x: p.x, y: p.y, w: 1, h: 2, special, variant: variant() });
+    } else if (east) {
       used.add(key(east.x, east.y));
-      tombs.push({ id: nextId(), x: p.x, y: p.y, w: 2, h: 1, special });
+      tombs.push({ id: nextId(), x: p.x, y: p.y, w: 2, h: 1, special, variant: variant() });
     } else if (south) {
       used.add(key(south.x, south.y));
-      tombs.push({ id: nextId(), x: p.x, y: p.y, w: 1, h: 2, special });
+      tombs.push({ id: nextId(), x: p.x, y: p.y, w: 1, h: 2, special, variant: variant() });
     } else {
-      tombs.push({ id: nextId(), x: p.x, y: p.y, w: 1, h: 1, special });
+      tombs.push({ id: nextId(), x: p.x, y: p.y, w: 1, h: 1, special, variant: variant() });
     }
   }
   return tombs;
+}
+
+/** Fancy room keeps the gold tomb as a vertical pair so Last Lord art fits. */
+function fancyOrientations(rows: string[]): string[][] {
+  return orientations(rows).filter((grid) => {
+    const cells = parseGrid(grid).filter((c) => c.code === "g");
+    if (cells.length < 2) return true;
+    return cells.some((a) => cells.some((b) => b.x === a.x && b.y === a.y + 1));
+  });
 }
 
 function layoutRooms(
@@ -402,7 +424,8 @@ function layoutRooms(
     const options = i === fancyIndex ? fancyT : shuffle(connectable, rng);
     for (const tmpl of options) {
       if (aborted) return false;
-      for (const grid of shuffle(orientations(tmpl.rows), rng)) {
+      const orients = tmpl.fancy ? fancyOrientations(tmpl.rows) : orientations(tmpl.rows);
+      for (const grid of shuffle(orients, rng)) {
         if (aborted) return false;
         const local = parseGrid(grid);
         if (need.some((d) => facingEntrances(local, d).length === 0)) continue;
@@ -790,8 +813,8 @@ function tryBuild(rng: () => number): CatacombLayout | null {
       code: c.code,
     }));
     for (const tomb of [
-      ...pairBlockers(local, "t", false, nextTomb),
-      ...pairBlockers(local, "g", true, nextTomb),
+      ...pairBlockers(local, "t", false, nextTomb, rng),
+      ...pairBlockers(local, "g", true, nextTomb, rng),
     ]) {
       tombs.push({
         ...tomb,
@@ -887,10 +910,19 @@ function tryBuild(rng: () => number): CatacombLayout | null {
 
   const bonelings: Point[] = [];
   const skeletons: Point[] = [];
+  const archers: Point[] = [];
   const elites: Point[] = [];
+  const rats: Point[] = [];
+  const mages: Point[] = [];
+  const treasureRooms = placed.filter((r) => r.role === "treasure" || r.role === "locked");
+  const besideTreasure = (room: Placed) =>
+    treasureRooms.some(
+      (t) => Math.abs(t.col - room.col) + Math.abs(t.row - room.row) === 1,
+    );
   const gravePiles: Point[] = [];
   const coins: Point[] = [];
   const cards: Point[] = [];
+  const namedCards: { x: number; y: number; cardId: string }[] = [];
   const trinkets: { x: number; y: number; trinket: TrinketId }[] = [];
   const gems: Point[] = [];
   const keys: Point[] = [];
@@ -918,13 +950,30 @@ function tryBuild(rng: () => number): CatacombLayout | null {
       const pile = claim();
       if (pile) gravePiles.push(pile);
       claimN(rollInt(rng, 7, 10), bonelings);
-      claimN(2, skeletons);
+      claimN(1, skeletons);
+      claimN(1, archers);
     } else {
       claimN(rollInt(rng, 3, 5), bonelings);
-      if (room.role === "gauntlet") claimN(1, skeletons);
+      if (room.role === "gauntlet") {
+        claimN(1, skeletons);
+        claimN(1, archers);
+      } else if (room.role === "start") {
+        if (rng() < 0.45) claimN(1, skeletons);
+      } else if (room.role !== "treasure" && room.role !== "locked") {
+        const roll = rng();
+        if (roll < 0.4) claimN(1, skeletons);
+        else if (roll < 0.72) claimN(1, archers);
+      }
+    }
+    if ((room.role === "normal" || room.role === "gauntlet") && rng() < 0.36) {
+      claimN(1, rats);
+    } else if (room.role === "start" && rng() < 0.2) {
+      claimN(1, rats);
     }
     if (room.role === "treasure" || room.role === "locked") {
       claimN(1, elites);
+      claimN(1, skeletons);
+      claimN(1, archers);
       claimN(3, coins);
       claimN(room.role === "locked" ? 4 : 2, cards);
       claimN(room.role === "locked" ? 2 : 1, gems);
@@ -936,6 +985,43 @@ function tryBuild(rng: () => number): CatacombLayout | null {
           trinket: trinketIds[Math.floor(rng() * trinketIds.length)]!,
         });
       }
+      if (room.role === "locked") {
+        const knife = claim();
+        if (knife) namedCards.push({ x: knife.x, y: knife.y, cardId: "ancient_knife" });
+      }
+      if (room.role === "treasure" && rng() < 0.45) {
+        const axe = claim();
+        if (axe) namedCards.push({ x: axe.x, y: axe.y, cardId: "executioner_axe" });
+      }
+    }
+    if (
+      (room.role === "grave" || room.role === "treasure" || room.role === "locked") &&
+      rng() < 0.7
+    ) {
+      claimN(1, mages);
+    }
+  }
+
+  const extraEliteRooms = shuffle(
+    placed.filter(
+      (room) =>
+        room.role !== "start" &&
+        room.role !== "treasure" &&
+        room.role !== "locked" &&
+        besideTreasure(room),
+    ),
+    rng,
+  );
+  let extraElites = 0;
+  for (const room of extraEliteRooms) {
+    if (extraElites >= 2) break;
+    if (rng() > 0.7) continue;
+    const spot = room.cells.find(
+      (c) => c.code !== "#" && c.code !== "e" && !occupied.has(key(c.x, c.y)),
+    );
+    if (spot && take(spot)) {
+      elites.push({ x: spot.x, y: spot.y });
+      extraElites++;
     }
   }
 
@@ -1005,10 +1091,14 @@ function tryBuild(rng: () => number): CatacombLayout | null {
     chests,
     bonelings,
     skeletons,
+    archers,
     elites,
+    rats,
+    mages,
     gravePiles,
     coins,
     cards,
+    namedCards,
     trinkets,
     gems,
     keys,

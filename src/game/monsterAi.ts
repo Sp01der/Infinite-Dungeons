@@ -1,4 +1,4 @@
-import { applyDefense, monsterDamageBonus, monsterMaxHp, rollInt } from "../engine/combat";
+import { applyDefense, monsterDamageBonus, monsterMaxHp, monsterOutgoingBonus, rollInt } from "../engine/combat";
 import { keyOf, magicMissilePathClearToPlayer, tileAt, chebyshev } from "../engine/grid";
 import { manhattan } from "../engine/movement";
 import { cullMonstersWithDouvlonPairs, setMonsterHpWithDouvlonSync } from "./douvlon";
@@ -6,6 +6,7 @@ import { maybeDropMonsterCoin } from "./loot";
 import { addExp } from "./progression";
 import { SHADE_DECK_TEMPLATE } from "./monsterSpawn";
 import { convertBonelingToBonePile, tickBonePiles } from "./boneling";
+import { ageMagePose, applySkeletonMageDeath, raiseMageAfterMove } from "./atbmb/skeletonMage";
 import { tickGraveBonePiles } from "./gravePiles";
 import { addFootingBlocks, blocksFooting } from "./tombs";
 import { applyDamageToPlayer } from "./skillsRuntime";
@@ -227,6 +228,7 @@ function monsterKillRewards(
     );
     next = convertBonelingToBonePile(next, x, y, dead?.id);
   }
+  if (defId === "skeleton_mage") next = applySkeletonMageDeath(next, x, y);
   return next;
 }
 
@@ -446,7 +448,7 @@ function makeAtbmbHost(hooks: MonsterPhaseHooks, hits: HitVisual[]): AtbmbHost {
     },
     fireArrow: (state, mon, minDamage, maxDamage, nextState) => {
       const name = state.monsterDefs.get(mon.defId)?.name ?? "Skeleton Archer";
-      const raw = rollInt(minDamage, maxDamage) + monsterDamageBonus(mon.level);
+      const raw = rollInt(minDamage, maxDamage) + monsterOutgoingBonus(mon);
       const d = damagePlayer(state, raw, name, hits, {
         kind: "arrow",
         fromX: mon.x,
@@ -462,6 +464,23 @@ function makeAtbmbHost(hooks: MonsterPhaseHooks, hits: HitVisual[]): AtbmbHost {
         ),
       };
       return { state: next, dead: d.dead };
+    },
+    unhealing: (state, mon, damage, poisonLevels) => {
+      const name = state.monsterDefs.get(mon.defId)?.name ?? "Skeleton Mage";
+      const d = damagePlayer(state, damage, name, hits, {
+        kind: "unhealing",
+        fromX: mon.x,
+        fromY: mon.y,
+      });
+      let next = d.state;
+      if (!d.dead && poisonLevels > 0) {
+        const total = (next.player.poisonLevels ?? 0) + poisonLevels;
+        next = appendLog(
+          { ...next, player: { ...next.player, poisonLevels: total } },
+          `${name}'s Unhealing inflicts ${poisonLevels} Poison.`,
+        );
+      }
+      return { state: next, dead: next.player.hp <= 0 };
     },
     vineWhip: (state, mon, maxManhattan) => {
       const name = state.monsterDefs.get(mon.defId)?.name ?? "Vineshon";
@@ -1829,6 +1848,16 @@ export function runMonsterPhaseWithHooks(
   let s = pileTick.state;
   if (phaseAnims) phaseAnims.push(...pileTick.mergeAnims);
   const hits: HitVisual[] = [];
+  if (s.monsters.some((m) => (m.strengthLevels ?? 0) > 0 || (m.resistanceLevels ?? 0) > 0)) {
+    s = {
+      ...s,
+      monsters: s.monsters.map((m) =>
+        (m.strengthLevels ?? 0) > 0 || (m.resistanceLevels ?? 0) > 0
+          ? { ...m, strengthLevels: 0, resistanceLevels: 0 }
+          : m,
+      ),
+    };
+  }
   const playerPos: Point = { x: s.player.x, y: s.player.y };
   const processedDouvlonPairs = new Set<string>();
   const turnStarts = new Map(
@@ -1845,8 +1874,14 @@ export function runMonsterPhaseWithHooks(
     return { state: next, hits, anims };
   };
 
-  for (const m of s.monsters) {
-    if (m.hp <= 0 || !m.active) continue;
+  const turnIds = s.monsters
+    .filter((m) => m.hp > 0 && m.active)
+    .sort((a, b) => Number(a.defId !== "skeleton_mage") - Number(b.defId !== "skeleton_mage"))
+    .map((m) => m.id);
+
+  for (const turnId of turnIds) {
+    const m = s.monsters.find((x) => x.id === turnId);
+    if (!m || m.hp <= 0 || !m.active) continue;
     let curMon = s.monsters.find((x) => x.id === m.id && x.hp > 0);
     if (!curMon) continue;
     const monId = curMon.id;
@@ -2082,6 +2117,32 @@ export function runMonsterPhaseWithHooks(
       if (r.dead) return finish({ ...s, phase: "defeat" });
       s = tickMonsterFireAfterTurn(s, monId, hits);
       continue;
+    }
+
+    if (curMon.defId === "skeleton_mage") {
+      const aged = ageMagePose(curMon);
+      if (aged !== curMon) {
+        const id = curMon.id;
+        s = { ...s, monsters: s.monsters.map((x) => (x.id === id ? aged : x)) };
+        curMon = aged;
+      }
+      const startX = curMon.x;
+      const startY = curMon.y;
+      const ai = s.monsterDefs.get(curMon.defId)?.ai;
+      if (hasAtbmb(ai)) {
+        const r = runAtbmbTurn(s, curMon, makeAtbmbHost(hooks, hits));
+        if (r) {
+          s = r.state;
+          if (r.dead) return finish({ ...s, phase: "defeat" });
+          const after = s.monsters.find((x) => x.id === monId && x.hp > 0);
+          if (after && (after.x !== startX || after.y !== startY)) {
+            const raised = raiseMageAfterMove(after);
+            s = { ...s, monsters: s.monsters.map((x) => (x.id === after.id ? raised : x)) };
+          }
+          s = tickMonsterFireAfterTurn(s, monId, hits);
+          continue;
+        }
+      }
     }
 
     if (curMon.defId === "boneling") {
