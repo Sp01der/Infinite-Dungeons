@@ -176,7 +176,9 @@ export function pickFloorTheme(
   history: Partial<Record<FloorTheme, number>>,
   depth: number,
 ): FloorTheme {
-  if (depth > 5) return "normal";
+  /** Natural run: Catacombs always on floor 6 (prototype placement). */
+  if (depth === 6) return "catacombs";
+  if (depth > 6) return "normal";
   const themes: FloorTheme[] = ["normal", "overgrown", "damp", "brownstone"];
   const baseWeights: Record<FloorTheme, number> = {
     normal: 1.5,
@@ -915,6 +917,9 @@ export function createNextFloorState(
   const danger =
     opts?.danger ?? (opts?.depth != null ? Math.max(1, opts.depth) : prev.danger + 1);
   const theme = opts?.theme ?? pickFloorTheme(prev.themePickHistory, depth);
+  if (theme === "catacombs") {
+    return createCatacombsFloorState(prev, { depth, danger });
+  }
   const gen = generateFloor({ depth, theme });
   const monsterDefs = prev.monsterDefs;
   const { width, height, tiles, playerStart, roomIds, roomKinds } = gen;
@@ -1072,6 +1077,15 @@ export function createNextFloorState(
 
 /** Prototype catacomb floor from the pixel room maps. Keeps the player and rebuilds the floor. */
 export function createCatacombsTestState(prev: GameState): GameState {
+  return createCatacombsFloorState(prev, { depth: prev.depth, danger: prev.danger });
+}
+
+/** Catacombs layout at an explicit depth/danger (natural floor 6, Floor command, Theme command). */
+export function createCatacombsFloorState(
+  prev: GameState,
+  opts: { depth: number; danger: number },
+): GameState {
+  const { depth, danger } = opts;
   const layout = generateCatacombs();
   const fogOfWar = !prev.editorMode;
   const discovered = buildDiscovered(
@@ -1084,7 +1098,7 @@ export function createCatacombsTestState(prev: GameState): GameState {
   );
   const monsters: MonsterInstance[] = [];
   let mi = 0;
-  const catacombsDanger = (defId: string) => spawnDangerFor("catacombs", defId, prev.danger);
+  const catacombsDanger = (defId: string) => spawnDangerFor("catacombs", defId, danger);
   for (const p of layout.bonelings) {
     const leader = bonelingLeaderForRoom(monsters, layout.roomIds, p.x, p.y);
     monsters.push(
@@ -1186,7 +1200,7 @@ export function createCatacombsTestState(prev: GameState): GameState {
       x: p.x,
       y: p.y,
       kind: "card",
-      cardId: pickCatacombsLootCardId(prev.cardDefs, prev.depth),
+      cardId: pickCatacombsLootCardId(prev.cardDefs, depth),
     });
   }
   for (const p of layout.namedCards) {
@@ -1206,7 +1220,7 @@ export function createCatacombsTestState(prev: GameState): GameState {
   return {
     phase: "player",
     floorId: layout.id,
-    floorName: `Floor ${prev.depth} · Catacombs`,
+    floorName: `Floor ${depth} · Catacombs`,
     floorTheme: "catacombs",
     width: layout.width,
     height: layout.height,
@@ -1243,8 +1257,8 @@ export function createCatacombsTestState(prev: GameState): GameState {
       nextMoveDoubled: false,
       gemLuckRestore: null,
     },
-    depth: prev.depth,
-    danger: prev.danger,
+    depth,
+    danger,
     noise: 0,
     monsters,
     pots,
@@ -1262,10 +1276,10 @@ export function createCatacombsTestState(prev: GameState): GameState {
     lockedDoors: layout.lockedDoors,
     catacombStair: layout.catacombStair,
     goldWalls: layout.goldWalls,
-    themePickHistory: prev.themePickHistory,
+    themePickHistory: bumpThemeHistory(prev.themePickHistory, "catacombs"),
     roomIds: layout.roomIds,
     roomKinds: layout.roomKinds,
-    dungeonDraw: buildFreshDungeonDeck(prev.depth, "catacombs"),
+    dungeonDraw: buildFreshDungeonDeck(depth, "catacombs"),
     dungeonDiscard: [],
     cardDefs: prev.cardDefs,
     monsterDefs: prev.monsterDefs,
@@ -1304,7 +1318,9 @@ export function createCatacombsTestState(prev: GameState): GameState {
     testBonelingSpawns: prev.testBonelingSpawns,
     log: [
       ...prev.log.slice(-40),
-      layout.summary,
+      depth === prev.depth
+        ? layout.summary
+        : `You descend to Floor ${depth} · Catacombs.`,
       `${monsters.length} monster(s), ${pots.length} pot(s), ${chests.length} chest(s), ${layout.tombs.length} tomb(s).`,
     ],
     turn: prev.turn + 1,

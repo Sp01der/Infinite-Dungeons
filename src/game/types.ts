@@ -5,7 +5,7 @@ export type ChanceMode = "normal" | "highest" | "lowest";
 
 export type TileKind = "floor" | "wall" | "blocked" | "water";
 
-/** Procedural floor visual / spawn theme (floors 1–5). Catacombs uses the normal tileset until its extras exist. */
+/** Procedural floor visual / spawn theme (floors 1–5). Floor 6 is always Catacombs. */
 export type FloorTheme = "normal" | "overgrown" | "damp" | "brownstone" | "catacombs";
 
 export interface Point {
