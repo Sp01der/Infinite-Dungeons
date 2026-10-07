@@ -3894,13 +3894,23 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
   }
   if (state.phase === "defeat") return noHits(state);
   if (state.deckBuilderOffer) return handleDeckBuilderOffer(state, cmd);
-  if (state.chestOffer && cmd.type !== "RESOLVE_CHEST_OFFER") return noHits(state);
-  const pickupLen = state.cardPickupOffer?.queue.length ?? 0;
-  if (pickupLen > 0 && cmd.type !== "RESOLVE_CARD_PICKUP") return noHits(state);
-  if (state.pedestalOffer && cmd.type !== "RESOLVE_PEDESTAL_PICK") return noHits(state);
-  if (state.deckDestroyPending && cmd.type !== "RESOLVE_DECK_DESTROY") return noHits(state);
-  if (state.flameDestroyPending && cmd.type !== "RESOLVE_FLAME_DESTROY") return noHits(state);
-  if (state.bindTomePending && cmd.type !== "RESOLVE_BIND_TOME") return noHits(state);
+  // Modal priority must match the UI (chest/pedestal/etc. hide card-pickup).
+  // Independent sequential guards soft-lock when opening a chest also enqueues
+  // adjacent ground-card pickups: RESOLVE_CHEST_OFFER passed the chest check,
+  // then died on the pickup check while the pickup modal stayed hidden.
+  if (state.chestOffer) {
+    if (cmd.type !== "RESOLVE_CHEST_OFFER") return noHits(state);
+  } else if (state.pedestalOffer) {
+    if (cmd.type !== "RESOLVE_PEDESTAL_PICK") return noHits(state);
+  } else if (state.deckDestroyPending) {
+    if (cmd.type !== "RESOLVE_DECK_DESTROY") return noHits(state);
+  } else if (state.flameDestroyPending) {
+    if (cmd.type !== "RESOLVE_FLAME_DESTROY") return noHits(state);
+  } else if (state.bindTomePending) {
+    if (cmd.type !== "RESOLVE_BIND_TOME") return noHits(state);
+  } else if ((state.cardPickupOffer?.queue.length ?? 0) > 0) {
+    if (cmd.type !== "RESOLVE_CARD_PICKUP") return noHits(state);
+  }
   if (
     state.senseiOffer &&
     cmd.type !== "TOGGLE_SENSEI_OFFER_SELECT" &&
@@ -6444,7 +6454,7 @@ function dispatchCore(state: GameState, cmd: GameCommand): DispatchResult {
       if (state.chestOffer) {
         return noHits(log(state, "Choose a chest card or pass before ending the turn."));
       }
-      if (pickupLen > 0) {
+      if ((state.cardPickupOffer?.queue.length ?? 0) > 0) {
         return noHits(log(state, "Resolve the found card before ending the turn."));
       }
       if (state.pending) {
